@@ -289,6 +289,122 @@ def handle_signals(token: str, chat_id: str):
     send_message(token, chat_id, msg)
 
 
+def handle_restart(token: str, chat_id: str):
+    """Trigger a bot run via GitHub Actions API."""
+    import subprocess
+
+    send_message(token, chat_id, "Triggering bot run... please wait 30s.")
+
+    # Try GitHub Actions API
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    if not github_token:
+        # Try to read from config
+        try:
+            import yaml
+            cfg_path = Path("configs/bot_live.yaml")
+            if cfg_path.exists():
+                with open(cfg_path) as f:
+                    cfg = yaml.safe_load(f)
+                github_token = cfg.get("github", {}).get("token", "")
+        except Exception:
+            pass
+
+    if github_token:
+        result = subprocess.run(
+            ["curl", "-s", "-m", "15", "-X", "POST",
+             "https://api.github.com/repos/SonSquared/Trading-Bot/actions/workflows/bot.yml/dispatches",
+             "-H", f"Authorization: token {github_token}",
+             "-H", "Accept: application/vnd.github.v3+json",
+             "-d", '{"ref":"main"}'],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode == 0:
+            send_message(token, chat_id, "Bot run triggered! Check /status in 2 minutes.")
+            return
+
+    # Fallback: run locally
+    send_message(token, chat_id, "GitHub API not configured. Running locally...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-u", "scripts/paper_trader.py"],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        if result.returncode == 0:
+            send_message(token, chat_id, "Bot run completed! Check /status for results.")
+        else:
+            send_message(token, chat_id, f"Bot run failed: {result.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        send_message(token, chat_id, "Bot run timed out (>2 min).")
+    except Exception as e:
+        send_message(token, chat_id, f"Error: {e}")
+
+
+def handle_dashboard(token: str, chat_id: str):
+    """Show monitoring dashboard summary."""
+    RUN_LOG = Path("data/results/run_history.jsonl")
+    STATE_FILE = Path("data/results/paper_state.json")
+    SUMMARY_FILE = Path("data/results/paper_summary.json")
+
+    runs = []
+    if RUN_LOG.exists():
+        with open(RUN_LOG) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        runs.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+
+    state = {}
+    if STATE_FILE.exists():
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+
+    summary = {}
+    if SUMMARY_FILE.exists():
+        with open(SUMMARY_FILE) as f:
+            summary = json.load(f)
+
+    if not runs:
+        send_message(token, chat_id, "No run history yet.")
+        return
+
+    total = len(runs)
+    successful = sum(1 for r in runs if r.get("status") == "success")
+    failed = sum(1 for r in runs if r.get("status") == "failed")
+    success_rate = successful / total * 100 if total > 0 else 0
+
+    last = runs[-1]
+    status_color = {"success": "GREEN", "partial": "YELLOW", "failed": "RED"}.get(last.get("status", ""), "UNKNOWN")
+
+    # Consecutive failures
+    consec = 0
+    for r in reversed(runs):
+        if r.get("status") == "failed":
+            consec += 1
+        else:
+            break
+
+    equity = summary.get("equity", state.get("cash", 10000))
+    total_return = summary.get("total_return_pct", 0)
+
+    msg = (
+        f"📊 <b>BOT DASHBOARD</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Status: [{status_color}] <b>{last.get('status', '?').upper()}</b>\n"
+        f"Runs: {total} ({success_rate:.0f}% success)\n"
+        f"Failed: {failed}\n"
+        f"Consec. fails: {consec}\n\n"
+        f"💰 Equity: <b>${equity:,.2f}</b>\n"
+        f"📈 Return: <b>{total_return:+.2f}%</b>\n"
+        f"⏱ Last run: {last.get('duration_seconds', 0):.1f}s\n"
+        f"🕐 {last.get('timestamp', '?')[:19]}"
+    )
+    send_message(token, chat_id, msg)
+
+
 def handle_help(token: str, chat_id: str):
     """Show available commands."""
     msg = (
@@ -299,6 +415,8 @@ def handle_help(token: str, chat_id: str):
         "/positions - Open positions\n"
         "/trades - Recent trade history\n"
         "/signals - Current strategy signals\n"
+        "/restart - Trigger a bot run now\n"
+        "/dashboard - Bot monitoring dashboard\n"
         "/help - This message\n\n"
         f"Mode: <b>PAPER</b>\n"
         f"Initial: ${INITIAL_CAPITAL:,.0f}"
@@ -312,6 +430,8 @@ COMMANDS = {
     "/positions": handle_positions,
     "/trades": handle_trades,
     "/signals": handle_signals,
+    "/restart": handle_restart,
+    "/dashboard": handle_dashboard,
     "/help": handle_help,
 }
 

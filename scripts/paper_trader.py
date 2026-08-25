@@ -5,14 +5,21 @@ Simulates real trading with proper position tracking, P&L calculation,
 and comprehensive logging. Each run fetches fresh data, runs strategies,
 and simulates trades with realistic fills.
 
-State is persisted between runs via GitHub Actions artifacts or JSON file.
+Features:
+  - Retry logic with exponential backoff for API calls
+  - Graceful error handling (partial failures don't crash the run)
+  - Run logging for monitoring dashboard
+  - State persistence between runs
 """
 
 import os
 import sys
 import json
-from datetime import datetime, timedelta
+import time
+import traceback
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from functools import wraps
 
 sys.path.insert(0, ".")
 
@@ -49,14 +56,53 @@ STRATEGIES = {
 
 # --- Config ---
 INITIAL_CAPITAL = 10000.0
-FEE_RATE = 0.0005          # 0.05% taker fee
-SLIPPAGE_RATE = 0.0002     # 0.02% slippage per trade
-MAX_POSITION_PCT = 0.35    # Max 35% of equity per position
+FEE_RATE = 0.0005
+SLIPPAGE_RATE = 0.0002
+MAX_POSITION_PCT = 0.35
 LOG_DIR = Path("data/results")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRADE_LOG = LOG_DIR / "paper_trades.jsonl"
 STATE_FILE = LOG_DIR / "paper_state.json"
 SUMMARY_FILE = LOG_DIR / "paper_summary.json"
+RUN_LOG = LOG_DIR / "run_history.jsonl"
+
+
+# --- Retry Decorator ---
+def retry(max_attempts: int = 3, base_delay: float = 2.0, exceptions: tuple = (Exception,)):
+    """Retry decorator with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_error = e
+                    if attempt < max_attempts:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        print(f"    Retry {attempt}/{max_attempts} in {delay:.1f}s: {e}")
+                        time.sleep(delay)
+                    else:
+                        print(f"    Failed after {max_attempts} attempts: {e}")
+            raise last_error
+        return wrapper
+    return decorator
+
+
+# --- Run Logger ---
+def log_run(status: str, duration: float, trades: int, errors: list, equity: float):
+    """Log a bot run for the monitoring dashboard."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status,  # "success", "partial", "failed"
+        "duration_seconds": round(duration, 1),
+        "trades": trades,
+        "errors": errors,
+        "equity": equity,
+    }
+    with open(RUN_LOG, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
 
 
 # --- Telegram ---
@@ -101,7 +147,7 @@ def load_state() -> dict:
             return json.load(f)
     return {
         "cash": INITIAL_CAPITAL,
-        "positions": {},     # {pair: {"side": 1/-1, "entry_price": float, "size_usd": float, "entry_time": str}}
+        "positions": {},
         "total_trades": 0,
         "wins": 0,
         "losses": 0,
@@ -117,45 +163,35 @@ def save_state(state: dict):
 
 
 # --- Data ---
+@retry(max_attempts=3, base_delay=2.0)
 def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataFrame:
     """Fetch latest candles via ccxt or from cached parquet files."""
-    # Try multiple naming patterns
-    cache_path = None
-    for pattern in [
-        f"data/raw/{pair}/{timeframe}.parquet",
-        f"data/raw/{pair}/klines_{timeframe}.parquet",
-    ]:
-        if Path(pattern).exists():
-            cache_path = Path(pattern)
-            break
-    if cache_path and cache_path.exists():
-        df = pd.read_parquet(cache_path)
-        if "timestamp" in df.columns:
-            if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-            cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-            df = df[df["timestamp"] > cutoff]
-        return df
+    # Try cached files first
+    for pattern in [f"data/raw/{pair}/{timeframe}.parquet", f"data/raw/{pair}/klines_{timeframe}.parquet"]:
+        cache_path = Path(pattern)
+        if cache_path.exists():
+            df = pd.read_parquet(cache_path)
+            if "timestamp" in df.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+                df = df[df["timestamp"] > cutoff]
+            return df
 
     # Fetch fresh data via ccxt
-    try:
-        import ccxt
-        pair_sym = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
-        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
-        since = int((datetime.utcnow() - timedelta(days=lookback_days)).timestamp() * 1000)
-        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
-    except Exception as e:
-        print(f"  Failed to fetch {pair} {timeframe}: {e}")
-        return pd.DataFrame()
+    import ccxt
+    pair_sym = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
+    exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
+    since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
+    ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
 
 
 # --- Paper Trade Execution ---
 def simulate_fills(price: float, side: int, size_usd: float) -> tuple[float, float, float]:
-    """Return (fill_price, fee, slippage_cost)."""
-    slippage = price * SLIPPAGE_RATE * side  # adverse slippage
+    slippage = price * SLIPPAGE_RATE * side
     fill_price = price + slippage
     fee = size_usd * FEE_RATE
     return fill_price, fee, abs(slippage) * size_usd / price
@@ -168,12 +204,12 @@ def open_position(state: dict, pair: str, side: int, price: float, strategy: str
         "side": side,
         "entry_price": fill_price,
         "size_usd": size_usd,
-        "entry_time": datetime.utcnow().isoformat(),
+        "entry_time": datetime.now(timezone.utc).isoformat(),
         "strategy": strategy,
         "fees_paid": fee + slip,
     }
     trade = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "pair": pair,
         "action": "OPEN_LONG" if side == 1 else "OPEN_SHORT",
         "price": fill_price,
@@ -197,7 +233,6 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
     size_usd = pos["size_usd"]
 
     fill_price, fee, slip = simulate_fills(price, -side)
-    # PnL = (exit - entry) * side * (size / entry) - fees
     pnl_pct = (fill_price - entry_price) / entry_price * side
     pnl_usd = size_usd * pnl_pct - fee - slip - pos["fees_paid"]
 
@@ -212,7 +247,7 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
     del state["positions"][pair]
 
     trade = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "pair": pair,
         "action": "CLOSE",
         "entry_price": entry_price,
@@ -236,14 +271,19 @@ def log_trade(trade: dict):
 
 
 # --- Strategy Execution ---
-def run_strategies() -> dict:
+def run_strategies() -> tuple[dict, list]:
+    """Run all strategies. Returns (signals, errors)."""
     signals = {}
+    errors = []
+
     for name, cfg in STRATEGIES.items():
         try:
             df = fetch_latest(cfg["pair"], cfg["timeframe"])
             if df is None or len(df) < 50:
+                errors.append(f"{name}: Insufficient data ({len(df) if df is not None else 0} candles)")
                 print(f"  {name}: Insufficient data ({len(df) if df is not None else 0} candles)")
                 continue
+
             strat = STRATEGY_REGISTRY[cfg["strategy"]]
             sig = strat.generate_signals(df, cfg["params"])
             latest = int(sig.iloc[-1])
@@ -260,9 +300,12 @@ def run_strategies() -> dict:
             direction = "LONG" if latest == 1 else "FLAT" if latest == 0 else "SHORT"
             print(f"  {name}: {direction} @ ${price:,.2f}")
         except Exception as e:
+            error_msg = f"{name}: {e}"
+            errors.append(error_msg)
             print(f"  {name}: ERROR - {e}")
-            import traceback; traceback.print_exc()
-    return signals
+            traceback.print_exc()
+
+    return signals, errors
 
 
 def aggregate_signals(signals: dict) -> dict:
@@ -289,19 +332,20 @@ def aggregate_signals(signals: dict) -> dict:
 
 
 def get_equity(state: dict) -> float:
-    """Calculate current equity including unrealized P&L."""
     equity = state["cash"]
     for pair, pos in state["positions"].items():
-        # Assume current price = entry (conservative; actual would need live price)
         equity += pos["size_usd"]
     return equity
 
 
 # --- Main ---
 def main():
+    start_time = time.time()
+    errors = []
+
     print("=" * 50)
     print("PAPER TRADING BOT")
-    print(f"Time: {datetime.utcnow().isoformat()} UTC")
+    print(f"Time: {datetime.now(timezone.utc).isoformat()}")
     print("=" * 50)
     print()
 
@@ -316,51 +360,74 @@ def main():
     print(f"Realized P&L: ${state['total_pnl']:+,.2f}")
     print()
 
-    # Run strategies
+    # Run strategies with retry
     print("Running strategies...")
-    signals = run_strategies()
+    try:
+        signals, strategy_errors = run_strategies()
+        errors.extend(strategy_errors)
+    except Exception as e:
+        errors.append(f"Strategy execution failed: {e}")
+        print(f"FATAL: Strategy execution failed: {e}")
+        traceback.print_exc()
+        # Save run log and exit
+        duration = time.time() - start_time
+        log_run("failed", duration, 0, errors, get_equity(state))
+        if notifier:
+            try:
+                notifier.notify_error(f"Bot run failed: {e}", "Strategy execution")
+            except Exception:
+                pass
+        return
     print()
 
     # Aggregate
     print("Aggregating signals...")
-    portfolio = aggregate_signals(signals)
-    for pair, data in portfolio.items():
-        direction = "LONG" if data["signal"] == 1 else "FLAT" if data["signal"] == 0 else "SHORT"
-        print(f"  {pair}: {direction} (score={data['score']:.3f})")
+    try:
+        portfolio = aggregate_signals(signals)
+        for pair, data in portfolio.items():
+            direction = "LONG" if data["signal"] == 1 else "FLAT" if data["signal"] == 0 else "SHORT"
+            print(f"  {pair}: {direction} (score={data['score']:.3f})")
+    except Exception as e:
+        errors.append(f"Signal aggregation failed: {e}")
+        portfolio = {}
+        print(f"ERROR: Signal aggregation failed: {e}")
     print()
 
     # Execute paper trades
     trades_this_run = []
     for pair, data in portfolio.items():
-        current_pos = state["positions"].get(pair)
-        desired = data["signal"]
-        current_side = current_pos["side"] if current_pos else 0
+        try:
+            current_pos = state["positions"].get(pair)
+            desired = data["signal"]
+            current_side = current_pos["side"] if current_pos else 0
 
-        if desired != current_side:
-            # Close existing position if needed
-            if current_side != 0:
-                t = close_position(state, pair, data["price"], "Signal reversal")
-                if t:
-                    trades_this_run.append(t)
-                    print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
+            if desired != current_side:
+                if current_side != 0:
+                    t = close_position(state, pair, data["price"], "Signal reversal")
+                    if t:
+                        trades_this_run.append(t)
+                        print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
 
-            # Open new position if desired
-            if desired != 0:
-                equity_now = get_equity(state)
-                size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
-                if size_usd > 100:  # Min $100 per trade
-                    # Find the strategy name for this pair
-                    strat_name = "Unknown"
-                    for sname, sdata in signals.items():
-                        if sdata["pair"] == pair:
-                            strat_name = sdata["strategy"]
-                            break
-                    t = open_position(state, pair, desired, data["price"], strat_name, size_usd)
-                    trades_this_run.append(t)
-                    side = "LONG" if desired == 1 else "SHORT"
-                    print(f"  OPENED {pair} {side}: ${size_usd:,.2f} @ ${data['price']:,.2f}")
-                else:
-                    print(f"  {pair}: Insufficient cash (${state['cash']:.2f})")
+                if desired != 0:
+                    equity_now = get_equity(state)
+                    size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
+                    if size_usd > 100:
+                        strat_name = "Unknown"
+                        for sname, sdata in signals.items():
+                            if sdata["pair"] == pair:
+                                strat_name = sdata["strategy"]
+                                break
+                        t = open_position(state, pair, desired, data["price"], strat_name, size_usd)
+                        trades_this_run.append(t)
+                        side = "LONG" if desired == 1 else "SHORT"
+                        print(f"  OPENED {pair} {side}: ${size_usd:,.2f} @ ${data['price']:,.2f}")
+                    else:
+                        print(f"  {pair}: Insufficient cash (${state['cash']:.2f})")
+        except Exception as e:
+            error_msg = f"Trade execution {pair}: {e}"
+            errors.append(error_msg)
+            print(f"  ERROR: {error_msg}")
+            traceback.print_exc()
     print()
 
     # Update peak equity and drawdown
@@ -376,7 +443,7 @@ def main():
     wr = state["wins"] / state["total_trades"] * 100 if state["total_trades"] > 0 else 0
     total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
     summary = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "equity": equity,
         "cash": state["cash"],
         "total_return_pct": total_return,
@@ -394,6 +461,7 @@ def main():
         json.dump(summary, f, indent=2)
 
     # Print summary
+    duration = time.time() - start_time
     print("=" * 50)
     print(f"Equity:     ${equity:,.2f}")
     print(f"Return:     {total_return:+.2f}%")
@@ -402,12 +470,20 @@ def main():
     print(f"P&L:        ${state['total_pnl']:+,.2f}")
     print(f"Max DD:     {state['max_drawdown']*100:.2f}%")
     print(f"Open:       {len(state['positions'])} positions")
+    print(f"Duration:   {duration:.1f}s")
+    if errors:
+        print(f"Errors:     {len(errors)}")
+        for e in errors:
+            print(f"  - {e}")
     print("=" * 50)
+
+    # Log run
+    status = "success" if not errors else "partial" if trades_this_run else "failed"
+    log_run(status, duration, len(trades_this_run), errors, equity)
 
     # Send Telegram
     if notifier:
         try:
-            # Trade alerts
             for t in trades_this_run:
                 if t["action"].startswith("OPEN"):
                     notifier.notify_trade_opened(
@@ -438,6 +514,13 @@ def main():
             print("Telegram notifications sent.")
         except Exception as e:
             print(f"Telegram failed: {e}")
+
+    # Send error alert if there were critical errors
+    if errors and notifier:
+        try:
+            notifier.notify_error(f"Bot completed with {len(errors)} error(s)", "; ".join(errors[:3]))
+        except Exception:
+            pass
 
     print("Done.")
 
