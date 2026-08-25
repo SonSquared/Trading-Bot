@@ -35,7 +35,7 @@ STATE_FILE = Path("data/results/paper_state.json")
 TRADE_LOG = Path("data/results/paper_trades.jsonl")
 SUMMARY_FILE = Path("data/results/paper_summary.json")
 POLL_INTERVAL = 3  # seconds between polls
-INITIAL_CAPITAL = 10000.0
+INITIAL_CAPITAL = 97.0
 
 running = True
 
