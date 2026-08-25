@@ -1,0 +1,71 @@
+name: Bot Health Check
+on:
+  schedule:
+    # Run every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Check last bot run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date();
+            const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+
+            // Get recent workflow runs for the bot
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'bot.yml',
+              per_page: 5,
+              created: `>=${sixHoursAgo.toISOString()}`
+            });
+
+            const successfulRuns = runs.data.workflow_runs.filter(r => r.conclusion === 'success');
+            const failedRuns = runs.data.workflow_runs.filter(r => r.conclusion === 'failure');
+
+            if (successfulRuns.length > 0) {
+              console.log(`Bot is healthy. Last successful run: ${successfulRuns[0].created_at}`);
+            } else {
+              console.log(`Bot may be unhealthy! No successful runs in the last 6 hours.`);
+
+              // Send Telegram alert
+              const token = '${{ secrets.TELEGRAM_BOT_TOKEN }}';
+              const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
+
+              if (token && chatId) {
+                let msg = '🚨 TRADING BOT HEALTH CHECK ALERT\n\n';
+                msg += `Time: ${now.toISOString()}\n`;
+                msg += `Status: NO SUCCESSFUL RUNS IN 6 HOURS\n\n`;
+
+                if (failedRuns.length > 0) {
+                  msg += `Last failed run: ${failedRuns[0].created_at}\n`;
+                  msg += `Failure reason: ${failedRuns[0].conclusion}\n`;
+                  msg += `View logs: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${failedRuns[0].id}\n`;
+                } else {
+                  msg += 'No workflow runs found in the last 6 hours.\n';
+                  msg += `Expected: runs every 4 hours at :00\n`;
+                  msg += `Check: https://github.com/${context.repo.owner}/${context.repo.repo}/actions\n`;
+                }
+
+                msg += '\n⚡ Action required: Check the bot workflow immediately.';
+
+                await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ chat_id: chatId, text: msg })
+                });
+
+                console.log('Health alert sent to Telegram');
+              } else {
+                console.log('Telegram not configured — cannot send alert');
+              }
+
+              core.setFailed('Bot health check failed: no successful runs in 6 hours');
+            }

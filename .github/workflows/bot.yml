@@ -26,17 +26,28 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run trading bot
+      - name: Run paper trading bot
         env:
-          BOT_MODE: paper  # Change to 'live' when ready
-          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
-          EXCHANGE_API_SECRET: ${{ secrets.EXCHANGE_API_SECRET }}
-        run: python -u scripts/run_github_bot.py
+          BOT_MODE: paper
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
+        run: python -u scripts/paper_trader.py
 
-      - name: Upload trade log
+      - name: Upload trade log & state
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trade-log-${{ github.run_number }}
-          path: data/results/github_bot_log.jsonl
+          name: paper-results-${{ github.run_number }}
+          path: |
+            data/results/paper_trades.jsonl
+            data/results/paper_state.json
+            data/results/paper_summary.json
           retention-days: 90
+
+      - name: Restore state from previous run
+        uses: actions/cache@v4
+        with:
+          path: data/results/paper_state.json
+          key: paper-state-${{ github.run_number }}
+          restore-keys: paper-state-

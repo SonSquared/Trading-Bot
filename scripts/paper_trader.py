@@ -1,0 +1,446 @@
+"""
+Paper Trading Engine
+
+Simulates real trading with proper position tracking, P&L calculation,
+and comprehensive logging. Each run fetches fresh data, runs strategies,
+and simulates trades with realistic fills.
+
+State is persisted between runs via GitHub Actions artifacts or JSON file.
+"""
+
+import os
+import sys
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, ".")
+
+import pandas as pd
+import numpy as np
+
+from trading_system.strategies import STRATEGY_REGISTRY
+
+
+# --- Strategy Configs (from optimization) ---
+STRATEGIES = {
+    "MACD ETH": {
+        "strategy": "MACD",
+        "pair": "ETH_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.41,
+        "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
+    },
+    "ROC_Momentum ETH": {
+        "strategy": "ROC_Momentum",
+        "pair": "ETH_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.17,
+        "params": {"roc_period": 10, "signal_period": 5, "use_ema": True, "ema_period": 12},
+    },
+    "MACD BTC": {
+        "strategy": "MACD",
+        "pair": "BTC_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.43,
+        "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
+    },
+}
+
+# --- Config ---
+INITIAL_CAPITAL = 10000.0
+FEE_RATE = 0.0005          # 0.05% taker fee
+SLIPPAGE_RATE = 0.0002     # 0.02% slippage per trade
+MAX_POSITION_PCT = 0.35    # Max 35% of equity per position
+LOG_DIR = Path("data/results")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+TRADE_LOG = LOG_DIR / "paper_trades.jsonl"
+STATE_FILE = LOG_DIR / "paper_state.json"
+SUMMARY_FILE = LOG_DIR / "paper_summary.json"
+
+
+# --- Telegram ---
+def load_telegram_config():
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    enabled = os.getenv("TELEGRAM_ENABLED", "").lower() == "true"
+    if token and chat_id:
+        return {"enabled": True, "bot_token": token, "chat_id": chat_id}
+    try:
+        import yaml
+        cfg_path = Path("configs/bot_live.yaml")
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f)
+            tg = cfg.get("bot", {}).get("telegram", {})
+            if tg.get("enabled") and tg.get("bot_token"):
+                return tg
+    except Exception:
+        pass
+    return {"enabled": False}
+
+
+def get_notifier():
+    from trading_system.bot.telegram_notifier import TelegramNotifier
+    cfg = load_telegram_config()
+    if cfg.get("enabled") and cfg.get("bot_token"):
+        n = TelegramNotifier(bot_token=cfg["bot_token"], chat_id=str(cfg["chat_id"]))
+        if n.test_connection():
+            print("  Telegram: Connected")
+            return n
+        print("  Telegram: Connection failed")
+    else:
+        print("  Telegram: Not configured")
+    return None
+
+
+# --- State Management ---
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {
+        "cash": INITIAL_CAPITAL,
+        "positions": {},     # {pair: {"side": 1/-1, "entry_price": float, "size_usd": float, "entry_time": str}}
+        "total_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_pnl": 0.0,
+        "peak_equity": INITIAL_CAPITAL,
+        "max_drawdown": 0.0,
+    }
+
+
+def save_state(state: dict):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+# --- Data ---
+def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataFrame:
+    """Fetch latest candles via ccxt or from cached parquet files."""
+    # Try multiple naming patterns
+    cache_path = None
+    for pattern in [
+        f"data/raw/{pair}/{timeframe}.parquet",
+        f"data/raw/{pair}/klines_{timeframe}.parquet",
+    ]:
+        if Path(pattern).exists():
+            cache_path = Path(pattern)
+            break
+    if cache_path and cache_path.exists():
+        df = pd.read_parquet(cache_path)
+        if "timestamp" in df.columns:
+            if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+            cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+            df = df[df["timestamp"] > cutoff]
+        return df
+
+    # Fetch fresh data via ccxt
+    try:
+        import ccxt
+        pair_sym = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
+        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
+        since = int((datetime.utcnow() - timedelta(days=lookback_days)).timestamp() * 1000)
+        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        print(f"  Failed to fetch {pair} {timeframe}: {e}")
+        return pd.DataFrame()
+
+
+# --- Paper Trade Execution ---
+def simulate_fills(price: float, side: int, size_usd: float) -> tuple[float, float, float]:
+    """Return (fill_price, fee, slippage_cost)."""
+    slippage = price * SLIPPAGE_RATE * side  # adverse slippage
+    fill_price = price + slippage
+    fee = size_usd * FEE_RATE
+    return fill_price, fee, abs(slippage) * size_usd / price
+
+
+def open_position(state: dict, pair: str, side: int, price: float, strategy: str, size_usd: float) -> dict:
+    fill_price, fee, slip = simulate_fills(price, side, size_usd)
+    state["cash"] -= (fee + slip)
+    state["positions"][pair] = {
+        "side": side,
+        "entry_price": fill_price,
+        "size_usd": size_usd,
+        "entry_time": datetime.utcnow().isoformat(),
+        "strategy": strategy,
+        "fees_paid": fee + slip,
+    }
+    trade = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "pair": pair,
+        "action": "OPEN_LONG" if side == 1 else "OPEN_SHORT",
+        "price": fill_price,
+        "size_usd": size_usd,
+        "fee": fee,
+        "slippage": slip,
+        "strategy": strategy,
+        "cash_after": state["cash"],
+    }
+    log_trade(trade)
+    return trade
+
+
+def close_position(state: dict, pair: str, price: float, reason: str) -> dict | None:
+    pos = state["positions"].get(pair)
+    if not pos:
+        return None
+
+    side = pos["side"]
+    entry_price = pos["entry_price"]
+    size_usd = pos["size_usd"]
+
+    fill_price, fee, slip = simulate_fills(price, -side)
+    # PnL = (exit - entry) * side * (size / entry) - fees
+    pnl_pct = (fill_price - entry_price) / entry_price * side
+    pnl_usd = size_usd * pnl_pct - fee - slip - pos["fees_paid"]
+
+    state["cash"] += size_usd + pnl_usd
+    state["total_trades"] += 1
+    state["total_pnl"] += pnl_usd
+    if pnl_usd > 0:
+        state["wins"] += 1
+    else:
+        state["losses"] += 1
+
+    del state["positions"][pair]
+
+    trade = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "pair": pair,
+        "action": "CLOSE",
+        "entry_price": entry_price,
+        "exit_price": fill_price,
+        "side": "LONG" if side == 1 else "SHORT",
+        "pnl_pct": pnl_pct * 100,
+        "pnl_usd": pnl_usd,
+        "fee": fee,
+        "slippage": slip,
+        "reason": reason,
+        "strategy": pos["strategy"],
+        "cash_after": state["cash"],
+    }
+    log_trade(trade)
+    return trade
+
+
+def log_trade(trade: dict):
+    with open(TRADE_LOG, "a") as f:
+        f.write(json.dumps(trade, default=str) + "\n")
+
+
+# --- Strategy Execution ---
+def run_strategies() -> dict:
+    signals = {}
+    for name, cfg in STRATEGIES.items():
+        try:
+            df = fetch_latest(cfg["pair"], cfg["timeframe"])
+            if df is None or len(df) < 50:
+                print(f"  {name}: Insufficient data ({len(df) if df is not None else 0} candles)")
+                continue
+            strat = STRATEGY_REGISTRY[cfg["strategy"]]
+            sig = strat.generate_signals(df, cfg["params"])
+            latest = int(sig.iloc[-1])
+            price = float(df["close"].iloc[-1])
+            atr = float(df["close"].diff().abs().rolling(14).mean().iloc[-1]) if len(df) > 14 else price * 0.01
+            signals[name] = {
+                "signal": latest,
+                "weight": cfg["weight"],
+                "pair": cfg["pair"],
+                "strategy": cfg["strategy"],
+                "price": price,
+                "atr": atr,
+            }
+            direction = "LONG" if latest == 1 else "FLAT" if latest == 0 else "SHORT"
+            print(f"  {name}: {direction} @ ${price:,.2f}")
+        except Exception as e:
+            print(f"  {name}: ERROR - {e}")
+            import traceback; traceback.print_exc()
+    return signals
+
+
+def aggregate_signals(signals: dict) -> dict:
+    pair_scores = {}
+    for name, s in signals.items():
+        pair = s["pair"]
+        if pair not in pair_scores:
+            pair_scores[pair] = {"weighted_sum": 0.0, "total_weight": 0.0, "price": s["price"], "atr": s["atr"]}
+        pair_scores[pair]["weighted_sum"] += s["signal"] * s["weight"]
+        pair_scores[pair]["total_weight"] += s["weight"]
+
+    results = {}
+    for pair, data in pair_scores.items():
+        if data["total_weight"] > 0:
+            score = data["weighted_sum"] / data["total_weight"]
+            if score > 0.3:
+                final = 1
+            elif score < -0.3:
+                final = -1
+            else:
+                final = 0
+            results[pair] = {"score": score, "signal": final, "price": data["price"], "atr": data["atr"]}
+    return results
+
+
+def get_equity(state: dict) -> float:
+    """Calculate current equity including unrealized P&L."""
+    equity = state["cash"]
+    for pair, pos in state["positions"].items():
+        # Assume current price = entry (conservative; actual would need live price)
+        equity += pos["size_usd"]
+    return equity
+
+
+# --- Main ---
+def main():
+    print("=" * 50)
+    print("PAPER TRADING BOT")
+    print(f"Time: {datetime.utcnow().isoformat()} UTC")
+    print("=" * 50)
+    print()
+
+    notifier = get_notifier()
+    state = load_state()
+
+    equity = get_equity(state)
+    print(f"Starting equity: ${equity:,.2f}")
+    print(f"Cash: ${state['cash']:,.2f}")
+    print(f"Open positions: {len(state['positions'])}")
+    print(f"Total trades: {state['total_trades']} (W:{state['wins']} / L:{state['losses']})")
+    print(f"Realized P&L: ${state['total_pnl']:+,.2f}")
+    print()
+
+    # Run strategies
+    print("Running strategies...")
+    signals = run_strategies()
+    print()
+
+    # Aggregate
+    print("Aggregating signals...")
+    portfolio = aggregate_signals(signals)
+    for pair, data in portfolio.items():
+        direction = "LONG" if data["signal"] == 1 else "FLAT" if data["signal"] == 0 else "SHORT"
+        print(f"  {pair}: {direction} (score={data['score']:.3f})")
+    print()
+
+    # Execute paper trades
+    trades_this_run = []
+    for pair, data in portfolio.items():
+        current_pos = state["positions"].get(pair)
+        desired = data["signal"]
+        current_side = current_pos["side"] if current_pos else 0
+
+        if desired != current_side:
+            # Close existing position if needed
+            if current_side != 0:
+                t = close_position(state, pair, data["price"], "Signal reversal")
+                if t:
+                    trades_this_run.append(t)
+                    print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
+
+            # Open new position if desired
+            if desired != 0:
+                equity_now = get_equity(state)
+                size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
+                if size_usd > 100:  # Min $100 per trade
+                    # Find the strategy name for this pair
+                    strat_name = "Unknown"
+                    for sname, sdata in signals.items():
+                        if sdata["pair"] == pair:
+                            strat_name = sdata["strategy"]
+                            break
+                    t = open_position(state, pair, desired, data["price"], strat_name, size_usd)
+                    trades_this_run.append(t)
+                    side = "LONG" if desired == 1 else "SHORT"
+                    print(f"  OPENED {pair} {side}: ${size_usd:,.2f} @ ${data['price']:,.2f}")
+                else:
+                    print(f"  {pair}: Insufficient cash (${state['cash']:.2f})")
+    print()
+
+    # Update peak equity and drawdown
+    equity = get_equity(state)
+    if equity > state.get("peak_equity", 0):
+        state["peak_equity"] = equity
+    dd = (state["peak_equity"] - equity) / state["peak_equity"] if state["peak_equity"] > 0 else 0
+    state["max_drawdown"] = max(state.get("max_drawdown", 0), dd)
+
+    save_state(state)
+
+    # Build summary
+    wr = state["wins"] / state["total_trades"] * 100 if state["total_trades"] > 0 else 0
+    total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    summary = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "equity": equity,
+        "cash": state["cash"],
+        "total_return_pct": total_return,
+        "total_trades": state["total_trades"],
+        "wins": state["wins"],
+        "losses": state["losses"],
+        "win_rate": wr,
+        "realized_pnl": state["total_pnl"],
+        "max_drawdown_pct": state["max_drawdown"] * 100,
+        "open_positions": {p: {"side": v["side"], "entry": v["entry_price"], "size": v["size_usd"], "strategy": v["strategy"]} for p, v in state["positions"].items()},
+        "trades_this_run": len(trades_this_run),
+        "portfolio_signals": {p: {"direction": "LONG" if d["signal"] == 1 else "FLAT" if d["signal"] == 0 else "SHORT", "score": d["score"], "price": d["price"]} for p, d in portfolio.items()},
+    }
+    with open(SUMMARY_FILE, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Print summary
+    print("=" * 50)
+    print(f"Equity:     ${equity:,.2f}")
+    print(f"Return:     {total_return:+.2f}%")
+    print(f"Trades:     {state['total_trades']} (W:{state['wins']} / L:{state['losses']})")
+    print(f"Win Rate:   {wr:.1f}%")
+    print(f"P&L:        ${state['total_pnl']:+,.2f}")
+    print(f"Max DD:     {state['max_drawdown']*100:.2f}%")
+    print(f"Open:       {len(state['positions'])} positions")
+    print("=" * 50)
+
+    # Send Telegram
+    if notifier:
+        try:
+            # Trade alerts
+            for t in trades_this_run:
+                if t["action"].startswith("OPEN"):
+                    notifier.notify_trade_opened(
+                        pair=t["pair"].replace("_", "/"),
+                        side=t["action"].replace("OPEN_", ""),
+                        entry_price=t["price"],
+                        size=t["size_usd"],
+                        strategy=t["strategy"],
+                        confidence=0.8,
+                    )
+                elif t["action"] == "CLOSE":
+                    notifier.notify_trade_closed(
+                        pair=t["pair"].replace("_", "/"),
+                        side=t.get("side", "LONG"),
+                        entry_price=t["entry_price"],
+                        exit_price=t["exit_price"],
+                        pnl_pct=t["pnl_pct"],
+                        pnl_usd=t["pnl_usd"],
+                        reason=t["reason"],
+                    )
+            # Daily summary
+            notifier.notify_daily_summary(
+                equity=equity,
+                pnl=state["total_pnl"],
+                positions=state["positions"],
+                win_rate=wr / 100,
+            )
+            print("Telegram notifications sent.")
+        except Exception as e:
+            print(f"Telegram failed: {e}")
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

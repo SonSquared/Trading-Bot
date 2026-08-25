@@ -19,9 +19,7 @@ sys.path.insert(0, ".")
 import pandas as pd
 import numpy as np
 
-from trading_system.data import BinanceDataCollector
 from trading_system.strategies import STRATEGY_REGISTRY
-from trading_system.config import BacktestConfig, StrategyConfig
 
 
 # Strategy configurations (from optimization results)
@@ -131,25 +129,29 @@ def save_state(state: dict):
 
 def fetch_latest_data(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataFrame:
     """Fetch latest candles for signal generation."""
-    collector = BinanceDataCollector()
+    # Try cached files first
+    for pattern in [f"data/raw/{pair}/{timeframe}.parquet", f"data/raw/{pair}/klines_{timeframe}.parquet"]:
+        cache_path = Path(pattern)
+        if cache_path.exists():
+            df = pd.read_parquet(cache_path)
+            if "timestamp" in df.columns:
+                cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+                df = df[df["timestamp"] > cutoff]
+            return df
 
-    # Use cache if available, otherwise fetch
-    cache_path = Path(f"data/raw/{pair}/{timeframe}.parquet")
-    if cache_path.exists():
-        df = pd.read_parquet(cache_path)
-        # Return last N days
-        cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-        df = df[df["timestamp"] > cutoff]
+    # Fetch fresh data via ccxt
+    try:
+        import ccxt
+        pair_sym = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
+        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
+        since = int((datetime.utcnow() - timedelta(days=lookback_days)).timestamp() * 1000)
+        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
-
-    # Fetch fresh data
-    df = collector.fetch_historical(
-        pair=pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT"),
-        timeframe=timeframe,
-        start_date=(datetime.utcnow() - timedelta(days=lookback_days)).isoformat(),
-        end_date=datetime.utcnow().isoformat()
-    )
-    return df
+    except Exception as e:
+        print(f"  Failed to fetch {pair} {timeframe}: {e}")
+        return pd.DataFrame()
 
 
 def run_strategies() -> dict:
@@ -164,8 +166,7 @@ def run_strategies() -> dict:
                 continue
 
             # Run strategy
-            strategy_class = STRATEGY_REGISTRY[config["strategy"]]
-            strat = strategy_class()
+            strat = STRATEGY_REGISTRY[config["strategy"]]
             signal = strat.generate_signals(df, config["params"])
 
             latest_signal = signal.iloc[-1]
