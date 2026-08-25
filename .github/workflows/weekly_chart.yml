@@ -1,0 +1,45 @@
+name: Weekly Chart Report
+on:
+  schedule:
+    # Run every Sunday at 12:00 UTC
+    - cron: '0 12 * * 0'
+  workflow_dispatch:
+
+jobs:
+  weekly-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt matplotlib
+
+      - name: Restore paper trading state
+        uses: actions/cache@v4
+        with:
+          path: data/results/paper_state.json
+          key: paper-state-
+          restore-keys: paper-state-
+
+      - name: Restore paper trading trades
+        uses: actions/cache@v4
+        with:
+          path: data/results/paper_trades.jsonl
+          key: paper-trades-
+          restore-keys: paper-trades-
+
+      - name: Generate and send weekly charts
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
+        run: python -u scripts/weekly_chart.py
