@@ -1,0 +1,24 @@
+services:
+  trading-bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: trading-bot
+    restart: unless-stopped
+    volumes:
+      # Persist state and logs across restarts
+      - ../data:/app/data
+      # Mount config (edit locally, container picks up changes)
+      - ../configs/bot_live.yaml:/app/configs/bot_live.yaml:ro
+    environment:
+      - TZ=UTC
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

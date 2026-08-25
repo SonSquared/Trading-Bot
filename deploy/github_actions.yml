@@ -1,0 +1,42 @@
+name: Trading Bot Runner
+on:
+  schedule:
+    # Run every 4 hours at minute 0 (matches 4h candle close)
+    - cron: '0 */4 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write  # For pushing trade logs
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run trading bot
+        env:
+          BOT_MODE: paper  # Change to 'live' when ready
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+          EXCHANGE_API_SECRET: ${{ secrets.EXCHANGE_API_SECRET }}
+        run: python -u scripts/run_github_bot.py
+
+      - name: Upload trade log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-log-${{ github.run_number }}
+          path: data/results/github_bot_log.jsonl
+          retention-days: 90

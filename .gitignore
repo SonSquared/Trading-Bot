@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Data
+data/raw/
+data/processed/
+data/results/
+data/reports/
+data/charts/
+data/bot_state.json
+data/bot.log
+*.db
+*.parquet
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / Config with credentials
+configs/bot_live.yaml
+data/models/*.pkl
+data/bot_state.json
+.freebuff/

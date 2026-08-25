@@ -1,0 +1,78 @@
+exchange:
+  name: binance
+  market_type: futures
+  pairs:
+  - ETH/USDT:USDT
+  - BTC/USDT:USDT
+  timeframes:
+  - 4h
+  sandbox: true
+backtest:
+  fees:
+    maker_fee: 0.0002
+    taker_fee: 0.0004
+    funding_rate_model: actual
+  slippage:
+    model: atr_adaptive
+    base_slippage: 0.0001
+    atr_multiplier: 0.1
+  execution:
+    model: next_open
+    initial_capital: 10000.0
+    leverage: 1.0
+    max_leverage: 5.0
+    position_sizing: fixed_fraction
+    risk_per_trade: 0.02
+    stop_loss_atr_mult: 3.0
+    take_profit_atr_mult: 0
+risk:
+  max_position_pct: 0.2
+  max_portfolio_exposure: 0.8
+  max_risk_per_trade: 0.02
+  max_daily_loss: 0.03
+  max_drawdown: 0.1
+  max_simultaneous_positions: 3
+  max_order_size: 0.15
+  emergency_stop: false
+bot:
+  mode: paper
+  check_interval_seconds: 300
+  state_file: data/bot_state.json
+  log_file: data/bot.log
+  notification_enabled: false
+  notification_webhook: ''
+  telegram:
+    enabled: true
+    bot_token: YOUR_BOT_TOKEN_HERE
+    chat_id: YOUR_CHAT_ID_HERE
+portfolio:
+  allocation_method: sharpe_weighted
+  strategies:
+  - name: MACD
+    pair: ETH/USDT:USDT
+    timeframe: 4h
+    weight: 0.407
+    params:
+      fast: 4
+      slow: 10
+      signal: 2
+      use_histogram: false
+  - name: ROC_Momentum
+    pair: ETH/USDT:USDT
+    timeframe: 4h
+    weight: 0.167
+    params:
+      roc_period: 3
+      roc_threshold: -1
+      smooth_period: 1
+      trend_ema: 50
+      trend_filter: false
+  - name: MACD
+    pair: BTC/USDT:USDT
+    timeframe: 4h
+    weight: 0.426
+    params:
+      fast: 4
+      slow: 10
+      signal: 2
+      use_histogram: false

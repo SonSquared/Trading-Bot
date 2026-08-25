@@ -1,0 +1,104 @@
+# Trading System Default Configuration
+
+exchange:
+  name: binance
+  market_type: futures
+  pairs:
+    - "BTC/USDT:USDT"
+    - "ETH/USDT:USDT"
+    # - "SOL/USDT:USDT"  # uncomment to include SOL
+  timeframes:
+    - "15m"
+    - "30m"
+    - "1h"
+    - "4h"
+  sandbox: true
+
+data:
+  start_date: "2022-01-01"
+  end_date: ""  # empty = latest available
+  data_dir: "data/raw"
+  processed_dir: "data/processed"
+  results_dir: "data/results"
+
+backtest:
+  fees:
+    maker_fee: 0.0002
+    taker_fee: 0.0004
+    funding_rate_model: actual
+    average_funding_rate: 0.0001
+  slippage:
+    model: atr_adaptive
+    base_slippage: 0.0001
+    atr_multiplier: 0.1
+  execution:
+    model: next_open
+    delay_candles: 0
+    initial_capital: 10000.0
+    leverage: 1.0
+    max_leverage: 5.0
+    position_sizing: fixed_fraction
+    risk_per_trade: 0.02
+    stop_loss_atr_mult: 2.0
+    take_profit_atr_mult: 3.0
+
+data_split:
+  in_sample_end: "2023-06-30"
+  validation_end: "2023-12-31"
+  out_of_sample_end: "2024-06-30"
+
+optimization:
+  method: grid
+  n_random_samples: 10000
+  n_optuna_trials: 5000
+  n_workers: 8
+  batch_size: 100
+  objective_weights:
+    sharpe: 0.25
+    sortino: 0.15
+    calmar: 0.15
+    profit_factor: 0.10
+    oos_ratio: 0.10
+    param_stability: 0.10
+    regime_stability: 0.05
+    cost_robustness: 0.05
+    timeframe_stability: 0.05
+    overfitting_penalty: 0.05
+
+risk:
+  max_position_pct: 0.25
+  max_portfolio_exposure: 1.0
+  max_risk_per_trade: 0.02
+  max_daily_loss: 0.05
+  max_drawdown: 0.15
+  max_simultaneous_positions: 3
+  max_order_size: 0.25
+
+validation:
+  walk_forward_windows: 10
+  walk_forward_train_pct: 0.7
+  monte_carlo_simulations: 10000
+  monte_carlo_confidence: 0.95
+  parameter_perturbation_range: 0.3
+  parameter_perturbation_steps: 5
+  cost_stress_multipliers:
+    - 1.0
+    - 1.5
+    - 2.0
+    - 3.0
+
+strategy:
+  families:
+    - trend
+    - momentum
+    - mean_reversion
+    - volatility
+  enabled_strategies: []  # empty = all
+
+bot:
+  mode: paper
+  check_interval_seconds: 60
+  state_file: "data/bot_state.json"
+  log_file: "data/bot.log"
+  notification_enabled: false
+  notification_webhook: ""
