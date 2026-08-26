@@ -208,7 +208,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/help - This message\n\n"
                 f"Mode: <b>PAPER</b>\n"
                 f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Note: Commands are checked every hour."
+                f"Note: Commands are checked every 15 minutes."
             ))
 
         elif text == "/trades":

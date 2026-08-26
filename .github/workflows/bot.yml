@@ -1,8 +1,8 @@
 name: Trading Bot Runner
 on:
   schedule:
-    # Run every hour for faster command responses
-    - cron: '0 * * * *'
+    # Run every 15 minutes for faster command responses
+    - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
