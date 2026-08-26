@@ -45,6 +45,13 @@ jobs:
             data/results/paper_summary.json
           retention-days: 90
 
+      - name: Monitor open positions
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scripts/monitor_positions.py
+
       - name: Restore state from previous run
         uses: actions/cache@v4
         with:

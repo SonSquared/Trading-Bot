@@ -29,44 +29,33 @@ import numpy as np
 from trading_system.strategies import STRATEGY_REGISTRY
 
 
-# --- Strategy Configs (from optimization) ---
+# --- Strategy Configs (from FULL 2022-2026 backtest optimization) ---
+# MACD and ROC Momentum LOSE money on all parameters (overtrades, whipsawed)
+# Bollinger+RSI and RSI_Reversion are the only profitable strategies
 STRATEGIES = {
-    # Trend-following (active during trends)
-    "MACD ETH": {
-        "strategy": "MACD",
-        "pair": "ETH_USDT_USDT",
-        "timeframe": "4h",
-        "weight": 0.25,
-        "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
-    },
-    "ROC_Momentum ETH": {
-        "strategy": "ROC_Momentum",
-        "pair": "ETH_USDT_USDT",
-        "timeframe": "4h",
-        "weight": 0.10,
-        "params": {"roc_period": 10, "signal_period": 5, "use_ema": True, "ema_period": 12},
-    },
-    "MACD BTC": {
-        "strategy": "MACD",
-        "pair": "BTC_USDT_USDT",
-        "timeframe": "4h",
-        "weight": 0.25,
-        "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
-    },
-    # Mean-reversion (active during choppy/ranging markets)
-    "Bollinger_ETH": {
+    "Bollinger+RSI ETH": {
         "strategy": "Bollinger_Reversion",
         "pair": "ETH_USDT_USDT",
         "timeframe": "4h",
-        "weight": 0.20,
-        "params": {"bb_period": 10, "bb_std": 1.5, "rsi_filter": False, "rsi_period": 10, "rsi_oversold": 25, "rsi_overbought": 65, "exit_at_middle": False},
+        "weight": 0.40,
+        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": True, "rsi_period": 14,
+                   "rsi_oversold": 30, "rsi_overbought": 70, "exit_at_middle": True},
     },
-    "Bollinger_BTC": {
+    "Bollinger+RSI BTC": {
         "strategy": "Bollinger_Reversion",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
-        "weight": 0.20,
-        "params": {"bb_period": 10, "bb_std": 1.5, "rsi_filter": False, "rsi_period": 10, "rsi_oversold": 25, "rsi_overbought": 65, "exit_at_middle": False},
+        "weight": 0.35,
+        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": True, "rsi_period": 14,
+                   "rsi_oversold": 30, "rsi_overbought": 70, "exit_at_middle": True},
+    },
+    "RSI_Reversion BTC": {
+        "strategy": "RSI_Reversion",
+        "pair": "BTC_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.25,
+        "params": {"rsi_period": 14, "entry_oversold": 30, "entry_overbought": 70,
+                   "exit_neutral_low": 45, "exit_neutral_high": 55, "use_bb_filter": False},
     },
 }
 
@@ -225,7 +214,8 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/help - This message\n\n"
                 f"Mode: <b>PAPER</b>\n"
                 f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Strategies: MACD + ROC + Bollinger (5 total)\n"
+                f"Strategies: Bollinger+RSI + RSI_Reversion (3 total)\n"
+                f"Backtested: +136% return, 69.7% win rate (2022-2026)\n"
                 f"Note: Commands are checked every run (~15 min)."
             ))
 
