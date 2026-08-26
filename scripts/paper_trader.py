@@ -130,7 +130,7 @@ def get_notifier():
     from trading_system.bot.telegram_notifier import TelegramNotifier
     cfg = load_telegram_config()
     if cfg.get("enabled") and cfg.get("bot_token"):
-        n = TelegramNotifier(bot_token=cfg["bot_token"], chat_id=str(cfg["chat_id"]))
+        n = TelegramNotifier(bot_token=cfg["bot_token"], chat_id=str(cfg["chat_id"]), enabled=True)
         if n.test_connection():
             print("  Telegram: Connected")
             return n
@@ -567,9 +567,10 @@ def main():
     notifier = get_notifier()
 
     # Check for pending Telegram commands before running strategies
-    if notifier:
+    # (uses curl directly, doesn't depend on notifier connection)
+    cfg = load_telegram_config()
+    if cfg.get("bot_token"):
         try:
-            cfg = load_telegram_config()
             handle_telegram_commands(cfg["bot_token"], str(cfg["chat_id"]))
         except Exception as e:
             print(f"  Telegram command check failed: {e}")
