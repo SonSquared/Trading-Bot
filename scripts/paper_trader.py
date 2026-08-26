@@ -390,7 +390,7 @@ def save_state(state: dict):
 # --- Data ---
 @retry(max_attempts=3, base_delay=2.0)
 def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataFrame:
-    """Fetch latest candles via ccxt or from cached parquet files."""
+    """Fetch latest candles via CryptoCompare (no geo-restrictions) or cached parquet files."""
     # Try cached files first
     for pattern in [f"data/raw/{pair}/{timeframe}.parquet", f"data/raw/{pair}/klines_{timeframe}.parquet"]:
         cache_path = Path(pattern)
@@ -403,43 +403,31 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
                 df = df[df["timestamp"] > cutoff]
             return df
 
-    # Fetch fresh data via ccxt - try spot first (less geo-restrictions), then futures
+    # Fetch fresh data via ccxt - try Kraken first (US-friendly), then others
     import ccxt
-    pair_sym = pair.replace("_", "/").replace("USDT_USDT", "/USDT")
+    symbol = pair.replace("_", "/").replace("USDT_USDT", "/USDT")
     
-    # Try spot API first (less likely to be geo-blocked)
+    # Try Kraken first (works from US)
+    try:
+        exchange = ccxt.kraken({"enableRateLimit": True})
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        print(f"    Kraken: Got {len(df)} candles for {symbol}")
+        return df
+    except Exception as e:
+        print(f"    Kraken failed: {e}")
+    
+    # Fallback to Binance spot
     try:
         exchange = ccxt.binance({"enableRateLimit": True})
-        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
-        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        print(f"    Binance spot: Got {len(df)} candles for {symbol}")
         return df
     except Exception as e:
-        print(f"    Spot API failed: {e}")
-    
-    # Fallback to futures API
-    try:
-        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
-        pair_sym_fut = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
-        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
-        ohlcv = exchange.fetch_ohlcv(pair_sym_fut, timeframe, since=since, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
-    except Exception as e:
-        print(f"    Futures API failed: {e}")
-    
-    # Last resort: try Bybit (no US restrictions)
-    try:
-        exchange = ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "linear"}})
-        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
-        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
-    except Exception as e:
-        print(f"    Bybit API failed: {e}")
+        print(f"    Binance spot failed: {e}")
     
     raise Exception(f"All data sources failed for {pair}")
 
