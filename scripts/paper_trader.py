@@ -31,26 +31,42 @@ from trading_system.strategies import STRATEGY_REGISTRY
 
 # --- Strategy Configs (from optimization) ---
 STRATEGIES = {
+    # Trend-following (active during trends)
     "MACD ETH": {
         "strategy": "MACD",
         "pair": "ETH_USDT_USDT",
         "timeframe": "4h",
-        "weight": 0.41,
+        "weight": 0.25,
         "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
     },
     "ROC_Momentum ETH": {
         "strategy": "ROC_Momentum",
         "pair": "ETH_USDT_USDT",
         "timeframe": "4h",
-        "weight": 0.17,
+        "weight": 0.10,
         "params": {"roc_period": 10, "signal_period": 5, "use_ema": True, "ema_period": 12},
     },
     "MACD BTC": {
         "strategy": "MACD",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
-        "weight": 0.43,
+        "weight": 0.25,
         "params": {"fast_period": 8, "slow_period": 21, "signal_period": 5, "use_ema": True},
+    },
+    # Mean-reversion (active during choppy/ranging markets)
+    "Bollinger_ETH": {
+        "strategy": "Bollinger_Reversion",
+        "pair": "ETH_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.20,
+        "params": {"bb_period": 10, "bb_std": 1.5, "rsi_filter": False, "rsi_period": 10, "rsi_oversold": 25, "rsi_overbought": 65, "exit_at_middle": False},
+    },
+    "Bollinger_BTC": {
+        "strategy": "Bollinger_Reversion",
+        "pair": "BTC_USDT_USDT",
+        "timeframe": "4h",
+        "weight": 0.20,
+        "params": {"bb_period": 10, "bb_std": 1.5, "rsi_filter": False, "rsi_period": 10, "rsi_oversold": 25, "rsi_overbought": 65, "exit_at_middle": False},
     },
 }
 
@@ -59,6 +75,7 @@ INITIAL_CAPITAL = 97.0
 FEE_RATE = 0.0005
 SLIPPAGE_RATE = 0.0002
 MAX_POSITION_PCT = 0.35
+MIN_TRADE_USD = 5.0  # Minimum trade size (reduced from 100 for small accounts)
 LOG_DIR = Path("data/results")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRADE_LOG = LOG_DIR / "paper_trades.jsonl"
@@ -208,7 +225,8 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/help - This message\n\n"
                 f"Mode: <b>PAPER</b>\n"
                 f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Note: Commands are checked every 15 minutes."
+                f"Strategies: MACD + ROC + Bollinger (5 total)\n"
+                f"Note: Commands are checked every run (~15 min)."
             ))
 
         elif text == "/trades":
@@ -665,7 +683,7 @@ def main():
                 if desired != 0:
                     equity_now = get_equity(state)
                     size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
-                    if size_usd > 100:
+                    if size_usd > MIN_TRADE_USD:
                         strat_name = "Unknown"
                         for sname, sdata in signals.items():
                             if sdata["pair"] == pair:
@@ -740,18 +758,20 @@ def main():
         try:
             for t in trades_this_run:
                 if t["action"].startswith("OPEN"):
-                    notifier.notify_trade_opened(
+                    side_str = "buy" if "LONG" in t["action"] else "sell"
+                    notifier.notify_trade_open(
                         pair=t["pair"].replace("_", "/"),
-                        side=t["action"].replace("OPEN_", ""),
-                        entry_price=t["price"],
-                        size=t["size_usd"],
+                        side=side_str,
+                        price=t["price"],
+                        amount=t["size_usd"],
                         strategy=t["strategy"],
                         confidence=0.8,
                     )
                 elif t["action"] == "CLOSE":
-                    notifier.notify_trade_closed(
+                    side_str = "buy" if t.get("side", "LONG") == "LONG" else "sell"
+                    notifier.notify_trade_close(
                         pair=t["pair"].replace("_", "/"),
-                        side=t.get("side", "LONG"),
+                        side=side_str,
                         entry_price=t["entry_price"],
                         exit_price=t["exit_price"],
                         pnl_pct=t["pnl_pct"],
