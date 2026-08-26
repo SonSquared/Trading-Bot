@@ -405,7 +405,8 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
 
     # Fetch fresh data via ccxt - try Kraken first (US-friendly), then others
     import ccxt
-    symbol = pair.replace("_", "/").replace("USDT_USDT", "/USDT")
+    # ETH_USDT_USDT -> ETH/USDT
+    symbol = pair.replace("_USDT_USDT", "").replace("_", "/") + "/USDT"
     
     # Try Kraken first (works from US)
     try:
@@ -758,11 +759,23 @@ def main():
                         reason=t["reason"],
                     )
             # Daily summary
+            daily_pnl = state["total_pnl"]
+            daily_pnl_pct = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+            positions_list = []
+            for pair, pos in state["positions"].items():
+                positions_list.append({
+                    "pair": pair.replace("_", "/"),
+                    "side": "long" if pos.get("side") == 1 else "short",
+                    "unrealized_pnl_pct": 0.0,
+                })
             notifier.notify_daily_summary(
                 equity=equity,
-                pnl=state["total_pnl"],
-                positions=state["positions"],
+                daily_pnl=daily_pnl,
+                daily_pnl_pct=daily_pnl_pct,
+                trades_today=len(trades_this_run),
+                open_positions=positions_list,
                 win_rate=wr / 100,
+                total_trades=state["total_trades"],
             )
             print("Telegram notifications sent.")
         except Exception as e:
