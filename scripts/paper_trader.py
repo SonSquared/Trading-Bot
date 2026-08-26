@@ -203,6 +203,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/positions - Open positions\n"
                 "/trades - Recent trade history\n"
                 "/signals - Current strategy signals\n"
+                "/restart - Run strategies now\n"
                 "/dashboard - Bot monitoring dashboard\n"
                 "/help - This message\n\n"
                 f"Mode: <b>PAPER</b>\n"
@@ -308,6 +309,15 @@ def handle_telegram_commands(token: str, chat_id: str):
             except Exception as e:
                 tg_send_message(token, chat_id, f"❌ Error getting signals: {e}")
 
+        elif text == "/restart":
+            print("  -> /restart")
+            tg_send_message(token, chat_id, (
+                "🔄 <b>RESTARTING BOT</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "Strategies are running now...\n"
+                "Results will appear in ~1 minute."
+            ))
+
         elif text == "/dashboard":
             print("  -> /dashboard")
             RUN_LOG = Path("data/results/run_history.jsonl")
@@ -393,15 +403,45 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
                 df = df[df["timestamp"] > cutoff]
             return df
 
-    # Fetch fresh data via ccxt
+    # Fetch fresh data via ccxt - try spot first (less geo-restrictions), then futures
     import ccxt
-    pair_sym = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
-    exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
-    since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
-    ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
-    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
+    pair_sym = pair.replace("_", "/").replace("USDT_USDT", "/USDT")
+    
+    # Try spot API first (less likely to be geo-blocked)
+    try:
+        exchange = ccxt.binance({"enableRateLimit": True})
+        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
+        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        print(f"    Spot API failed: {e}")
+    
+    # Fallback to futures API
+    try:
+        exchange = ccxt.binanceusdm({"enableRateLimit": True, "options": {"defaultType": "future"}})
+        pair_sym_fut = pair.replace("_", "/").replace("USDT_USDT", "USDT:USDT")
+        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
+        ohlcv = exchange.fetch_ohlcv(pair_sym_fut, timeframe, since=since, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        print(f"    Futures API failed: {e}")
+    
+    # Last resort: try Bybit (no US restrictions)
+    try:
+        exchange = ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "linear"}})
+        since = int((datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000)
+        ohlcv = exchange.fetch_ohlcv(pair_sym, timeframe, since=since, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        print(f"    Bybit API failed: {e}")
+    
+    raise Exception(f"All data sources failed for {pair}")
 
 
 # --- Paper Trade Execution ---
