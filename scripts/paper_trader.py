@@ -140,6 +140,221 @@ def get_notifier():
     return None
 
 
+# --- Telegram Command Handling ---
+def tg_api_call(token: str, method: str, params: dict = None) -> dict:
+    """Make a Telegram Bot API call via curl."""
+    import subprocess
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    result = subprocess.run(
+        ["curl", "-s", "-m", "15", "-X", "POST", url,
+         "-H", "Content-Type: application/json",
+         "-d", json.dumps(params or {})],
+        capture_output=True, text=True, timeout=20,
+    )
+    if result.stdout:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            pass
+    return {"ok": False, "description": "No response"}
+
+
+def tg_send_message(token: str, chat_id: str, text: str) -> bool:
+    resp = tg_api_call(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    })
+    return resp.get("ok", False)
+
+
+def handle_telegram_commands(token: str, chat_id: str):
+    """Check for pending Telegram commands and respond to them."""
+    print("\nChecking for Telegram commands...")
+
+    # Get recent updates
+    resp = tg_api_call(token, "getUpdates", {"limit": 10, "timeout": 0})
+    if not resp.get("ok") or not resp.get("result"):
+        print("  No pending commands.")
+        return
+
+    state = load_state()
+    equity = get_equity(state)
+    total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    wr = state["wins"] / state["total_trades"] * 100 if state["total_trades"] > 0 else 0
+
+    for update in resp["result"]:
+        msg = update.get("message", {})
+        text = msg.get("text", "").strip().lower()
+        msg_chat_id = str(msg.get("chat", {}).get("id", ""))
+        update_id = update.get("update_id", 0)
+
+        if msg_chat_id != chat_id:
+            continue
+
+        if text == "/help":
+            print("  -> /help")
+            tg_send_message(token, chat_id, (
+                "🤖 <b>TRADING BOT COMMANDS</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "/status - Full portfolio status\n"
+                "/equity - Quick equity check\n"
+                "/positions - Open positions\n"
+                "/trades - Recent trade history\n"
+                "/signals - Current strategy signals\n"
+                "/dashboard - Bot monitoring dashboard\n"
+                "/help - This message\n\n"
+                f"Mode: <b>PAPER</b>\n"
+                f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
+                f"Note: Commands are checked every 4 hours when the bot runs."
+            ))
+
+        elif text == "/trades":
+            print("  -> /trades")
+            trades = []
+            if TRADE_LOG.exists():
+                with open(TRADE_LOG) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                trades.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+            recent = trades[-10:]
+            if not recent:
+                tg_send_message(token, chat_id, "📋 No trades yet")
+            else:
+                msg_text = "📋 <b>RECENT TRADES</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                for t in reversed(recent):
+                    action = t.get("action", "?")
+                    pair = t.get("pair", "?").replace("_", "/")
+                    if action == "CLOSE":
+                        pnl = t.get("pnl_usd", 0)
+                        emoji = "✅" if pnl >= 0 else "❌"
+                        msg_text += f"\n{emoji} {pair} CLOSED @ ${t.get('exit_price', 0):,.2f}\n"
+                        msg_text += f"  P&L: ${pnl:+.2f} ({t.get('pnl_pct', 0):+.2f}%)\n"
+                    elif action.startswith("OPEN"):
+                        msg_text += f"\n🟢 {pair} {action} @ ${t.get('price', 0):,.2f}\n"
+                tg_send_message(token, chat_id, msg_text)
+
+        elif text == "/equity":
+            print("  -> /equity")
+            tg_send_message(token, chat_id, (
+                f"💰 <b>EQUITY</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Current: <b>${equity:,.2f}</b>\n"
+                f"Return: <b>{total_return:+.2f}%</b>\n"
+                f"Cash: ${state['cash']:,.2f}"
+            ))
+
+        elif text == "/status":
+            print("  -> /status")
+            positions_text = ""
+            for pair, pos in state.get("positions", {}).items():
+                side = "LONG" if pos.get("side") == 1 else "SHORT"
+                emoji = "🟢" if pos.get("side") == 1 else "🔴"
+                positions_text += f"  {emoji} {pair.replace('_', '/')} {side} @ ${pos.get('entry_price', 0):,.2f}\n"
+            if not positions_text:
+                positions_text = "  No open positions\n"
+            tg_send_message(token, chat_id, (
+                f"📋 <b>PORTFOLIO STATUS</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 Equity: <b>${equity:,.2f}</b>\n"
+                f"📈 Return: <b>{total_return:+.2f}%</b>\n"
+                f"💵 Cash: ${state['cash']:,.2f}\n"
+                f"📊 Trades: {state['total_trades']} (W:{state['wins']} / L:{state['losses']})\n"
+                f"🏆 Win Rate: {wr:.1f}%\n"
+                f"📉 Realized P&L: ${state['total_pnl']:+,.2f}\n"
+                f"\n📍 <b>Open Positions:</b>\n{positions_text}"
+                f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+            ))
+
+        elif text == "/positions":
+            print("  -> /positions")
+            positions = state.get("positions", {})
+            if not positions:
+                tg_send_message(token, chat_id, "📍 No open positions")
+            else:
+                msg_text = "📍 <b>OPEN POSITIONS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                for pair, pos in positions.items():
+                    side = "LONG" if pos.get("side") == 1 else "SHORT"
+                    emoji = "🟢" if pos.get("side") == 1 else "🔴"
+                    msg_text += f"\n{emoji} <b>{pair.replace('_', '/')}</b> {side}\n"
+                    msg_text += f"  Entry: ${pos.get('entry_price', 0):,.2f}\n"
+                    msg_text += f"  Size: ${pos.get('size_usd', 0):,.2f}\n"
+                    msg_text += f"  Strategy: {pos.get('strategy', 'Unknown')}\n"
+                tg_send_message(token, chat_id, msg_text)
+
+        elif text == "/signals":
+            print("  -> /signals (running strategies...)")
+            try:
+                from trading_system.strategies import STRATEGY_REGISTRY as SR
+                signals_text = "🧠 <b>CURRENT SIGNALS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                for name, cfg in STRATEGIES.items():
+                    try:
+                        df = fetch_latest(cfg["pair"], cfg["timeframe"])
+                        strat = SR[cfg["strategy"]]
+                        sig = strat.generate_signals(df, cfg["params"])
+                        latest = int(sig.iloc[-1])
+                        price = float(df["close"].iloc[-1])
+                        direction = "LONG" if latest == 1 else "FLAT" if latest == 0 else "SHORT"
+                        emoji = "🟢" if latest == 1 else "⚪" if latest == 0 else "🔴"
+                        signals_text += f"\n{emoji} <b>{name}</b>\n  Signal: {direction} (${price:,.2f})\n"
+                    except Exception as e:
+                        signals_text += f"\n❌ <b>{name}</b>\n  Error: {e}\n"
+                tg_send_message(token, chat_id, signals_text)
+            except Exception as e:
+                tg_send_message(token, chat_id, f"❌ Error getting signals: {e}")
+
+        elif text == "/dashboard":
+            print("  -> /dashboard")
+            RUN_LOG = Path("data/results/run_history.jsonl")
+            runs = []
+            if RUN_LOG.exists():
+                with open(RUN_LOG) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                runs.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+            if not runs:
+                tg_send_message(token, chat_id, "No run history yet.")
+            else:
+                total = len(runs)
+                successful = sum(1 for r in runs if r.get("status") == "success")
+                success_rate = successful / total * 100
+                last = runs[-1]
+                status_color = {"success": "GREEN", "partial": "YELLOW", "failed": "RED"}.get(last.get("status", ""), "UNKNOWN")
+                consec = 0
+                for r in reversed(runs):
+                    if r.get("status") == "failed":
+                        consec += 1
+                    else:
+                        break
+                tg_send_message(token, chat_id, (
+                    f"📊 <b>BOT DASHBOARD</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Status: [{status_color}] <b>{last.get('status', '?').upper()}</b>\n"
+                    f"Runs: {total} ({success_rate:.0f}% success)\n"
+                    f"Failed: {sum(1 for r in runs if r.get('status') == 'failed')}\n"
+                    f"Consec. fails: {consec}\n\n"
+                    f"💰 Equity: <b>${equity:,.2f}</b>\n"
+                    f"📈 Return: <b>{total_return:+.2f}%</b>\n"
+                    f"⏱ Last run: {last.get('duration_seconds', 0):.1f}s\n"
+                    f"🕐 {last.get('timestamp', '?')[:19]}"
+                ))
+
+        elif text.startswith("/"):
+            print(f"  -> Unknown: {text}")
+            tg_send_message(token, chat_id, f"Unknown command: {text}\nType /help for available commands.")
+
+    print("  Command check done.")
+
+
 # --- State Management ---
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -350,6 +565,15 @@ def main():
     print()
 
     notifier = get_notifier()
+
+    # Check for pending Telegram commands before running strategies
+    if notifier:
+        try:
+            cfg = load_telegram_config()
+            handle_telegram_commands(cfg["bot_token"], str(cfg["chat_id"]))
+        except Exception as e:
+            print(f"  Telegram command check failed: {e}")
+
     state = load_state()
 
     equity = get_equity(state)
