@@ -1,8 +1,8 @@
 name: Trading Bot Runner
 on:
   schedule:
-    # Run every 4 hours at minute 0 (matches 4h candle close)
-    - cron: '0 */4 * * *'
+    # Run every hour for faster command responses
+    - cron: '0 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
