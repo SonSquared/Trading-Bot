@@ -1,0 +1,55 @@
+name: Position Tracker
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  workflow_dispatch:
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download latest data
+        env:
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+          EXCHANGE_API_SECRET: ${{ secrets.EXCHANGE_API_SECRET }}
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from trading_system.data.downloader import BinanceDataDownloader
+          d = BinanceDataDownloader()
+          for pair in ['ETH_USDT_USDT', 'BTC_USDT_USDT']:
+              d.download(pair, '4h', '2025-01-01')
+          " 2>&1 || echo "Data download skipped"
+
+      - name: Run paper bot (to update state)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_MODE: paper
+        run: python -u scripts/paper_trader.py 2>&1
+
+      - name: Track positions
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/position_tracker.py 2>&1
+
+      - name: Upload tracker state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracker-state-${{ github.run_number }}
+          path: data/results/position_tracker.json
+          retention-days: 7

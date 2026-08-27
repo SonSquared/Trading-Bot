@@ -1,0 +1,100 @@
+name: Monthly Re-Optimization
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'  # 1st of every month at 6:00 UTC
+  workflow_dispatch:
+
+jobs:
+  reoptimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download full historical data
+        env:
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+          EXCHANGE_API_SECRET: ${{ secrets.EXCHANGE_API_SECRET }}
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from trading_system.data.downloader import BinanceDataDownloader
+          d = BinanceDataDownloader()
+          for pair in ['ETH_USDT_USDT', 'BTC_USDT_USDT']:
+              for tf in ['4h']:
+                  d.download(pair, tf, '2022-01-01')
+          " 2>&1 || echo "Download failed, using cached data"
+
+      - name: Run walk-forward optimization
+        run: python -u scripts/walk_forward_optimize.py 2>&1
+
+      - name: Run walk-forward report
+        run: python -u scripts/walk_forward_report.py 2>&1
+
+      - name: Send optimization summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import json, os, urllib.request
+          from pathlib import Path
+
+          token = os.environ['TELEGRAM_BOT_TOKEN']
+          chat_id = os.environ['TELEGRAM_CHAT_ID']
+
+          # Read results
+          report_path = Path('data/results/walk_forward_report.json')
+          params_path = Path('data/results/bot_strategy_params.json')
+
+          if not report_path.exists():
+              text = '⚠️ Monthly re-optimization FAILED — no report generated'
+          else:
+              with open(report_path) as f:
+                  report = json.load(f)
+              with open(params_path) as f:
+                  params = json.load(f)
+
+              s = report.get('overfitting_summary', {})
+              text = (
+                  f'📊 <b>MONTHLY RE-OPTIMIZATION</b>\n'
+                  f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                  f'Avg IS Return: {report[\"avg_is_return\"]:+.1f}%\n'
+                  f'Avg OOS Return: {report[\"avg_oos_return\"]:+.1f}%\n'
+                  f'IS-OOS Correlation: {report.get(\"is_oos_correlation\", \"N/A\")}\n\n'
+                  f'Overfitting:\n'
+                  f'  ✅ OK: {s.get(\"ok\", 0)}\n'
+                  f'  ⚠️ Caution: {s.get(\"caution\", 0)}\n'
+                  f'  🔴 Warning: {s.get(\"warning\", 0)}\n'
+                  f'  🚨 Danger: {s.get(\"danger\", 0)}\n\n'
+                  f'Updated params:\n'
+              )
+              for key, cfg in params.items():
+                  text += f'  {key}: {cfg[\"params\"]}\n'
+
+          url = f'https://api.telegram.org/bot{token}/sendMessage'
+          data = json.dumps({'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}).encode()
+          req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+          urllib.request.urlopen(req, timeout=10)
+          print('Summary sent to Telegram')
+          " 2>&1
+
+      - name: Upload optimization results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-results-${{ github.run_number }}
+          path: |
+            data/results/optimized_params.json
+            data/results/bot_strategy_params.json
+            data/results/walk_forward_report.json
+          retention-days: 90
