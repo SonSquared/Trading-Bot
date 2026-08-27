@@ -43,17 +43,18 @@ FEE_RATE = 0.0005           # Trading fee rate
 
 
 def send_telegram(text: str):
-    """Send a Telegram message via urllib."""
+    """Send a Telegram message via requests (most reliable cross-platform)."""
     try:
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        data = json.dumps({
-            "chat_id": TG_CHAT,
-            "text": text,
-            "parse_mode": "HTML",
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
-        print(f"  Telegram: sent")
+        import requests as _requests
+        resp = _requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"},
+            timeout=20,
+        )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            print(f"  Telegram: sent")
+            return
+        print(f"  Telegram: API error - {resp.text[:100]}")
     except Exception as e:
         print(f"  Telegram: failed ({e})")
 
@@ -184,7 +185,7 @@ def check_positions():
         last_msg_date = tracker.get("last_no_positions_date")
         if last_msg_date != today:
             send_telegram(
-                f"📊 <b>PORTFOLIO</b>\n"
+                f"PORTFOLIO\n"
                 f"No open positions\n"
                 f"Cash: ${paper['cash']:.2f}\n"
                 f"{now.strftime('%b %d, %H:%M UTC')}"
@@ -228,7 +229,7 @@ def check_positions():
 
         # Build position summary
         side_str = "LONG" if side == 1 else "SHORT"
-        emoji = "🟢" if net_pnl_pct > 0 else "🔴" if net_pnl_pct < 0 else "⚪"
+        emoji = "+" if net_pnl_pct > 0 else "-" if net_pnl_pct < 0 else "="
         
         position_summaries.append({
             "symbol": symbol,
@@ -257,20 +258,26 @@ def check_positions():
                 "last_price": current_price,
             }
 
+    # Calculate live equity = cash + position market values
+    live_equity = paper['cash'] + total_unrealized
+    for pos in position_summaries:
+        # Add back the position cost (cash was debited on open)
+        live_equity += pos['size']
+
     # Only send Telegram if there are updates worth reporting
     if updates_to_send:
-        msg = f"📊 <b>POSITION UPDATE</b>\n"
+        msg = f"POSITION UPDATE\n"
         
         for pos in position_summaries:
             msg += (
-                f"\n{pos['emoji']} <b>{pos['pair']} {pos['side']}</b>\n"
-                f"Entry: ${pos['entry']:,.0f} → Current: ${pos['current']:,.0f}\n"
+                f"\n{pos['pair']} {pos['side']}\n"
+                f"Entry: ${pos['entry']:,.0f} -> Current: ${pos['current']:,.0f}\n"
                 f"P&L: {pos['pnl_pct']:+.1f}% (${pos['pnl_usd']:+.2f})\n"
                 f"Size: ${pos['size']:.2f} | {pos['strategy']}\n"
             )
         
         msg += f"\nTotal P&L: ${total_unrealized:+.2f}\n"
-        msg += f"Equity: ${paper['equity']:.2f}\n"
+        msg += f"Equity: ${live_equity:.2f} (cash ${paper['cash']:.2f} + positions)\n"
         msg += f"{now.strftime('%b %d, %H:%M UTC')}"
         
         send_telegram(msg)

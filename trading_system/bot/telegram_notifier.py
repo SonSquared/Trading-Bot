@@ -29,7 +29,7 @@ class TelegramNotifier:
         self.base_url = self.BASE_URL.format(token=bot_token) if bot_token else ""
 
     def _send_message(self, text: str, parse_mode: str = "HTML") -> bool:
-        """Send a message via Telegram."""
+        """Send a message via Telegram with retry."""
         if not self.enabled or not self.base_url or not self.chat_id:
             return False
 
@@ -40,8 +40,10 @@ class TelegramNotifier:
             "disable_web_page_preview": True,
         }
 
+        # Try curl first (more reliable on Windows/SSL issues)
         try:
-            return self._send_via_curl(payload)
+            if self._send_via_curl(payload):
+                return True
         except Exception:
             pass
 
@@ -50,7 +52,7 @@ class TelegramNotifier:
             resp = requests.post(
                 f"{self.base_url}/sendMessage",
                 json=payload,
-                timeout=15,
+                timeout=20,
             )
             if resp.status_code == 200:
                 logger.info("telegram_sent_requests")
@@ -63,31 +65,46 @@ class TelegramNotifier:
             return False
 
     def _send_via_curl(self, payload: dict) -> bool:
-        """Send via curl subprocess (works around SSL timeout on some Windows setups)."""
+        """Send via curl subprocess with retry (works around SSL timeout on some Windows setups)."""
         import subprocess
         import json as _json
+        import time as _time
 
         url = f"{self.base_url}/sendMessage"
-        result = subprocess.run(
-            [
-                "curl", "-s", "-m", "15",
-                "-X", "POST", url,
-                "-H", "Content-Type: application/json",
-                "-d", _json.dumps(payload),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        for attempt in range(3):
+            try:
+                result = subprocess.run(
+                    [
+                        "curl", "-s", "-m", "20",
+                        "-X", "POST", url,
+                        "-H", "Content-Type: application/json",
+                        "-d", _json.dumps(payload),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
 
-        if result.stdout:
-            data = _json.loads(result.stdout)
-            if data.get("ok"):
-                logger.info("telegram_sent_curl")
-                return True
-            else:
-                logger.warning("telegram_curl_failed", desc=data.get("description", ""))
-                return False
+                if result.stdout:
+                    data = _json.loads(result.stdout)
+                    if data.get("ok"):
+                        logger.info("telegram_sent_curl")
+                        return True
+                    else:
+                        desc = data.get("description", "")
+                        # Don't retry on client errors (4xx)
+                        if "Bad Request" in desc or "Forbidden" in desc:
+                            logger.warning("telegram_curl_bad_request", desc=desc)
+                            return False
+                        logger.warning("telegram_curl_failed", desc=desc)
+                # If no output or failed, retry after delay
+                if attempt < 2:
+                    _time.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning("telegram_curl_error", error=str(e), attempt=attempt)
+                if attempt < 2:
+                    _time.sleep(2 ** attempt)
+
         return False
 
     # ── Trade Alerts ────────────────────────────────────────────
@@ -278,7 +295,7 @@ class TelegramNotifier:
     # ── Health Check ────────────────────────────────────────────
 
     def test_connection(self) -> bool:
-        """Test Telegram bot connection."""
+        """Test Telegram bot connection. Returns True if API responds."""
         if not self.enabled or not self.base_url:
             logger.warning("telegram_not_configured")
             return False
@@ -287,8 +304,8 @@ class TelegramNotifier:
         try:
             import subprocess
             result = subprocess.run(
-                ["curl", "-s", "-m", "15", f"{self.base_url}/getMe"],
-                capture_output=True, text=True, timeout=20,
+                ["curl", "-s", "-m", "10", f"{self.base_url}/getMe"],
+                capture_output=True, text=True, timeout=15,
             )
             if result.stdout:
                 import json as _json
@@ -296,18 +313,18 @@ class TelegramNotifier:
                 if data.get("ok"):
                     bot_name = data["result"].get("username", "unknown")
                     logger.info("telegram_connected_curl", bot=bot_name)
-                    return self._send_message(f"Bot connected: @{bot_name}")
+                    return True
         except Exception:
             pass
 
         # Fallback to requests
         try:
-            resp = requests.get(f"{self.base_url}/getMe", timeout=15)
+            resp = requests.get(f"{self.base_url}/getMe", timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 bot_name = data.get("result", {}).get("username", "unknown")
                 logger.info("telegram_connected_requests", bot=bot_name)
-                return self._send_message(f"Bot connected: @{bot_name}")
+                return True
             else:
                 logger.warning("telegram_connect_failed", status=resp.status_code)
                 return False

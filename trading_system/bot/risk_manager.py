@@ -226,5 +226,5 @@ DEFAULT_RISK_MANAGER = RiskManager(
     trailing_stop_distance_pct=3.0,
     max_position_hours=72,
     max_open_positions=3,
-    max_portfolio_heat_pct=30.0,
+    max_portfolio_heat_pct=50.0,  # 50% allows multiple positions on small accounts ($97)
 )

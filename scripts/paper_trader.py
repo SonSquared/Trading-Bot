@@ -137,10 +137,18 @@ def get_notifier():
     cfg = load_telegram_config()
     if cfg.get("enabled") and cfg.get("bot_token"):
         n = TelegramNotifier(bot_token=cfg["bot_token"], chat_id=str(cfg["chat_id"]), enabled=True)
-        if n.test_connection():
-            print("  Telegram: Connected")
-            return n
-        print("  Telegram: Connection failed")
+        # Try sending a test message directly instead of test_connection
+        # (test_connection can time out on slow connections but individual sends work)
+        try:
+            ok = n._send_message("Bot connected")
+            if ok:
+                print("  Telegram: Connected")
+                return n
+            print("  Telegram: Test message failed, will retry on each send")
+            return n  # Return notifier anyway — individual sends may work
+        except Exception as e:
+            print(f"  Telegram: Test failed ({e}), will retry on each send")
+            return n  # Return anyway — don't gate all notifications on test
     else:
         print("  Telegram: Not configured")
     return None
@@ -397,10 +405,55 @@ def save_state(state: dict):
 
 
 # --- Data ---
+def fetch_fresh_data(pair: str, timeframe: str) -> pd.DataFrame:
+    """Fetch fresh candles via ccxt exchanges. Returns OHLCV with timestamp column."""
+    import ccxt
+    # ETH_USDT_USDT -> ETH/USDT:USDT or ETH/USDT
+    symbol = pair.replace("_USDT_USDT", "/USDT:USDT").replace("_", "/")
+    if not "/USDT" in symbol:
+        symbol = pair.replace("_", "/") + "/USDT"
+    
+    # Try Kraken first (works from US, no geo-blocking)
+    try:
+        exchange = ccxt.kraken({"enableRateLimit": True})
+        spot_symbol = symbol.replace(":USDT", "")  # Kraken doesn't use perp
+        ohlcv = exchange.fetch_ohlcv(spot_symbol, timeframe, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        print(f"    Kraken: Got {len(df)} candles for {spot_symbol}")
+        return df
+    except Exception as e:
+        print(f"    Kraken failed: {e}")
+    
+    # Fallback to Binance
+    try:
+        exchange = ccxt.binance({"enableRateLimit": True})
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        print(f"    Binance: Got {len(df)} candles for {symbol}")
+        return df
+    except Exception as e:
+        print(f"    Binance failed: {e}")
+
+    return None
+
+
 @retry(max_attempts=3, base_delay=2.0)
 def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataFrame:
-    """Fetch latest candles via CryptoCompare (no geo-restrictions) or cached parquet files."""
-    # Try cached files first
+    """Fetch latest candles. Always prefers fresh API data over cached files.
+    
+    Cached parquet files from optimization runs are ONLY used if they have
+    a timestamp column with recent data (< lookback_days old).
+    Stale cache (no timestamps or old data) is ignored.
+    """
+    # ALWAYS fetch fresh data first — this is a trading bot, prices must be live
+    fresh = fetch_fresh_data(pair, timeframe)
+    if fresh is not None and len(fresh) > 0:
+        return fresh
+
+    # Fallback: try cached files, but ONLY if they have recent timestamps
+    print(f"    API failed, trying cached files...")
     for pattern in [f"data/raw/{pair}/{timeframe}.parquet", f"data/raw/{pair}/klines_{timeframe}.parquet"]:
         cache_path = Path(pattern)
         if cache_path.exists():
@@ -410,35 +463,14 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
                     df["timestamp"] = pd.to_datetime(df["timestamp"])
                 cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
                 df = df[df["timestamp"] > cutoff]
-            return df
+                if len(df) > 0:
+                    print(f"    Cache hit: {len(df)} recent candles from {cache_path}")
+                    return df
+                else:
+                    print(f"    Cache stale: no candles after {cutoff}")
+            else:
+                print(f"    Cache rejected: no timestamp column (optimization data, not trading data)")
 
-    # Fetch fresh data via ccxt - try Kraken first (US-friendly), then others
-    import ccxt
-    # ETH_USDT_USDT -> ETH/USDT
-    symbol = pair.replace("_USDT_USDT", "").replace("_", "/") + "/USDT"
-    
-    # Try Kraken first (works from US)
-    try:
-        exchange = ccxt.kraken({"enableRateLimit": True})
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        print(f"    Kraken: Got {len(df)} candles for {symbol}")
-        return df
-    except Exception as e:
-        print(f"    Kraken failed: {e}")
-    
-    # Fallback to Binance spot
-    try:
-        exchange = ccxt.binance({"enableRateLimit": True})
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        print(f"    Binance spot: Got {len(df)} candles for {symbol}")
-        return df
-    except Exception as e:
-        print(f"    Binance spot failed: {e}")
-    
     raise Exception(f"All data sources failed for {pair}")
 
 
@@ -485,7 +517,7 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
     entry_price = pos["entry_price"]
     size_usd = pos["size_usd"]
 
-    fill_price, fee, slip = simulate_fills(price, -side)
+    fill_price, fee, slip = simulate_fills(price, -side, size_usd)
     pnl_pct = (fill_price - entry_price) / entry_price * side
     # Entry fees already reflected in entry fill price and deducted from cash on open
     pnl_usd = size_usd * pnl_pct - fee - slip

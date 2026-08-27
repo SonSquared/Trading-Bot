@@ -1,8 +1,8 @@
 name: Bot Health Check
 on:
   schedule:
-    # Run every hour
-    - cron: '0 * * * *'
+    # Run every 2 hours (reduced from hourly to save actions minutes)
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +20,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const now = new Date();
-            const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+            const twelveHoursAgo = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
             // Get recent workflow runs for the bot
             const runs = await github.rest.actions.listWorkflowRuns({
@@ -28,48 +29,76 @@ jobs:
               repo: context.repo.repo,
               workflow_id: 'bot.yml',
               per_page: 10,
-              created: `>=${sixHoursAgo.toISOString()}`
+              created: `>=${twentyFourHoursAgo.toISOString()}`
             });
 
-            const successfulRuns = runs.data.workflow_runs.filter(r => r.conclusion === 'success');
-            const failedRuns = runs.data.workflow_runs.filter(r => r.conclusion === 'failure');
+            const allRuns = runs.data.workflow_runs;
+            const recentRuns = allRuns.filter(r => new Date(r.created_at) >= twelveHoursAgo);
+            const successfulRuns = recentRuns.filter(r => r.conclusion === 'success');
+            const failedRuns = recentRuns.filter(r => r.conclusion === 'failure');
+            const recentSuccessful = allRuns.filter(r => r.conclusion === 'success');
 
             if (successfulRuns.length > 0) {
-              console.log(`Bot is healthy. Last successful run: ${successfulRuns[0].created_at}`);
-            } else {
-              console.log(`Bot may be unhealthy! No successful runs in the last 6 hours.`);
+              console.log(`Bot is healthy. ${successfulRuns.length} successful runs in last 12h.`);
+              console.log(`Last successful: ${successfulRuns[0].created_at}`);
+            } else if (failedRuns.length > 0) {
+              // Bot ran but FAILED — this is a real issue
+              console.log(`Bot ran but FAILED ${failedRuns.length} times in last 12h.`);
 
-              // Send Telegram alert
               const token = '${{ secrets.TELEGRAM_BOT_TOKEN }}';
               const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
 
               if (token && chatId) {
-                let msg = '🚨 TRADING BOT HEALTH CHECK ALERT\n\n';
+                let msg = 'HEALTH ALERT: Bot runs failed\n\n';
                 msg += `Time: ${now.toISOString()}\n`;
-                msg += `Status: NO SUCCESSFUL RUNS IN 6 HOURS\n\n`;
-
-                if (failedRuns.length > 0) {
-                  msg += `Last failed run: ${failedRuns[0].created_at}\n`;
-                  msg += `Failure reason: ${failedRuns[0].conclusion}\n`;
-                  msg += `View logs: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${failedRuns[0].id}\n`;
-                } else {
-                  msg += 'No workflow runs found in the last 6 hours.\n';
-                  msg += `Expected: runs every 4 hours at :00\n`;
-                  msg += `Check: https://github.com/${context.repo.owner}/${context.repo.repo}/actions\n`;
-                }
-
-                msg += '\n⚡ Action required: Check the bot workflow immediately.';
+                msg += `Failed runs: ${failedRuns.length} in last 12 hours\n\n`;
+                msg += `Last failed: ${failedRuns[0].created_at}\n`;
+                msg += `Reason: ${failedRuns[0].conclusion}\n`;
+                msg += `Logs: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${failedRuns[0].id}\n`;
+                msg += '\nCheck the bot workflow for errors.';
 
                 await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ chat_id: chatId, text: msg })
                 });
-
                 console.log('Health alert sent to Telegram');
-              } else {
-                console.log('Telegram not configured — cannot send alert');
               }
 
-              core.setFailed('Bot health check failed: no successful runs in 6 hours');
+              core.setFailed(`Bot failed: ${failedRuns.length} failed runs in 12h`);
+            } else {
+              // No runs at all — likely cron throttling, not a bot failure
+              // Only alert if the LAST successful run was >24 hours ago
+              if (recentSuccessful.length > 0) {
+                const lastSuccess = new Date(recentSuccessful[0].created_at);
+                const hoursSince = (now - lastSuccess) / (60 * 60 * 1000);
+                console.log(`No runs in last 12h, but last success was ${hoursSince.toFixed(1)}h ago. Likely cron throttling.`);
+
+                // Only alert if it's been more than 24 hours since last success
+                if (hoursSince > 24) {
+                  const token = '${{ secrets.TELEGRAM_BOT_TOKEN }}';
+                  const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
+
+                  if (token && chatId) {
+                    let msg = 'HEALTH ALERT: No bot runs for 24+ hours\n\n';
+                    msg += `Last successful run: ${recentSuccessful[0].created_at}\n`;
+                    msg += `That was ${hoursSince.toFixed(0)} hours ago.\n\n`;
+                    msg += 'This could be GitHub Actions cron throttling.\n';
+                    msg += `Check: https://github.com/${context.repo.owner}/${context.repo.repo}/actions\n`;
+                    msg += 'You can also manually trigger the bot workflow.';
+
+                    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ chat_id: chatId, text: msg })
+                    });
+                  }
+
+                  core.setFailed(`No bot runs for ${hoursSince.toFixed(0)} hours`);
+                } else {
+                  console.log('Likely cron throttling — skipping alert.');
+                }
+              } else {
+                console.log('No successful runs found in history. Bot may need setup.');
+              }
             }
