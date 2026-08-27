@@ -452,7 +452,7 @@ def simulate_fills(price: float, side: int, size_usd: float) -> tuple[float, flo
 
 def open_position(state: dict, pair: str, side: int, price: float, strategy: str, size_usd: float) -> dict:
     fill_price, fee, slip = simulate_fills(price, side, size_usd)
-    state["cash"] -= (fee + slip)
+    state["cash"] -= (size_usd + fee + slip)
     state["positions"][pair] = {
         "side": side,
         "entry_price": fill_price,
@@ -487,7 +487,8 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
 
     fill_price, fee, slip = simulate_fills(price, -side)
     pnl_pct = (fill_price - entry_price) / entry_price * side
-    pnl_usd = size_usd * pnl_pct - fee - slip - pos["fees_paid"]
+    # Entry fees already reflected in entry fill price and deducted from cash on open
+    pnl_usd = size_usd * pnl_pct - fee - slip
 
     state["cash"] += size_usd + pnl_usd
     state["total_trades"] += 1
@@ -585,6 +586,12 @@ def aggregate_signals(signals: dict) -> dict:
 
 
 def get_equity(state: dict) -> float:
+    """Calculate total equity = cash + cost basis of open positions.
+    
+    Since cash was debited by size_usd on open, positions are tracked at cost.
+    We return cash + sum of cost basis (size_usd) which equals the original
+    cash minus fees. Real-time unrealized P&L requires current prices.
+    """
     equity = state["cash"]
     for pair, pos in state["positions"].items():
         equity += pos["size_usd"]

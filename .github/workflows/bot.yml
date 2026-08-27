@@ -26,6 +26,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore state from previous run
+        uses: actions/cache@v4
+        with:
+          path: data/results/paper_state.json
+          key: paper-state-${{ github.run_number }}
+          restore-keys: paper-state-
+
       - name: Run paper trading bot
         env:
           BOT_MODE: paper
@@ -51,10 +58,3 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -u scripts/monitor_positions.py
-
-      - name: Restore state from previous run
-        uses: actions/cache@v4
-        with:
-          path: data/results/paper_state.json
-          key: paper-state-${{ github.run_number }}
-          restore-keys: paper-state-
