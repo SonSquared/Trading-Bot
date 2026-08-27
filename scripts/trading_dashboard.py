@@ -178,7 +178,7 @@ def generate_dashboard():
             <td>{ts}</td>
             <td style="color: {status_color}; font-weight: bold;">{status.upper()}</td>
             <td>{r.get('trades', 0)}</td>
-            <td>{r.get('duration', 0):.1f}s</td>
+            <td>{r.get('duration_seconds', r.get('duration', 0)):.1f}s</td>
             <td>{len(r.get('errors', []))}</td>
         </tr>"""
 
