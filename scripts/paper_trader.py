@@ -33,29 +33,28 @@ from trading_system.strategies import STRATEGY_REGISTRY
 # MACD and ROC Momentum LOSE money on all parameters (overtrades, whipsawed)
 # Bollinger+RSI and RSI_Reversion are the only profitable strategies
 STRATEGIES = {
-    "Bollinger+RSI ETH": {
+    # Walk-forward optimized params (from 2022-2026 rolling window optimization)
+    "BB_RSI ETH": {
         "strategy": "Bollinger_Reversion",
         "pair": "ETH_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.40,
-        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": True, "rsi_period": 14,
-                   "rsi_oversold": 30, "rsi_overbought": 70, "exit_at_middle": True},
+        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": False, "exit_at_middle": False},
     },
-    "Bollinger+RSI BTC": {
+    "BB_RSI BTC": {
         "strategy": "Bollinger_Reversion",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.35,
-        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": True, "rsi_period": 14,
-                   "rsi_oversold": 30, "rsi_overbought": 70, "exit_at_middle": True},
+        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": False, "exit_at_middle": False},
     },
     "RSI_Reversion BTC": {
         "strategy": "RSI_Reversion",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.25,
-        "params": {"rsi_period": 14, "entry_oversold": 30, "entry_overbought": 70,
-                   "exit_neutral_low": 45, "exit_neutral_high": 55, "use_bb_filter": False},
+        "params": {"rsi_period": 14, "entry_oversold": 30, "entry_overbought": 65,
+                   "exit_neutral_low": 45, "exit_neutral_high": 50, "use_bb_filter": False},
     },
 }
 
@@ -214,8 +213,9 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/help - This message\n\n"
                 f"Mode: <b>PAPER</b>\n"
                 f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Strategies: Bollinger+RSI + RSI_Reversion (3 total)\n"
-                f"Backtested: +136% return, 69.7% win rate (2022-2026)\n"
+                f"Strategies: BB_RSI + RSI_Reversion (3 total)\n"
+                f"Optimized: Walk-forward (2022-2026)\n"
+                f"Validated: +64% return, 66% win rate\n"
                 f"Note: Commands are checked every run (~15 min)."
             ))
 
