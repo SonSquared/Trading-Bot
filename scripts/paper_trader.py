@@ -27,6 +27,7 @@ import pandas as pd
 import numpy as np
 
 from trading_system.strategies import STRATEGY_REGISTRY
+from trading_system.bot.risk_manager import RiskManager, DEFAULT_RISK_MANAGER
 
 
 # --- Strategy Configs (from FULL 2022-2026 backtest optimization) ---
@@ -655,6 +656,75 @@ def main():
         print(f"ERROR: Signal aggregation failed: {e}")
     print()
 
+    # --- Risk Management: check existing positions ---
+    risk_manager = DEFAULT_RISK_MANAGER
+    risk_closes = []
+    risk_alerts = []
+    
+    if state["positions"]:
+        # Get current prices for risk checks
+        risk_prices = {}
+        for pair in state["positions"]:
+            for sname, sdata in signals.items():
+                if sdata["pair"] == pair:
+                    risk_prices[pair] = sdata["price"]
+                    break
+        
+        # Update trailing stops
+        state["positions"] = risk_manager.update_trailing_stops(state["positions"], risk_prices)
+        
+        # Check for risk violations
+        risk_closes, risk_alerts = risk_manager.check_positions(
+            state["positions"], risk_prices, get_equity(state), state.get("peak_equity", get_equity(state))
+        )
+        
+        # Execute risk-based closes
+        for close in risk_closes:
+            symbol = close["symbol"]
+            if symbol in state["positions"]:
+                price = risk_prices.get(symbol, state["positions"][symbol]["entry_price"])
+                t = close_position(state, symbol, price, close["reason"])
+                if t:
+                    trades_this_run.append(t)
+                    print(f"  RISK CLOSE {symbol}: {close['reason']} -> P&L ${t['pnl_usd']:+.2f}")
+                    if notifier:
+                        try:
+                            notifier.notify_trade_close(
+                                pair=symbol.replace("_", "/"),
+                                side="buy" if t.get("side", "LONG") == "LONG" else "sell",
+                                entry_price=t["entry_price"],
+                                exit_price=t["exit_price"],
+                                pnl_pct=t["pnl_pct"],
+                                pnl_usd=t["pnl_usd"],
+                                reason=close["reason"],
+                            )
+                        except Exception:
+                            pass
+        
+        # Send risk alerts
+        for alert in risk_alerts:
+            print(f"  RISK ALERT: {alert['message']}")
+            if notifier:
+                try:
+                    msg = risk_manager.format_alert(alert)
+                    cfg = load_telegram_config()
+                    if cfg.get("bot_token"):
+                        tg_send_message(cfg["bot_token"], str(cfg["chat_id"]), msg)
+                except Exception:
+                    pass
+        
+        # Check if new positions can open
+        risk_prices_for_open = {}
+        for sname, sdata in signals.items():
+            risk_prices_for_open[sdata["pair"]] = sdata["price"]
+        can_open, reason = risk_manager.can_open_position(
+            state["positions"], get_equity(state), state["cash"], risk_prices_for_open
+        )
+        if not can_open:
+            print(f"  Risk manager: Cannot open new positions ({reason})")
+    else:
+        can_open = True
+    
     # Execute paper trades
     trades_this_run = []
     for pair, data in portfolio.items():
@@ -670,7 +740,7 @@ def main():
                         trades_this_run.append(t)
                         print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
 
-                if desired != 0:
+                if desired != 0 and can_open:
                     equity_now = get_equity(state)
                     size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
                     if size_usd > MIN_TRADE_USD:
