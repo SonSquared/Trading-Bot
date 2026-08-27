@@ -60,8 +60,33 @@ def generate_dashboard():
                 except:
                     pass
 
-    equity = state.get("equity", 97.0)
     cash = state.get("cash", 97.0)
+    positions = state.get("positions", {})
+    
+    # Calculate unrealized P&L from position tracker
+    position_checks = tracker.get("checks", [])
+    latest_prices = {}
+    for c in position_checks:
+        sym = c.get("symbol", "")
+        latest_prices[sym] = c.get("current_price", 0)
+    
+    unrealized_pnl = 0
+    unrealized_pnl_pct = 0
+    for sym, pos in positions.items():
+        entry = pos.get("entry_price", 0)
+        size = pos.get("size_usd", pos.get("size", 0))
+        side = pos.get("side", 0)
+        current = latest_prices.get(sym, entry)
+        if entry > 0:
+            if side == 1:
+                upnl = size * (current - entry) / entry
+            else:
+                upnl = size * (entry - current) / entry
+            unrealized_pnl += upnl
+    
+    # Real equity = cash + position values + unrealized P&L
+    position_value = sum(p.get("size_usd", p.get("size", 0)) for p in positions.values())
+    equity = cash + position_value + unrealized_pnl
     peak = state.get("peak_equity", equity)
     dd = (peak - equity) / peak * 100 if peak > 0 else 0
     total_trades = state.get("total_trades", 0)
@@ -70,9 +95,8 @@ def generate_dashboard():
     wr = wins / total_trades * 100 if total_trades > 0 else 0
     pnl = state.get("total_pnl", 0)
     ret = (equity - 97.0) / 97.0 * 100
-    positions = state.get("positions", {})
 
-    # Build equity curve data from trades
+    # Build equity curve data from trades + current unrealized
     equity_points = [{"x": 0, "y": 97.0}]
     running_equity = 97.0
     for t in trades:
@@ -81,6 +105,9 @@ def generate_dashboard():
             "x": len(equity_points),
             "y": round(running_equity, 2)
         })
+    # Add current equity (including unrealized) as last point
+    if equity_points:
+        equity_points[-1]["y"] = round(equity, 2)
 
     # Position tracker data for live P&L
     position_checks = tracker.get("checks", [])
@@ -95,7 +122,7 @@ def generate_dashboard():
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Position rows
+    # Position rows with unrealized P&L
     pos_rows = ""
     for symbol, pos in positions.items():
         pair = symbol.replace("_USDT_USDT", "")
@@ -107,19 +134,32 @@ def generate_dashboard():
         entry_time = pos.get("entry_time", "N/A")
         if len(entry_time) > 19:
             entry_time = entry_time[:19]
+        current = latest_prices.get(symbol, entry)
+        if entry > 0 and pos.get("side", 0) == 1:
+            upnl_pct = (current - entry) / entry * 100
+            upnl_usd = size * (current - entry) / entry
+        elif entry > 0:
+            upnl_pct = (entry - current) / entry * 100
+            upnl_usd = size * (entry - current) / entry
+        else:
+            upnl_pct = 0
+            upnl_usd = 0
+        upnl_color = "#22c55e" if upnl_pct > 0 else "#ef4444" if upnl_pct < 0 else "#9ca3af"
 
         pos_rows += f"""
         <tr>
             <td><strong>{pair}</strong></td>
             <td style="color: {side_color}; font-weight: bold;">{side}</td>
             <td>${entry:,.2f}</td>
+            <td>${current:,.2f}</td>
             <td>${size:,.2f}</td>
+            <td style="color: {upnl_color}; font-weight: bold;">{upnl_pct:+.2f}% (${upnl_usd:+.2f})</td>
             <td>{strat}</td>
             <td>{entry_time}</td>
         </tr>"""
 
     if not pos_rows:
-        pos_rows = '<tr><td colspan="6" style="text-align: center; color: #9ca3af;">No open positions</td></tr>'
+        pos_rows = '<tr><td colspan="8" style="text-align: center; color: #9ca3af;">No open positions</td></tr>'
 
     # Trade rows
     trade_rows = ""
@@ -258,7 +298,12 @@ def generate_dashboard():
         <div class="card">
             <div class="label">Cash</div>
             <div class="value">${cash:,.2f}</div>
-            <div class="change neutral">{cash/equity*100:.0f}% of equity</div>
+            <div class="change neutral">{cash/max(equity,1)*100:.0f}% of equity</div>
+        </div>
+        <div class="card">
+            <div class="label">Unrealized P&L</div>
+            <div class="value {'positive' if unrealized_pnl > 0 else 'negative'}">${unrealized_pnl:+,.2f}</div>
+            <div class="change neutral">{len(positions)} open positions</div>
         </div>
         <div class="card">
             <div class="label">Total Trades</div>
@@ -289,7 +334,7 @@ def generate_dashboard():
         <h2>📋 Open Positions ({len(positions)})</h2>
         <table>
             <thead>
-                <tr><th>Pair</th><th>Side</th><th>Entry</th><th>Size</th><th>Strategy</th><th>Opened</th></tr>
+                <tr><th>Pair</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>Unrealized P&L</th><th>Strategy</th><th>Opened</th></tr>
             </thead>
             <tbody>{pos_rows}</tbody>
         </table>
