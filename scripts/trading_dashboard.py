@@ -3,7 +3,6 @@ Trading Dashboard
 
 Generates a comprehensive HTML dashboard showing:
   - Current positions with live P&L
-  - Strategy signals and recent trades
   - Equity curve chart (using Chart.js)
   - Trade history table
   - Risk metrics and drawdown
@@ -27,6 +26,8 @@ if sys.platform == "win32":
 
 RESULTS_DIR = Path("data/results")
 DASHBOARD_FILE = RESULTS_DIR / "dashboard.html"
+INITIAL_CAPITAL = 97.0
+FEE_RATE = 0.0005
 
 
 def load_json(path: Path) -> dict:
@@ -41,6 +42,7 @@ def generate_dashboard():
     state = load_json(RESULTS_DIR / "paper_state.json")
     summary = load_json(RESULTS_DIR / "paper_summary.json")
     tracker = load_json(RESULTS_DIR / "position_tracker.json")
+    
     run_history = []
     if (RESULTS_DIR / "run_history.jsonl").exists():
         with open(RESULTS_DIR / "run_history.jsonl") as f:
@@ -50,7 +52,6 @@ def generate_dashboard():
                 except:
                     pass
 
-    # Trade history
     trades = []
     if (RESULTS_DIR / "paper_trades.jsonl").exists():
         with open(RESULTS_DIR / "paper_trades.jsonl") as f:
@@ -60,69 +61,96 @@ def generate_dashboard():
                 except:
                     pass
 
-    cash = state.get("cash", 97.0)
+    cash = state.get("cash", INITIAL_CAPITAL)
     positions = state.get("positions", {})
     
-    # Calculate unrealized P&L from position tracker
+    # Get latest prices from position tracker
     position_checks = tracker.get("checks", [])
+    tracker_data = tracker.get("position_data", {})
     latest_prices = {}
-    for c in position_checks:
-        sym = c.get("symbol", "")
-        latest_prices[sym] = c.get("current_price", 0)
+    for sym, data in tracker_data.items():
+        latest_prices[sym] = data.get("last_price", 0)
     
+    # Fallback to last check if tracker_data empty
+    if not latest_prices:
+        for c in position_checks:
+            sym = c.get("symbol", "")
+            latest_prices[sym] = c.get("current_price", 0)
+    
+    # Calculate unrealized P&L with fees
     unrealized_pnl = 0
     unrealized_pnl_pct = 0
+    total_position_value = 0
+    
     for sym, pos in positions.items():
         entry = pos.get("entry_price", 0)
         size = pos.get("size_usd", pos.get("size", 0))
         side = pos.get("side", 0)
         current = latest_prices.get(sym, entry)
-        if entry > 0:
-            if side == 1:
-                upnl = size * (current - entry) / entry
-            else:
-                upnl = size * (entry - current) / entry
-            unrealized_pnl += upnl
+        
+        if entry > 0 and current > 0:
+            qty = size / entry
+            if side == 1:  # LONG
+                upnl = qty * (current - entry)
+            else:  # SHORT
+                upnl = qty * (entry - current)
+            
+            # Deduct fees (entry + estimated exit)
+            fees = size * FEE_RATE * 2
+            net_pnl = upnl - fees
+            
+            unrealized_pnl += net_pnl
+            total_position_value += size + net_pnl
     
-    # Real equity = cash + position values + unrealized P&L
-    position_value = sum(p.get("size_usd", p.get("size", 0)) for p in positions.values())
-    equity = cash + position_value + unrealized_pnl
-    peak = state.get("peak_equity", equity)
+    # Real equity = cash + position market value (cost + unrealized)
+    equity = cash + total_position_value
+    peak = state.get("peak_equity", max(equity, INITIAL_CAPITAL))
     dd = (peak - equity) / peak * 100 if peak > 0 else 0
+    
+    # Trade stats
     total_trades = state.get("total_trades", 0)
     wins = state.get("wins", 0)
     losses = state.get("losses", 0)
     wr = wins / total_trades * 100 if total_trades > 0 else 0
-    pnl = state.get("total_pnl", 0)
-    ret = (equity - 97.0) / 97.0 * 100
+    realized_pnl = state.get("total_pnl", 0)
+    total_pnl = realized_pnl + unrealized_pnl
+    ret = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
 
-    # Build equity curve data from trades + current unrealized
-    equity_points = [{"x": 0, "y": 97.0}]
-    running_equity = 97.0
+    # Build equity curve data from trades
+    equity_points = []
+    running_equity = INITIAL_CAPITAL
+    
+    # Add starting point
+    equity_points.append({
+        "time": trades[0].get("timestamp", "")[:16] if trades else "",
+        "equity": INITIAL_CAPITAL,
+    })
+    
     for t in trades:
         running_equity = t.get("cash_after", running_equity)
+        ts = t.get("timestamp", "")[:16]
         equity_points.append({
-            "x": len(equity_points),
-            "y": round(running_equity, 2)
+            "time": ts,
+            "equity": round(running_equity, 2),
         })
-    # Add current equity (including unrealized) as last point
-    if equity_points:
-        equity_points[-1]["y"] = round(equity, 2)
-
-    # Position tracker data for live P&L
-    position_checks = tracker.get("checks", [])
-    tracker_equity = []
-    for c in position_checks:
-        tracker_equity.append({
-            "time": c.get("time", ""),
-            "symbol": c.get("symbol", ""),
-            "price": c.get("current_price", 0),
-            "pnl_pct": c.get("pnl_pct", 0),
-        })
+    
+    # Add current equity as last point
+    equity_points.append({
+        "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M"),
+        "equity": round(equity, 2),
+    })
+    
+    # Deduplicate times (keep last value per unique time)
+    seen_times = {}
+    for p in equity_points:
+        t = p["time"]
+        if t:
+            seen_times[t] = p
+    equity_points = list(seen_times.values()) if seen_times else equity_points
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Position rows with unrealized P&L
+    # Position rows
     pos_rows = ""
     for symbol, pos in positions.items():
         pair = symbol.replace("_USDT_USDT", "")
@@ -131,19 +159,21 @@ def generate_dashboard():
         entry = pos.get("entry_price", 0)
         size = pos.get("size_usd", pos.get("size", 0))
         strat = pos.get("strategy", "Unknown")
-        entry_time = pos.get("entry_time", "N/A")
-        if len(entry_time) > 19:
-            entry_time = entry_time[:19]
+        entry_time = pos.get("entry_time", "N/A")[:19] if pos.get("entry_time") else "N/A"
         current = latest_prices.get(symbol, entry)
-        if entry > 0 and pos.get("side", 0) == 1:
-            upnl_pct = (current - entry) / entry * 100
-            upnl_usd = size * (current - entry) / entry
-        elif entry > 0:
-            upnl_pct = (entry - current) / entry * 100
-            upnl_usd = size * (entry - current) / entry
+        
+        if entry > 0 and current > 0:
+            qty = size / entry
+            if pos.get("side", 0) == 1:
+                upnl_pct = (current - entry) / entry * 100
+                upnl_usd = qty * (current - entry) - size * FEE_RATE * 2
+            else:
+                upnl_pct = (entry - current) / entry * 100
+                upnl_usd = qty * (entry - current) - size * FEE_RATE * 2
         else:
             upnl_pct = 0
             upnl_usd = 0
+        
         upnl_color = "#22c55e" if upnl_pct > 0 else "#ef4444" if upnl_pct < 0 else "#9ca3af"
 
         pos_rows += f"""
@@ -163,18 +193,15 @@ def generate_dashboard():
 
     # Trade rows
     trade_rows = ""
-    for t in reversed(trades[-20:]):  # Last 20 trades
+    for t in reversed(trades[-20:]):
         pair = t.get("pair", "").replace("_USDT_USDT", "")
         action = t.get("action", "")
         price = t.get("price", t.get("exit_price", 0))
-        size = t.get("size_usd", 0)
         pnl_val = t.get("pnl_usd", 0)
         pnl_pct = t.get("pnl_pct", 0)
         reason = t.get("reason", "")
         strategy = t.get("strategy", "")
-        ts = t.get("timestamp", "")
-        if len(ts) > 19:
-            ts = ts[:19]
+        ts = t.get("timestamp", "")[:19]
 
         if action == "CLOSE":
             color = "#22c55e" if pnl_val > 0 else "#ef4444"
@@ -182,7 +209,7 @@ def generate_dashboard():
         <tr>
             <td>{ts}</td>
             <td>{pair}</td>
-            <td><span style="color: #6b7280;">{action}</span></td>
+            <td style="color: #6b7280;">CLOSE</td>
             <td>${price:,.2f}</td>
             <td style="color: {color}; font-weight: bold;">${pnl_val:+.2f}</td>
             <td style="color: {color};">{pnl_pct:+.1f}%</td>
@@ -194,7 +221,7 @@ def generate_dashboard():
         <tr>
             <td>{ts}</td>
             <td>{pair}</td>
-            <td><span style="color: #3b82f6;">{action}</span></td>
+            <td style="color: #3b82f6;">OPEN</td>
             <td>${price:,.2f}</td>
             <td>-</td>
             <td>-</td>
@@ -207,44 +234,32 @@ def generate_dashboard():
 
     # Run history rows
     run_rows = ""
-    for r in reversed(run_history[-10:]):  # Last 10 runs
+    for r in reversed(run_history[-10:]):
         status = r.get("status", "unknown")
         status_color = "#22c55e" if status == "success" else "#f59e0b" if status == "partial" else "#ef4444"
-        ts = r.get("timestamp", "")
-        if len(ts) > 19:
-            ts = ts[:19]
+        ts = r.get("timestamp", "")[:19]
         run_rows += f"""
         <tr>
             <td>{ts}</td>
             <td style="color: {status_color}; font-weight: bold;">{status.upper()}</td>
             <td>{r.get('trades', 0)}</td>
-            <td>{r.get('duration_seconds', r.get('duration', 0)):.1f}s</td>
+            <td>{r.get('duration_seconds', 0):.1f}s</td>
             <td>{len(r.get('errors', []))}</td>
         </tr>"""
 
     if not run_rows:
         run_rows = '<tr><td colspan="5" style="text-align: center; color: #9ca3af;">No run history</td></tr>'
 
-    # Position tracker data
-    tracker_rows = ""
-    for c in reversed(position_checks[-10:]):
-        ts = c.get("time", "")
-        if len(ts) > 19:
-            ts = ts[:19]
-        pair = c.get("symbol", "").replace("_USDT_USDT", "")
-        price = c.get("current_price", 0)
-        pnl_pct = c.get("pnl_pct", 0)
-        color = "#22c55e" if pnl_pct > 0 else "#ef4444" if pnl_pct < 0 else "#9ca3af"
-        tracker_rows += f"""
-        <tr>
-            <td>{ts}</td>
-            <td>{pair}</td>
-            <td>${price:,.2f}</td>
-            <td style="color: {color}; font-weight: bold;">{pnl_pct:+.2f}%</td>
-        </tr>"""
-
-    if not tracker_rows:
-        tracker_rows = '<tr><td colspan="4" style="text-align: center; color: #9ca3af;">No tracker data</td></tr>'
+    # Risk level
+    if dd < 3:
+        risk_level = "LOW"
+        risk_class = "risk-low"
+    elif dd < 7:
+        risk_level = "MEDIUM"
+        risk_class = "risk-med"
+    else:
+        risk_level = "HIGH"
+        risk_class = "risk-high"
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -260,11 +275,11 @@ def generate_dashboard():
         .header {{ text-align: center; margin-bottom: 30px; }}
         .header h1 {{ font-size: 28px; color: #f8fafc; }}
         .header .subtitle {{ color: #94a3b8; margin-top: 5px; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }}
         .card {{ background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }}
         .card .label {{ color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
-        .card .value {{ font-size: 28px; font-weight: 700; margin-top: 5px; }}
-        .card .change {{ font-size: 14px; margin-top: 3px; }}
+        .card .value {{ font-size: 26px; font-weight: 700; margin-top: 5px; }}
+        .card .change {{ font-size: 13px; margin-top: 3px; }}
         .positive {{ color: #22c55e; }}
         .negative {{ color: #ef4444; }}
         .neutral {{ color: #94a3b8; }}
@@ -284,8 +299,8 @@ def generate_dashboard():
 </head>
 <body>
     <div class="header">
-        <h1>🤖 Trading Bot Dashboard</h1>
-        <div class="subtitle">Paper Mode | $97 Starting Capital | Updated: {now}</div>
+        <h1>Trading Bot Dashboard</h1>
+        <div class="subtitle">Paper Mode | ${INITIAL_CAPITAL:.0f} Starting Capital | Updated: {now}</div>
     </div>
 
     <!-- Key Metrics -->
@@ -303,38 +318,31 @@ def generate_dashboard():
         <div class="card">
             <div class="label">Unrealized P&L</div>
             <div class="value {'positive' if unrealized_pnl > 0 else 'negative'}">${unrealized_pnl:+,.2f}</div>
-            <div class="change neutral">{len(positions)} open positions</div>
+            <div class="change neutral">{len(positions)} open position{'s' if len(positions) != 1 else ''}</div>
         </div>
         <div class="card">
-            <div class="label">Total Trades</div>
+            <div class="label">Total P&L</div>
+            <div class="value {'positive' if total_pnl > 0 else 'negative'}">${total_pnl:+,.2f}</div>
+            <div class="change neutral">Realized + Unrealized</div>
+        </div>
+        <div class="card">
+            <div class="label">Trades</div>
             <div class="value">{total_trades}</div>
-            <div class="change neutral">{wins}W / {losses}L</div>
-        </div>
-        <div class="card">
-            <div class="label">Win Rate</div>
-            <div class="value {'positive' if wr > 50 else 'negative'}">{wr:.1f}%</div>
-            <div class="change neutral">Target: 60%+</div>
-        </div>
-        <div class="card">
-            <div class="label">Realized P&L</div>
-            <div class="value {'positive' if pnl > 0 else 'negative'}">${pnl:+.2f}</div>
-            <div class="change neutral">From {total_trades} trades</div>
+            <div class="change neutral">{wins}W / {losses}L ({wr:.0f}% win)</div>
         </div>
         <div class="card">
             <div class="label">Max Drawdown</div>
             <div class="value {'positive' if dd < 5 else 'negative'}">{dd:.1f}%</div>
-            <div class="change {'risk-low' if dd < 5 else 'risk-med' if dd < 10 else 'risk-high'}">
-                {'LOW RISK' if dd < 5 else 'MEDIUM' if dd < 10 else 'HIGH RISK'}
-            </div>
+            <div class="change {risk_class}">{risk_level} RISK</div>
         </div>
     </div>
 
     <!-- Open Positions -->
     <div class="section">
-        <h2>📋 Open Positions ({len(positions)})</h2>
+        <h2>Open Positions ({len(positions)})</h2>
         <table>
             <thead>
-                <tr><th>Pair</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>Unrealized P&L</th><th>Strategy</th><th>Opened</th></tr>
+                <tr><th>Pair</th><th>Side</th><th>Entry</th><th>Current</th><th>Size</th><th>P&L</th><th>Strategy</th><th>Opened</th></tr>
             </thead>
             <tbody>{pos_rows}</tbody>
         </table>
@@ -342,26 +350,15 @@ def generate_dashboard():
 
     <!-- Equity Curve -->
     <div class="section">
-        <h2>📈 Equity Curve</h2>
+        <h2>Equity Curve</h2>
         <div class="chart-container">
             <canvas id="equityChart"></canvas>
         </div>
     </div>
 
-    <!-- Position Tracker -->
-    <div class="section">
-        <h2>🔍 Position Tracker (Last 10 Checks)</h2>
-        <table>
-            <thead>
-                <tr><th>Time</th><th>Pair</th><th>Price</th><th>P&L</th></tr>
-            </thead>
-            <tbody>{tracker_rows}</tbody>
-        </table>
-    </div>
-
     <!-- Trade History -->
     <div class="section">
-        <h2>📊 Trade History (Last 20)</h2>
+        <h2>Trade History (Last 20)</h2>
         <table>
             <thead>
                 <tr><th>Time</th><th>Pair</th><th>Action</th><th>Price</th><th>P&L ($)</th><th>P&L (%)</th><th>Reason</th><th>Strategy</th></tr>
@@ -372,7 +369,7 @@ def generate_dashboard():
 
     <!-- Bot Runs -->
     <div class="section">
-        <h2>⚙️ Bot Runs (Last 10)</h2>
+        <h2>Bot Runs (Last 10)</h2>
         <table>
             <thead>
                 <tr><th>Time</th><th>Status</th><th>Trades</th><th>Duration</th><th>Errors</th></tr>
@@ -388,21 +385,29 @@ def generate_dashboard():
     <script>
         const ctx = document.getElementById('equityChart').getContext('2d');
         const equityData = {json.dumps(equity_points)};
+        
+        // Create labels from timestamps
+        const labels = equityData.map(d => {{
+            if (!d.time) return '';
+            const dt = new Date(d.time + 'Z');
+            return dt.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric' }});
+        }});
+        
         new Chart(ctx, {{
             type: 'line',
             data: {{
-                labels: equityData.map(d => d.x),
+                labels: labels,
                 datasets: [{{
                     label: 'Equity ($)',
-                    data: equityData.map(d => d.y),
+                    data: equityData.map(d => d.equity),
                     borderColor: '#3b82f6',
                     backgroundColor: 'rgba(59, 130, 246, 0.1)',
                     fill: true,
                     tension: 0.3,
                     pointRadius: equityData.length > 50 ? 0 : 3,
                 }}, {{
-                    label: 'Starting ($97)',
-                    data: equityData.map(() => 97),
+                    label: 'Starting (${INITIAL_CAPITAL:.0f})',
+                    data: equityData.map(() => {INITIAL_CAPITAL}),
                     borderColor: '#6b7280',
                     borderDash: [5, 5],
                     pointRadius: 0,
@@ -413,10 +418,20 @@ def generate_dashboard():
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {{
-                    legend: {{ labels: {{ color: '#94a3b8' }} }}
+                    legend: {{ labels: {{ color: '#94a3b8' }} }},
+                    tooltip: {{
+                        callbacks: {{
+                            label: function(context) {{
+                                return '$' + context.parsed.y.toFixed(2);
+                            }}
+                        }}
+                    }}
                 }},
                 scales: {{
-                    x: {{ display: false }},
+                    x: {{
+                        ticks: {{ color: '#94a3b8', maxTicksLimit: 10 }},
+                        grid: {{ color: '#1e293b' }}
+                    }},
                     y: {{
                         ticks: {{ color: '#94a3b8', callback: v => '$' + v.toFixed(0) }},
                         grid: {{ color: '#1e293b' }}

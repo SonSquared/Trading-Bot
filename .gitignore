@@ -44,3 +44,4 @@ configs/bot_live.yaml
 data/models/*.pkl
 data/bot_state.json
 .freebuff/
+run_logs.zip

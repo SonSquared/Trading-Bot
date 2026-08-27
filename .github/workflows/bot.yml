@@ -26,11 +26,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Create results directory
+        run: mkdir -p data/results
+
       - name: Restore state from previous run
         uses: actions/cache@v4
         with:
           path: data/results/paper_state.json
-          key: paper-state-${{ github.run_number }}
+          key: paper-state-v${{ github.run_number }}
           restore-keys: paper-state-
 
       - name: Run paper trading bot
@@ -41,6 +44,13 @@ jobs:
           TELEGRAM_ENABLED: 'true'
         run: python -u scripts/paper_trader.py
 
+      - name: Monitor open positions
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scripts/position_tracker.py
+
       - name: Upload trade log & state
         if: always()
         uses: actions/upload-artifact@v4
@@ -50,11 +60,5 @@ jobs:
             data/results/paper_trades.jsonl
             data/results/paper_state.json
             data/results/paper_summary.json
+            data/results/run_history.jsonl
           retention-days: 90
-
-      - name: Monitor open positions
-        if: always()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -u scripts/monitor_positions.py

@@ -585,16 +585,30 @@ def aggregate_signals(signals: dict) -> dict:
     return results
 
 
-def get_equity(state: dict) -> float:
-    """Calculate total equity = cash + cost basis of open positions.
+def get_equity(state: dict, prices: dict = None) -> float:
+    """Calculate total equity = cash + position market value.
     
     Since cash was debited by size_usd on open, positions are tracked at cost.
-    We return cash + sum of cost basis (size_usd) which equals the original
-    cash minus fees. Real-time unrealized P&L requires current prices.
+    If current prices are provided, we calculate unrealized P&L for accuracy.
+    Otherwise, we use cost basis (size_usd) as fallback.
     """
     equity = state["cash"]
     for pair, pos in state["positions"].items():
-        equity += pos["size_usd"]
+        if prices and pair in prices:
+            current = prices[pair]
+            entry = pos["entry_price"]
+            side = pos.get("side", 0)
+            size_usd = pos["size_usd"]
+            if entry > 0:
+                qty = size_usd / entry
+                if side == 1:  # LONG
+                    equity += qty * current
+                else:  # SHORT
+                    equity += qty * (2 * entry - current)  # Entry + profit
+            else:
+                equity += size_usd
+        else:
+            equity += pos["size_usd"]
     return equity
 
 
@@ -663,26 +677,43 @@ def main():
         print(f"ERROR: Signal aggregation failed: {e}")
     print()
 
+    # Initialize trades tracking BEFORE risk management
+    trades_this_run = []
+
     # --- Risk Management: check existing positions ---
     risk_manager = DEFAULT_RISK_MANAGER
     risk_closes = []
     risk_alerts = []
     
+    # Build price dict for all positions (for risk checks and equity calculation)
+    current_prices = {}
+    for pair in list(state["positions"].keys()) + list(portfolio.keys()):
+        if pair in portfolio:
+            current_prices[pair] = portfolio[pair]["price"]
+        elif pair in signals:
+            current_prices[pair] = signals[pair]["price"]
+        else:
+            # Fetch price directly if not in signals
+            try:
+                for name, cfg in STRATEGIES.items():
+                    if cfg["pair"] == pair:
+                        df = fetch_latest(cfg["pair"], cfg["timeframe"])
+                        if df is not None and len(df) > 0:
+                            current_prices[pair] = float(df["close"].iloc[-1])
+                            break
+            except Exception:
+                pass
+    
     if state["positions"]:
-        # Get current prices for risk checks
-        risk_prices = {}
-        for pair in state["positions"]:
-            for sname, sdata in signals.items():
-                if sdata["pair"] == pair:
-                    risk_prices[pair] = sdata["price"]
-                    break
+        risk_prices = current_prices
         
         # Update trailing stops
         state["positions"] = risk_manager.update_trailing_stops(state["positions"], risk_prices)
         
-        # Check for risk violations
+        # Check for risk violations (use equity with current prices)
+        equity_now = get_equity(state, risk_prices)
         risk_closes, risk_alerts = risk_manager.check_positions(
-            state["positions"], risk_prices, get_equity(state), state.get("peak_equity", get_equity(state))
+            state["positions"], risk_prices, equity_now, state.get("peak_equity", equity_now)
         )
         
         # Execute risk-based closes
@@ -733,7 +764,6 @@ def main():
         can_open = True
     
     # Execute paper trades
-    trades_this_run = []
     for pair, data in portfolio.items():
         try:
             current_pos = state["positions"].get(pair)
@@ -769,8 +799,8 @@ def main():
             traceback.print_exc()
     print()
 
-    # Update peak equity and drawdown
-    equity = get_equity(state)
+    # Update peak equity and drawdown (use current prices for accuracy)
+    equity = get_equity(state, current_prices)
     if equity > state.get("peak_equity", 0):
         state["peak_equity"] = equity
     dd = (state["peak_equity"] - equity) / state["peak_equity"] if state["peak_equity"] > 0 else 0
@@ -818,11 +848,10 @@ def main():
 
     # Log run
     status = "success" if not errors else "partial" if trades_this_run else "failed"
-    log_run(status, duration, len(trades_this_run), errors, equity)
-
-    # Send Telegram
+    log_run(status, duration, len(trades_this_run), errors, equity)    # Send Telegram notifications
     if notifier:
         try:
+            # Send trade notifications
             for t in trades_this_run:
                 if t["action"].startswith("OPEN"):
                     side_str = "buy" if "LONG" in t["action"] else "sell"
@@ -833,37 +862,60 @@ def main():
                         amount=t["size_usd"],
                         strategy=t["strategy"],
                         confidence=0.8,
+                        mode="paper",
                     )
                 elif t["action"] == "CLOSE":
-                    side_str = "buy" if t.get("side", "LONG") == "LONG" else "sell"
                     notifier.notify_trade_close(
                         pair=t["pair"].replace("_", "/"),
-                        side=side_str,
+                        side="buy" if t.get("side", "LONG") == "LONG" else "sell",
                         entry_price=t["entry_price"],
                         exit_price=t["exit_price"],
                         pnl_pct=t["pnl_pct"],
                         pnl_usd=t["pnl_usd"],
                         reason=t["reason"],
+                        mode="paper",
                     )
-            # Daily summary
-            daily_pnl = state["total_pnl"]
-            daily_pnl_pct = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+            
+            # Calculate unrealized P&L for summary
+            total_unrealized = 0
             positions_list = []
             for pair, pos in state["positions"].items():
+                current = current_prices.get(pair, pos["entry_price"])
+                entry = pos["entry_price"]
+                side = pos.get("side", 0)
+                size = pos["size_usd"]
+                if entry > 0:
+                    qty = size / entry
+                    if side == 1:
+                        upnl = qty * (current - entry)
+                    else:
+                        upnl = qty * (entry - current)
+                    total_unrealized += upnl
+                    upnl_pct = upnl / size * 100
+                else:
+                    upnl = 0
+                    upnl_pct = 0
                 positions_list.append({
                     "pair": pair.replace("_", "/"),
-                    "side": "long" if pos.get("side") == 1 else "short",
-                    "unrealized_pnl_pct": 0.0,
+                    "side": "long" if side == 1 else "short",
+                    "entry_price": entry,
+                    "current_price": current,
+                    "unrealized_pnl_pct": upnl_pct,
+                    "unrealized_pnl_usd": upnl,
+                    "strategy": pos.get("strategy", "Unknown"),
                 })
-            notifier.notify_daily_summary(
-                equity=equity,
-                daily_pnl=daily_pnl,
-                daily_pnl_pct=daily_pnl_pct,
-                trades_today=len(trades_this_run),
-                open_positions=positions_list,
-                win_rate=wr / 100,
-                total_trades=state["total_trades"],
-            )
+            
+            # Send summary (only if there are positions or trades)
+            if positions_list or trades_this_run:
+                notifier.notify_daily_summary(
+                    equity=equity,
+                    daily_pnl=state["total_pnl"] + total_unrealized,
+                    daily_pnl_pct=(equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100,
+                    trades_today=len(trades_this_run),
+                    open_positions=positions_list,
+                    win_rate=wr,
+                    total_trades=state["total_trades"],
+                )
             print("Telegram notifications sent.")
         except Exception as e:
             print(f"Telegram failed: {e}")

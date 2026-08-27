@@ -1,20 +1,19 @@
 """
-24-Hour Position Tracker
+Position Tracker
 
-Monitors open paper trading positions by fetching current prices every
-15 minutes for 24 hours. Reports:
-  - Entry vs current price
-  - Unrealized P&L
-  - Price change since last check
-  - Session high/low
+Monitors open paper trading positions by fetching current prices.
+Sends updates only when:
+  - Position just opened (first check)
+  - P&L changes by more than 1%
+  - 4 hours since last update
+  - Position was closed
 
-Can run as a GitHub Actions workflow (cron every 15 min) or locally.
+Does NOT spam Telegram on every 15-minute check.
 """
 
 import os
 import sys
 import json
-import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
@@ -37,12 +36,14 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8783971913:AAH1ZdvtKvHjgVuC2c9LLebYnM-o8gBMQaY")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5421461006")
 
-# How often to alert on big moves (in %)
-ALERT_THRESHOLD_PCT = 2.0
+# Alert thresholds
+PNL_CHANGE_THRESHOLD = 1.0  # Alert if P&L changes by 1%
+UPDATE_INTERVAL_HOURS = 4   # Send update at most every 4 hours
+FEE_RATE = 0.0005           # Trading fee rate
 
 
 def send_telegram(text: str):
-    """Send a Telegram message via curl (bypasses SSL issues)."""
+    """Send a Telegram message via urllib."""
     try:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
         data = json.dumps({
@@ -60,7 +61,6 @@ def send_telegram(text: str):
 def fetch_price(symbol: str) -> float | None:
     """Fetch current price from Kraken API."""
     # Convert pair format: ETH_USDT_USDT -> ETHUSDT
-    # Remove trailing _USDT_USDT and convert underscores
     if symbol.endswith("_USDT_USDT"):
         clean = symbol[:-len("_USDT_USDT")].replace("_", "") + "USDT"
     elif symbol.endswith("_USDT"):
@@ -123,13 +123,47 @@ def load_tracker_state() -> dict:
     if TRACKER_FILE.exists():
         with open(TRACKER_FILE) as f:
             return json.load(f)
-    return {"checks": [], "alerts": []}
+    return {"last_update": None, "position_data": {}}
 
 
 def save_tracker_state(state: dict):
     """Save tracker state."""
     with open(TRACKER_FILE, "w") as f:
         json.dump(state, f, indent=2, default=str)
+
+
+def should_update(tracker: dict, symbol: str, current_pnl_pct: float) -> tuple[bool, str]:
+    """Determine if we should send an update for this position.
+    
+    Returns (should_send, reason).
+    """
+    now = datetime.now(timezone.utc)
+    pos_data = tracker.get("position_data", {}).get(symbol, {})
+    
+    if not pos_data:
+        return True, "new_position"
+    
+    last_update_str = pos_data.get("last_update")
+    if not last_update_str:
+        return True, "first_check"
+    
+    try:
+        last_update = datetime.fromisoformat(last_update_str)
+        hours_since = (now - last_update).total_seconds() / 3600
+    except:
+        return True, "parse_error"
+    
+    # Check time interval
+    if hours_since >= UPDATE_INTERVAL_HOURS:
+        return True, f"interval_{hours_since:.0f}h"
+    
+    # Check P&L change
+    last_pnl = pos_data.get("last_pnl_pct", 0)
+    pnl_change = abs(current_pnl_pct - last_pnl)
+    if pnl_change >= PNL_CHANGE_THRESHOLD:
+        return True, f"pnl_change_{pnl_change:.1f}%"
+    
+    return False, "no_change"
 
 
 def check_positions():
@@ -145,25 +179,23 @@ def check_positions():
 
     if not positions:
         print("  No open positions.")
-        # Only send alert once per day if no positions
+        # Only send "no positions" once per day
         today = now.strftime("%Y-%m-%d")
-        if not any(a.get("date") == today for a in tracker.get("alerts", [])):
+        last_msg_date = tracker.get("last_no_positions_date")
+        if last_msg_date != today:
             send_telegram(
-                f"📊 <b>POSITION CHECK</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"No open positions.\n"
+                f"📊 <b>PORTFOLIO</b>\n"
+                f"No open positions\n"
                 f"Cash: ${paper['cash']:.2f}\n"
-                f"Date: {now.strftime('%b %d, %H:%M UTC')}"
+                f"{now.strftime('%b %d, %H:%M UTC')}"
             )
-            tracker.setdefault("alerts", []).append({
-                "date": today, "time": now.isoformat(), "type": "no_positions"
-            })
+            tracker["last_no_positions_date"] = today
             save_tracker_state(tracker)
         return
 
-    lines = []
+    updates_to_send = []
     total_unrealized = 0.0
-    alerts_to_send = []
+    position_summaries = []
 
     for symbol, pos in positions.items():
         pair_label = symbol.replace("_USDT_USDT", "")
@@ -175,113 +207,80 @@ def check_positions():
         current_price = fetch_price(symbol)
         if current_price is None:
             print(f"  {pair_label}: Could not fetch price")
-            lines.append(f"  {pair_label}: ⚠️ Price unavailable")
             continue
 
         # Calculate P&L
         if side == 1:  # LONG
-            pnl_pct = (current_price - entry_price) / entry_price * 100
             qty = size_usd / entry_price
+            pnl_pct = (current_price - entry_price) / entry_price * 100
             pnl_usd = qty * (current_price - entry_price)
         else:  # SHORT
-            pnl_pct = (entry_price - current_price) / entry_price * 100
             qty = size_usd / entry_price
+            pnl_pct = (entry_price - current_price) / entry_price * 100
             pnl_usd = qty * (entry_price - current_price)
 
-        total_unrealized += pnl_usd
+        # Deduct fees for net P&L
+        total_fees = size_usd * FEE_RATE * 2  # Entry + exit fees
+        net_pnl_usd = pnl_usd - total_fees
+        net_pnl_pct = net_pnl_usd / size_usd * 100
 
-        # Price change since last check
-        checks = tracker.get("checks", [])
-        last_price = None
-        for c in reversed(checks):
-            if c.get("symbol") == symbol:
-                last_price = c.get("current_price")
-                break
+        total_unrealized += net_pnl_usd
 
-        price_change = ""
-        if last_price:
-            chg = (current_price - last_price) / last_price * 100
-            arrow = "📈" if chg > 0 else "📉" if chg < 0 else "➡️"
-            price_change = f"\n    {arrow} {chg:+.2f}% since last check"
-
-        # Session high/low
-        symbol_checks = [c for c in checks if c.get("symbol") == symbol]
-        session_high = max([c["current_price"] for c in symbol_checks] + [current_price])
-        session_low = min([c["current_price"] for c in symbol_checks] + [current_price])
-
-        emoji = "🟢" if pnl_pct > 0 else "🔴"
+        # Build position summary
         side_str = "LONG" if side == 1 else "SHORT"
-
-        line = (
-            f"  {emoji} {pair_label} {side_str} ({strategy})\n"
-            f"    Entry: ${entry_price:,.2f} → Current: ${current_price:,.2f}\n"
-            f"    P&L: {pnl_pct:+.2f}% (${pnl_usd:+.2f})\n"
-            f"    Size: ${size_usd:.2f}{price_change}\n"
-            f"    Session: ${session_low:,.2f} — ${session_high:,.2f}"
-        )
-        print(line)
-        lines.append(line)
-
-        # Save check
-        tracker.setdefault("checks", []).append({
+        emoji = "🟢" if net_pnl_pct > 0 else "🔴" if net_pnl_pct < 0 else "⚪"
+        
+        position_summaries.append({
             "symbol": symbol,
-            "time": now.isoformat(),
-            "current_price": current_price,
-            "entry_price": entry_price,
-            "pnl_pct": pnl_pct,
-            "pnl_usd": pnl_usd,
-            "side": side,
+            "pair": pair_label,
+            "side": side_str,
+            "emoji": emoji,
+            "entry": entry_price,
+            "current": current_price,
+            "size": size_usd,
+            "pnl_pct": net_pnl_pct,
+            "pnl_usd": net_pnl_usd,
+            "strategy": strategy,
         })
 
-        # Alert on big moves
-        if abs(pnl_pct) >= ALERT_THRESHOLD_PCT:
-            last_alert_pct = 0
-            for c in reversed(symbol_checks):
-                if c.get("alerted"):
-                    last_alert_pct = c.get("pnl_pct", 0)
-                    break
-            if abs(pnl_pct - last_alert_pct) >= ALERT_THRESHOLD_PCT:
-                alerts_to_send.append({
-                    "symbol": symbol,
-                    "pair_label": pair_label,
-                    "side": side_str,
-                    "pnl_pct": pnl_pct,
-                    "pnl_usd": pnl_usd,
-                    "current_price": current_price,
-                })
+        # Check if we should send an update
+        should_send, reason = should_update(tracker, symbol, net_pnl_pct)
+        print(f"  {pair_label} {side_str}: ${entry_price:,.0f} -> ${current_price:,.0f} "
+              f"({net_pnl_pct:+.1f}%, ${net_pnl_usd:+.2f}) [{reason}]")
+        
+        if should_send:
+            updates_to_send.append((symbol, reason))
+            # Update tracker data
+            tracker.setdefault("position_data", {})[symbol] = {
+                "last_update": now.isoformat(),
+                "last_pnl_pct": net_pnl_pct,
+                "last_price": current_price,
+            }
 
-    # Send summary
-    summary = (
-        f"📊 <b>POSITION UPDATE</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        + "\n".join(lines) + "\n\n"
-        f"💰 Total Unrealized: <b>${total_unrealized:+.2f}</b>\n"
-        f"💵 Paper Equity: ${paper['equity']:.2f}\n"
-        f"📅 {now.strftime('%b %d, %H:%M UTC')}"
-    )
-    send_telegram(summary)
+    # Only send Telegram if there are updates worth reporting
+    if updates_to_send:
+        msg = f"📊 <b>POSITION UPDATE</b>\n"
+        
+        for pos in position_summaries:
+            msg += (
+                f"\n{pos['emoji']} <b>{pos['pair']} {pos['side']}</b>\n"
+                f"Entry: ${pos['entry']:,.0f} → Current: ${pos['current']:,.0f}\n"
+                f"P&L: {pos['pnl_pct']:+.1f}% (${pos['pnl_usd']:+.2f})\n"
+                f"Size: ${pos['size']:.2f} | {pos['strategy']}\n"
+            )
+        
+        msg += f"\nTotal P&L: ${total_unrealized:+.2f}\n"
+        msg += f"Equity: ${paper['equity']:.2f}\n"
+        msg += f"{now.strftime('%b %d, %H:%M UTC')}"
+        
+        send_telegram(msg)
+    else:
+        print("  No significant changes — skipping Telegram update.")
 
-    # Send big move alerts
-    for alert in alerts_to_send:
-        emoji = "🚀" if alert["pnl_pct"] > 0 else "⚠️"
-        send_telegram(
-            f"{emoji} <b>BIG MOVE: {alert['pair_label']} {alert['side']}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"P&L: {alert['pnl_pct']:+.2f}% (${alert['pnl_usd']:+.2f})\n"
-            f"Price: ${alert['current_price']:,.2f}\n"
-            f"Threshold: {ALERT_THRESHOLD_PCT}% reached"
-        )
-        for c in tracker.get("checks", []):
-            if c.get("symbol") == alert["symbol"]:
-                c["alerted"] = True
-
-    # Clean up old checks (keep last 24 hours = ~96 checks)
-    cutoff = (now - timedelta(hours=24)).isoformat()
-    tracker["checks"] = [c for c in tracker.get("checks", []) if c.get("time", "") > cutoff]
-    tracker["alerts"] = [a for a in tracker.get("alerts", []) if a.get("date", "") >= (now - timedelta(days=7)).strftime("%Y-%m-%d")]
-
+    # Update tracker state
+    tracker["last_update"] = now.isoformat()
     save_tracker_state(tracker)
-    print(f"\n  Check saved. Total checks in buffer: {len(tracker['checks'])}")
+    print(f"\n  Check saved.")
 
 
 if __name__ == "__main__":
