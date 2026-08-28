@@ -40,6 +40,8 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5421461006")
 PNL_CHANGE_THRESHOLD = 1.0  # Alert if P&L changes by 1%
 UPDATE_INTERVAL_HOURS = 4   # Send update at most every 4 hours
 FEE_RATE = 0.0005           # Trading fee rate
+PRICE_ALERT_THRESHOLD = 2.0 # Alert if price moves >2% in 1 hour
+PRICE_ALERT_COOLDOWN_HOURS = 1  # Don't spam — 1 alert per symbol per hour
 
 
 def send_telegram(text: str):
@@ -167,6 +169,80 @@ def should_update(tracker: dict, symbol: str, current_pnl_pct: float) -> tuple[b
     return False, "no_change"
 
 
+def check_price_alerts(tracker: dict, symbol: str, pair_label: str, current_price: float) -> list[str]:
+    """Check if price moved more than 2% in the last hour.
+    
+    Returns list of alert messages to send.
+    """
+    now = datetime.now(timezone.utc)
+    alerts = []
+    
+    # Maintain price history (last 4 hours, sampled every 15 min = 16 entries max)
+    price_history = tracker.setdefault("price_history", {}).setdefault(symbol, [])
+    price_history.append({"time": now.isoformat(), "price": current_price})
+    
+    # Keep only last 4 hours of data
+    cutoff = now - timedelta(hours=4)
+    price_history[:] = [p for p in price_history
+                        if datetime.fromisoformat(p["time"]) > cutoff]
+    
+    # Check for >2% move in the last hour
+    one_hour_ago = now - timedelta(hours=1)
+    oldest_in_hour = None
+    for p in price_history:
+        try:
+            t = datetime.fromisoformat(p["time"])
+            if t <= now and (oldest_in_hour is None or t > oldest_in_hour_time):
+                oldest_in_hour = p
+                oldest_in_hour_time = t
+        except Exception:
+            continue
+    
+    # Actually, just find the price closest to 1 hour ago
+    target_time = now - timedelta(hours=1)
+    best_match = None
+    best_diff = timedelta(hours=99)
+    for p in price_history:
+        try:
+            t = datetime.fromisoformat(p["time"])
+            diff = abs(t - target_time)
+            if diff < best_diff:
+                best_diff = diff
+                best_match = p
+        except Exception:
+            continue
+    
+    if best_match and best_diff < timedelta(minutes=30):
+        old_price = best_match["price"]
+        if old_price > 0:
+            pct_change = (current_price - old_price) / old_price * 100
+            
+            if abs(pct_change) >= PRICE_ALERT_THRESHOLD:
+                # Check cooldown
+                last_alert_key = f"last_price_alert_{symbol}"
+                last_alert_str = tracker.get(last_alert_key)
+                can_alert = True
+                if last_alert_str:
+                    try:
+                        last_alert = datetime.fromisoformat(last_alert_str)
+                        if (now - last_alert).total_seconds() < PRICE_ALERT_COOLDOWN_HOURS * 3600:
+                            can_alert = False
+                    except Exception:
+                        pass
+                
+                if can_alert:
+                    direction = "UP" if pct_change > 0 else "DOWN"
+                    emoji = "+" if pct_change > 0 else ""
+                    alerts.append(
+                        f"PRICE ALERT: {pair_label} {direction} {emoji}{pct_change:+.1f}%\n"
+                        f"${old_price:,.2f} -> ${current_price:,.2f}\n"
+                        f"(1h change)"
+                    )
+                    tracker[last_alert_key] = now.isoformat()
+    
+    return alerts
+
+
 def check_positions():
     """Main tracker function — called every 15 minutes."""
     now = datetime.now(timezone.utc)
@@ -214,6 +290,12 @@ def check_positions():
         if current_price is None:
             print(f"  {pair_label}: Could not fetch price")
             continue
+
+        # Check for price alerts (>2% move in 1 hour)
+        price_alerts = check_price_alerts(tracker, symbol, pair_label, current_price)
+        for alert in price_alerts:
+            print(f"  ALERT: {alert}")
+            send_telegram(alert)
 
         # Calculate P&L
         if side == 1:  # LONG

@@ -215,6 +215,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/equity - Quick equity check\n"
                 "/balance - Live equity with prices\n"
                 "/positions - Open positions\n"
+                "/pnl - Detailed position P&L\n"
                 "/trades - Recent trade history\n"
                 "/signals - Current strategy signals\n"
                 "/restart - Run strategies now\n"
@@ -308,6 +309,56 @@ def handle_telegram_commands(token: str, chat_id: str):
                     msg_text += f"  Entry: ${pos.get('entry_price', 0):,.2f}\n"
                     msg_text += f"  Size: ${pos.get('size_usd', 0):,.2f}\n"
                     msg_text += f"  Strategy: {pos.get('strategy', 'Unknown')}\n\n"
+                tg_send_message(token, chat_id, msg_text)
+
+        elif text == "/pnl":
+            print("  -> /pnl")
+            positions = state.get("positions", {})
+            if not positions:
+                tg_send_message(token, chat_id, "No open positions")
+            else:
+                # Fetch live prices for accurate P&L
+                live_prices = {}
+                for pair in positions.keys():
+                    try:
+                        for name, cfg in STRATEGIES.items():
+                            if cfg["pair"] == pair:
+                                df = fetch_latest(cfg["pair"], cfg["timeframe"])
+                                if df is not None and len(df) > 0:
+                                    live_prices[pair] = float(df["close"].iloc[-1])
+                                    break
+                    except Exception:
+                        pass
+                
+                msg_text = "POSITION P&L\n\n"
+                total_pnl = 0.0
+                for pair, pos in positions.items():
+                    side = "LONG" if pos.get("side") == 1 else "SHORT"
+                    entry = pos.get("entry_price", 0)
+                    size = pos.get("size_usd", 0)
+                    strategy = pos.get("strategy", "Unknown")
+                    current = live_prices.get(pair, entry)
+                    
+                    if entry > 0:
+                        qty = size / entry
+                        if pos.get("side", 0) == 1:  # LONG
+                            pnl_usd = qty * (current - entry)
+                        else:  # SHORT
+                            pnl_usd = qty * (entry - current)
+                        pnl_pct = pnl_usd / size * 100 if size > 0 else 0
+                    else:
+                        pnl_usd = 0
+                        pnl_pct = 0
+                    
+                    total_pnl += pnl_usd
+                    emoji = "+" if pnl_usd >= 0 else ""
+                    msg_text += f"{format_pair(pair)} {side}\n"
+                    msg_text += f"  Entry: ${entry:,.2f} -> ${current:,.2f}\n"
+                    msg_text += f"  P&L: {pnl_pct:+.1f}% (${pnl_usd:+.2f})\n"
+                    msg_text += f"  Size: ${size:.2f} | {strategy}\n\n"
+                
+                msg_text += f"Total: ${total_pnl:+.2f}\n"
+                msg_text += f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
                 tg_send_message(token, chat_id, msg_text)
 
         elif text == "/signals":
