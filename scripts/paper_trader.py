@@ -210,22 +210,19 @@ def handle_telegram_commands(token: str, chat_id: str):
         if text == "/help":
             print("  -> /help")
             tg_send_message(token, chat_id, (
-                "🤖 <b>TRADING BOT COMMANDS</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "/status - Full portfolio status\n"
+                "TRADING BOT COMMANDS\n\n"
+                "/status - Portfolio status\n"
                 "/equity - Quick equity check\n"
                 "/positions - Open positions\n"
                 "/trades - Recent trade history\n"
                 "/signals - Current strategy signals\n"
                 "/restart - Run strategies now\n"
-                "/dashboard - Bot monitoring dashboard\n"
+                "/dashboard - Bot monitoring\n"
                 "/help - This message\n\n"
-                f"Mode: <b>PAPER</b>\n"
-                f"Initial: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Strategies: BB_RSI + RSI_Reversion (3 total)\n"
-                f"Optimized: Walk-forward (2022-2026)\n"
-                f"Validated: +64% return, 66% win rate\n"
-                f"Note: Commands are checked every run (~15 min)."
+                f"Mode: PAPER\n"
+                f"Capital: ${INITIAL_CAPITAL:,.0f}\n"
+                f"Strategies: BB_RSI + RSI_Reversion\n"
+                f"Run: every ~15 min"
             ))
 
         elif text == "/trades":
@@ -242,28 +239,26 @@ def handle_telegram_commands(token: str, chat_id: str):
                                 pass
             recent = trades[-10:]
             if not recent:
-                tg_send_message(token, chat_id, "📋 No trades yet")
+                tg_send_message(token, chat_id, "No trades yet")
             else:
-                msg_text = "📋 <b>RECENT TRADES</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-                for t in reversed(recent):
+                msg_text = "RECENT TRADES\n\n"
+                for t in reversed(recent[-5:]):  # Last 5 trades only
                     action = t.get("action", "?")
-                    pair = t.get("pair", "?").replace("_", "/")
+                    pair = format_pair(t.get("pair", "?"))
                     if action == "CLOSE":
                         pnl = t.get("pnl_usd", 0)
-                        emoji = "✅" if pnl >= 0 else "❌"
-                        msg_text += f"\n{emoji} {pair} CLOSED @ ${t.get('exit_price', 0):,.2f}\n"
-                        msg_text += f"  P&L: ${pnl:+.2f} ({t.get('pnl_pct', 0):+.2f}%)\n"
+                        emoji = "+" if pnl >= 0 else ""
+                        msg_text += f"{emoji} {pair} CLOSED ${t.get('exit_price', 0):,.2f}"
+                        msg_text += f" P&L: ${pnl:+.2f} ({t.get('pnl_pct', 0):+.2f}%)\n"
                     elif action.startswith("OPEN"):
-                        msg_text += f"\n🟢 {pair} {action} @ ${t.get('price', 0):,.2f}\n"
+                        msg_text += f"+ {pair} OPEN ${t.get('price', 0):,.2f} ({action})\n"
                 tg_send_message(token, chat_id, msg_text)
 
         elif text == "/equity":
             print("  -> /equity")
             tg_send_message(token, chat_id, (
-                f"💰 <b>EQUITY</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Current: <b>${equity:,.2f}</b>\n"
-                f"Return: <b>{total_return:+.2f}%</b>\n"
+                f"EQUITY\n"
+                f"${equity:,.2f} ({total_return:+.1f}%)\n"
                 f"Cash: ${state['cash']:,.2f}"
             ))
 
@@ -272,44 +267,41 @@ def handle_telegram_commands(token: str, chat_id: str):
             positions_text = ""
             for pair, pos in state.get("positions", {}).items():
                 side = "LONG" if pos.get("side") == 1 else "SHORT"
-                emoji = "🟢" if pos.get("side") == 1 else "🔴"
-                positions_text += f"  {emoji} {pair.replace('_', '/')} {side} @ ${pos.get('entry_price', 0):,.2f}\n"
+                emoji = "+" if pos.get("side") == 1 else ""
+                positions_text += f"{emoji} {format_pair(pair)} {side} @ ${pos.get('entry_price', 0):,.2f}\n"
             if not positions_text:
-                positions_text = "  No open positions\n"
+                positions_text = "No open positions\n"
             tg_send_message(token, chat_id, (
-                f"📋 <b>PORTFOLIO STATUS</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 Equity: <b>${equity:,.2f}</b>\n"
-                f"📈 Return: <b>{total_return:+.2f}%</b>\n"
-                f"💵 Cash: ${state['cash']:,.2f}\n"
-                f"📊 Trades: {state['total_trades']} (W:{state['wins']} / L:{state['losses']})\n"
-                f"🏆 Win Rate: {wr:.1f}%\n"
-                f"📉 Realized P&L: ${state['total_pnl']:+,.2f}\n"
-                f"\n📍 <b>Open Positions:</b>\n{positions_text}"
-                f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+                f"PORTFOLIO\n\n"
+                f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
+                f"Cash: ${state['cash']:,.2f}\n"
+                f"Trades: {state['total_trades']} ({wr:.0f}% win)\n"
+                f"P&L: ${state['total_pnl']:+,.2f}\n\n"
+                f"Open:\n{positions_text}"
+                f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
             ))
 
         elif text == "/positions":
             print("  -> /positions")
             positions = state.get("positions", {})
             if not positions:
-                tg_send_message(token, chat_id, "📍 No open positions")
+                tg_send_message(token, chat_id, "No open positions")
             else:
-                msg_text = "📍 <b>OPEN POSITIONS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                msg_text = "OPEN POSITIONS\n\n"
                 for pair, pos in positions.items():
                     side = "LONG" if pos.get("side") == 1 else "SHORT"
-                    emoji = "🟢" if pos.get("side") == 1 else "🔴"
-                    msg_text += f"\n{emoji} <b>{pair.replace('_', '/')}</b> {side}\n"
+                    emoji = "+" if pos.get("side") == 1 else ""
+                    msg_text += f"{emoji} {format_pair(pair)} {side}\n"
                     msg_text += f"  Entry: ${pos.get('entry_price', 0):,.2f}\n"
                     msg_text += f"  Size: ${pos.get('size_usd', 0):,.2f}\n"
-                    msg_text += f"  Strategy: {pos.get('strategy', 'Unknown')}\n"
+                    msg_text += f"  Strategy: {pos.get('strategy', 'Unknown')}\n\n"
                 tg_send_message(token, chat_id, msg_text)
 
         elif text == "/signals":
             print("  -> /signals (running strategies...)")
             try:
                 from trading_system.strategies import STRATEGY_REGISTRY as SR
-                signals_text = "🧠 <b>CURRENT SIGNALS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                signals_text = "CURRENT SIGNALS\n\n"
                 for name, cfg in STRATEGIES.items():
                     try:
                         df = fetch_latest(cfg["pair"], cfg["timeframe"])
@@ -318,21 +310,19 @@ def handle_telegram_commands(token: str, chat_id: str):
                         latest = int(sig.iloc[-1])
                         price = float(df["close"].iloc[-1])
                         direction = "LONG" if latest == 1 else "FLAT" if latest == 0 else "SHORT"
-                        emoji = "🟢" if latest == 1 else "⚪" if latest == 0 else "🔴"
-                        signals_text += f"\n{emoji} <b>{name}</b>\n  Signal: {direction} (${price:,.2f})\n"
+                        emoji = "+" if latest == 1 else "=" if latest == 0 else ""
+                        signals_text += f"{emoji} {name}: {direction} (${price:,.2f})\n"
                     except Exception as e:
-                        signals_text += f"\n❌ <b>{name}</b>\n  Error: {e}\n"
+                        signals_text += f"! {name}: Error - {e}\n"
                 tg_send_message(token, chat_id, signals_text)
             except Exception as e:
-                tg_send_message(token, chat_id, f"❌ Error getting signals: {e}")
+                tg_send_message(token, chat_id, f"Error getting signals: {e}")
 
         elif text == "/restart":
             print("  -> /restart")
             tg_send_message(token, chat_id, (
-                "🔄 <b>RESTARTING BOT</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "Strategies are running now...\n"
-                "Results will appear in ~1 minute."
+                "Strategies running now...\n"
+                "Results in ~1 minute."
             ))
 
         elif text == "/dashboard":
@@ -363,30 +353,42 @@ def handle_telegram_commands(token: str, chat_id: str):
                     else:
                         break
                 tg_send_message(token, chat_id, (
-                    f"📊 <b>BOT DASHBOARD</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"Status: [{status_color}] <b>{last.get('status', '?').upper()}</b>\n"
+                    f"BOT DASHBOARD\n\n"
+                    f"Status: {last.get('status', '?').upper()}\n"
                     f"Runs: {total} ({success_rate:.0f}% success)\n"
                     f"Failed: {sum(1 for r in runs if r.get('status') == 'failed')}\n"
                     f"Consec. fails: {consec}\n\n"
-                    f"💰 Equity: <b>${equity:,.2f}</b>\n"
-                    f"📈 Return: <b>{total_return:+.2f}%</b>\n"
-                    f"⏱ Last run: {last.get('duration_seconds', 0):.1f}s\n"
-                    f"🕐 {last.get('timestamp', '?')[:19]}"
+                    f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
+                    f"Last run: {last.get('duration_seconds', 0):.1f}s\n"
+                    f"{last.get('timestamp', '?')[:19]}"
                 ))
 
         elif text.startswith("/"):
             print(f"  -> Unknown: {text}")
-            tg_send_message(token, chat_id, f"Unknown command: {text}\nType /help for available commands.")
+            tg_send_message(token, chat_id, f"Unknown command: {text}\nType /help for commands.")
 
     print("  Command check done.")
 
 
 # --- State Management ---
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        with open(STATE_FILE) as f:
-            return json.load(f)
+def format_pair(pair: str) -> str:
+    """Convert internal pair format to display format.
+    
+    ETH_USDT_USDT -> ETH/USDT
+    BTC_USDT_USDT -> BTC/USDT
+    """
+    # Extract the base asset from compound pair names
+    if "_USDT_USDT" in pair:
+        base = pair.replace("_USDT_USDT", "")
+        return f"{base}/USDT"
+    if "_USDT" in pair:
+        base = pair.replace("_USDT", "")
+        return f"{base}/USDT"
+    return pair.replace("_", "/")
+
+
+def _fresh_state() -> dict:
+    """Create a clean state with correct initial capital."""
     return {
         "cash": INITIAL_CAPITAL,
         "positions": {},
@@ -397,6 +399,57 @@ def load_state() -> dict:
         "peak_equity": INITIAL_CAPITAL,
         "max_drawdown": 0.0,
     }
+
+
+def load_state() -> dict:
+    """Load state from disk, with validation against stale cached data.
+    
+    GitHub Actions cache can restore old state files from previous code
+    versions (e.g. when INITIAL_CAPITAL was $10,000). This detects
+    mismatches and resets to avoid wildly wrong position sizes.
+    """
+    if not STATE_FILE.exists():
+        return _fresh_state()
+    
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, KeyError):
+        print("  WARNING: Corrupt state file, resetting")
+        return _fresh_state()
+    
+    # Validate equity is plausible for a $97 account
+    cash = state.get("cash", 0)
+    positions = state.get("positions", {})
+    total_position_value = sum(p.get("size_usd", 0) for p in positions.values())
+    apparent_equity = cash + total_position_value
+    
+    # HARD RULE: If cash or apparent equity is >5x the initial capital, 
+    # it's a stale cache from a previous code version. Reset immediately.
+    # This catches ALL cases: whether there are trades, positions, or not.
+    MAX_PLAUSIBLE_EQUITY = INITIAL_CAPITAL * 5  # $485 max for a $97 account
+    
+    if cash > MAX_PLAUSIBLE_EQUITY:
+        print(f"  WARNING: cash=${cash:.2f} exceeds max plausible ${MAX_PLAUSIBLE_EQUITY:.2f}")
+        print(f"  WARNING: Stale cache from previous code version — resetting")
+        return _fresh_state()
+    
+    if apparent_equity > MAX_PLAUSIBLE_EQUITY:
+        print(f"  WARNING: equity=${apparent_equity:.2f} exceeds max plausible ${MAX_PLAUSIBLE_EQUITY:.2f}")
+        print(f"  WARNING: Stale cache — resetting")
+        return _fresh_state()
+    
+    if state.get("peak_equity", 0) > MAX_PLAUSIBLE_EQUITY:
+        print(f"  WARNING: peak_equity=${state['peak_equity']:.2f} exceeds max plausible")
+        print(f"  WARNING: Stale cache — resetting")
+        return _fresh_state()
+    
+    # Also check if cash is negative (should never happen)
+    if cash < 0:
+        print(f"  WARNING: cash=${cash:.2f} is negative — resetting")
+        return _fresh_state()
+    
+    return state
 
 
 def save_state(state: dict):
@@ -759,9 +812,8 @@ def main():
                     print(f"  RISK CLOSE {symbol}: {close['reason']} -> P&L ${t['pnl_usd']:+.2f}")
                     if notifier:
                         try:
-                            notifier.notify_trade_close(
-                                pair=symbol.replace("_", "/"),
-                                side="buy" if t.get("side", "LONG") == "LONG" else "sell",
+                            notifier.notify_trade_close(                pair=format_pair(symbol),
+                side="buy" if t.get("side", "LONG") == "LONG" else "sell",
                                 entry_price=t["entry_price"],
                                 exit_price=t["exit_price"],
                                 pnl_pct=t["pnl_pct"],
@@ -811,7 +863,11 @@ def main():
 
                 if desired != 0 and can_open:
                     equity_now = get_equity(state)
-                    size_usd = min(equity_now * MAX_POSITION_PCT, state["cash"] * 0.95)
+                    size_usd = min(
+                        equity_now * MAX_POSITION_PCT,
+                        state["cash"] * 0.95,
+                        INITIAL_CAPITAL * 0.50,  # Never risk more than 50% of initial capital per trade
+                    )
                     if size_usd > MIN_TRADE_USD:
                         strat_name = "Unknown"
                         for sname, sdata in signals.items():
@@ -880,7 +936,9 @@ def main():
 
     # Log run
     status = "success" if not errors else "partial" if trades_this_run else "failed"
-    log_run(status, duration, len(trades_this_run), errors, equity)    # Send Telegram notifications
+    log_run(status, duration, len(trades_this_run), errors, equity)
+
+    # Send Telegram notifications
     if notifier:
         try:
             # Send trade notifications
@@ -888,7 +946,7 @@ def main():
                 if t["action"].startswith("OPEN"):
                     side_str = "buy" if "LONG" in t["action"] else "sell"
                     notifier.notify_trade_open(
-                        pair=t["pair"].replace("_", "/"),
+                        pair=format_pair(t["pair"]),
                         side=side_str,
                         price=t["price"],
                         amount=t["size_usd"],
@@ -898,7 +956,7 @@ def main():
                     )
                 elif t["action"] == "CLOSE":
                     notifier.notify_trade_close(
-                        pair=t["pair"].replace("_", "/"),
+                        pair=format_pair(t["pair"]),
                         side="buy" if t.get("side", "LONG") == "LONG" else "sell",
                         entry_price=t["entry_price"],
                         exit_price=t["exit_price"],
@@ -928,7 +986,7 @@ def main():
                     upnl = 0
                     upnl_pct = 0
                 positions_list.append({
-                    "pair": pair.replace("_", "/"),
+                    "pair": format_pair(pair),
                     "side": "long" if side == 1 else "short",
                     "entry_price": entry,
                     "current_price": current,
@@ -937,8 +995,9 @@ def main():
                     "strategy": pos.get("strategy", "Unknown"),
                 })
             
-            # Send summary (only if there are positions or trades)
-            if positions_list or trades_this_run:
+            # Send summary only on actual trades or significant equity changes
+            equity_changed = abs(equity - INITIAL_CAPITAL) > INITIAL_CAPITAL * 0.01  # >1% change
+            if trades_this_run or equity_changed:
                 notifier.notify_daily_summary(
                     equity=equity,
                     daily_pnl=state["total_pnl"] + total_unrealized,

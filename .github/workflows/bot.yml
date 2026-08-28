@@ -33,8 +33,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/results/paper_state.json
-          key: paper-state-v${{ github.run_number }}
-          restore-keys: paper-state-
+          key: paper-state-v2-${{ github.run_number }}
+          restore-keys: paper-state-v2-
+      # Clear stale state from previous code versions (e.g. $10,000 accounts)
+      - name: Validate state file
+        run: |
+          python -c "
+          import json, sys
+          try:
+              with open('data/results/paper_state.json') as f:
+                  state = json.load(f)
+              cash = state.get('cash', 0)
+              if cash > 500:  # A $97 account should never have >$500 cash
+                  print(f'Clearing stale state: cash={cash}')
+                  import os
+                  os.remove('data/results/paper_state.json')
+          except Exception:
+              pass
+          "
 
       - name: Run paper trading bot
         env:
