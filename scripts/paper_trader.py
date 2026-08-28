@@ -213,6 +213,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "TRADING BOT COMMANDS\n\n"
                 "/status - Portfolio status\n"
                 "/equity - Quick equity check\n"
+                "/balance - Live equity with prices\n"
                 "/positions - Open positions\n"
                 "/trades - Recent trade history\n"
                 "/signals - Current strategy signals\n"
@@ -254,12 +255,24 @@ def handle_telegram_commands(token: str, chat_id: str):
                         msg_text += f"+ {pair} OPEN ${t.get('price', 0):,.2f} ({action})\n"
                 tg_send_message(token, chat_id, msg_text)
 
-        elif text == "/equity":
-            print("  -> /equity")
+        elif text in ("/equity", "/balance"):
+            print(f"  -> {text}")
+            # Calculate live equity with current prices
+            live_prices = {}
+            for pair in state.get("positions", {}).keys():
+                try:
+                    for name, cfg in STRATEGIES.items():
+                        if cfg["pair"] == pair:
+                            df = fetch_latest(cfg["pair"], cfg["timeframe"])
+                            if df is not None and len(df) > 0:
+                                live_prices[pair] = float(df["close"].iloc[-1])
+                                break
+                except Exception:
+                    pass
+            live_equity = get_equity(state, live_prices) if live_prices else equity
+            live_return = (live_equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
             tg_send_message(token, chat_id, (
-                f"EQUITY\n"
-                f"${equity:,.2f} ({total_return:+.1f}%)\n"
-                f"Cash: ${state['cash']:,.2f}"
+                f"${live_equity:,.2f} ({live_return:+.1f}%) | Cash: ${state['cash']:,.2f}"
             ))
 
         elif text == "/status":
