@@ -346,27 +346,36 @@ def check_positions():
             }
 
     # Calculate live equity = cash + position market values
-    live_equity = paper['cash'] + total_unrealized
+    # Cash was debited by (size_usd + entry_fee) on open.
+    # When position closes, cash gets back size_usd + pnl_usd.
+    # So position value = size_usd + unrealized_pnl.
+    # Both LONG and SHORT use the same formula.
+    live_equity = paper['cash']
     for pos in position_summaries:
-        # Add back the position cost (cash was debited on open)
-        live_equity += pos['size']
+        if pos['entry'] > 0:
+            qty = pos['size'] / pos['entry']
+            if pos['side'] == 'LONG':
+                unrealized_pnl = qty * (pos['current'] - pos['entry'])
+            else:
+                unrealized_pnl = qty * (pos['entry'] - pos['current'])
+            live_equity += pos['size'] + unrealized_pnl
 
     # Only send Telegram if there are updates worth reporting
     if updates_to_send:
-        # Build concise position updates
-        lines = []
-        for pos in position_summaries:
-            emoji = "+" if pos['pnl_pct'] > 0 else "" if pos['pnl_pct'] == 0 else ""
-            lines.append(
-                f"{pos['pair']} {pos['side']}\n"
-                f"  ${pos['entry']:,.0f} -> ${pos['current']:,.0f}\n"
-                f"  P&L: {pos['pnl_pct']:+.1f}% (${pos['pnl_usd']:+.2f})\n"
-                f"  Size: ${pos['size']:.2f} | {pos['strategy']}"
-            )
+        # Build consolidated position + equity message
+        msg = f"POSITION UPDATE\n"
+        msg += f"{'='*30}\n"
         
-        msg = f"POSITION UPDATE\n\n" + "\n\n".join(lines)
-        msg += f"\n\nEquity: ${live_equity:.2f}"
-        msg += f"\n{now.strftime('%b %d, %H:%M UTC')}"
+        total_pnl = 0
+        for pos in position_summaries:
+            msg += f"{pos['pair']} {pos['side']}\n"
+            msg += f"  Entry: ${pos['entry']:,.2f} -> Now: ${pos['current']:,.2f}\n"
+            msg += f"  P&L: {pos['pnl_pct']:+.1f}% (${pos['pnl_usd']:+.2f}) | ${pos['size']:.2f}\n"
+            msg += f"  Strategy: {pos['strategy']}\n"
+            total_pnl += pos['pnl_usd']
+        
+        msg += f"\nEquity: ${live_equity:.2f} | P&L: ${total_pnl:+.2f}\n"
+        msg += f"{now.strftime('%b %d, %H:%M UTC')}"
         
         send_telegram(msg)
     else:

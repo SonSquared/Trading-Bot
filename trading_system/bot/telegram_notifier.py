@@ -121,11 +121,10 @@ class TelegramNotifier:
     ) -> bool:
         """Send trade open notification."""
         direction = "LONG" if side == "buy" else "SHORT"
-        emoji = "🟢" if side == "buy" else "🔴"
         mode_tag = "[PAPER]" if mode == "paper" else "[LIVE]"
 
         msg = (
-            f"{emoji} OPENED {direction} {mode_tag}\n"
+            f"+ OPENED {direction} {mode_tag}\n"
             f"{pair} @ ${price:,.2f}\n"
             f"Size: ${amount:,.2f} | {strategy}\n"
             f"{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
@@ -144,12 +143,11 @@ class TelegramNotifier:
         mode: str = "paper",
     ) -> bool:
         """Send trade close notification with P&L."""
-        is_profit = pnl_pct >= 0
-        emoji = "+" if is_profit else ""
+        emoji = "+" if pnl_pct >= 0 else ""
         mode_tag = "[PAPER]" if mode == "paper" else "[LIVE]"
 
         msg = (
-            f"{emoji} CLOSED {mode_tag}\n"
+            f"- CLOSED {mode_tag}\n"
             f"{pair} ${entry_price:,.2f} -> ${exit_price:,.2f}\n"
             f"P&L: {pnl_pct:+.2f}% (${pnl_usd:+.2f})\n"
             f"Reason: {reason}\n"
@@ -190,36 +188,37 @@ class TelegramNotifier:
         win_rate: float = 0.0,
         total_trades: int = 0,
     ) -> bool:
-        """Send clean portfolio summary."""
-        pnl_emoji = "+" if daily_pnl >= 0 else ""
-
-        msg = f"PORTFOLIO\n"
-        msg += f"Equity: ${equity:,.2f} ({daily_pnl_pct:+.1f}%)\n"
-        msg += f"P&L: ${daily_pnl:+.2f}\n"
-
+        """Send consolidated portfolio report."""
+        msg = f"TRADING BOT REPORT\n"
+        msg += f"{'='*30}\n"
+        msg += f"Equity: ${equity:,.2f} ({daily_pnl_pct:+.1f}% from $97)\n"
+        msg += f"P&L: ${daily_pnl:+,.2f}"
         if total_trades > 0:
-            msg += f"Trades: {total_trades} ({win_rate:.0f}% win)\n"
+            msg += f" | Win: {win_rate:.0f}% ({total_trades} trades)"
+        msg += f"\n"
 
         if open_positions:
-            msg += f"\nOpen ({len(open_positions)}):\n"
+            msg += f"\nOPEN POSITIONS ({len(open_positions)}):\n"
             for pos in open_positions:
                 pair = pos.get("pair", "?")
-                side = "LONG" if pos.get("side") == "long" else "SHORT"
-                emoji = "+" if pos.get("unrealized_pnl_pct", 0) >= 0 else ""
+                side = "LONG" if pos.get("side") in ("long", "LONG") else "SHORT"
                 entry = pos.get("entry_price", 0)
                 current = pos.get("current_price", 0)
                 pnl = pos.get("unrealized_pnl_pct", 0)
                 pnl_usd = pos.get("unrealized_pnl_usd", 0)
+                size = pos.get("size", 0)
+                strategy = pos.get("strategy", "?")
 
+                msg += f"  {pair} {side}\n"
                 if entry > 0 and current > 0:
-                    msg += f"{pair} {side} ${entry:,.0f} -> ${current:,.0f}"
-                    msg += f" ({pnl:+.1f}%, ${pnl_usd:+.2f})\n"
+                    msg += f"    Entry: ${entry:,.2f} -> Now: ${current:,.2f}\n"
+                    msg += f"    P&L: {pnl:+.1f}% (${pnl_usd:+.2f}) | ${size:.2f} | {strategy}\n"
                 else:
-                    msg += f"{pair} {side}\n"
+                    msg += f"    Strategy: {strategy}\n"
         else:
-            msg += "\nNo open positions\n"
+            msg += f"\nNo open positions\n"
 
-        msg += f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
+        msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Paper Trading"
         return self._send_message(msg)
 
     # ── Portfolio Status ────────────────────────────────────────

@@ -460,6 +460,7 @@ def _fresh_state() -> dict:
         "wins": 0,
         "losses": 0,
         "total_pnl": 0.0,
+        "realized_pnl": 0.0,
         "peak_equity": INITIAL_CAPITAL,
         "max_drawdown": 0.0,
     }
@@ -642,6 +643,7 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
     state["cash"] += size_usd + pnl_usd
     state["total_trades"] += 1
     state["total_pnl"] += pnl_usd
+    state["realized_pnl"] = state.get("realized_pnl", 0) + pnl_usd
     if pnl_usd > 0:
         state["wins"] += 1
     else:
@@ -735,29 +737,34 @@ def aggregate_signals(signals: dict) -> dict:
 
 
 def get_equity(state: dict, prices: dict = None) -> float:
-    """Calculate total equity = cash + position market value.
+    """Calculate total equity = cash + position market values.
     
-    Since cash was debited by size_usd on open, positions are tracked at cost.
-    If current prices are provided, we calculate unrealized P&L for accuracy.
-    Otherwise, we use cost basis (size_usd) as fallback.
+    Cash was debited by (size_usd + fees) on open.
+    When you close, cash gets back size_usd + pnl_usd.
+    So position value = size_usd + unrealized_pnl.
+    
+    LONG:  unrealized_pnl = qty * (current - entry)
+    SHORT: unrealized_pnl = qty * (entry - current)
+    
+    Position value (both sides) = size_usd + unrealized_pnl
     """
     equity = state["cash"]
     for pair, pos in state["positions"].items():
-        if prices and pair in prices:
+        entry = pos.get("entry_price", 0)
+        size_usd = pos.get("size_usd", 0)
+        side = pos.get("side", 0)
+        
+        if prices and pair in prices and entry > 0:
             current = prices[pair]
-            entry = pos["entry_price"]
-            side = pos.get("side", 0)
-            size_usd = pos["size_usd"]
-            if entry > 0:
-                qty = size_usd / entry
-                if side == 1:  # LONG
-                    equity += qty * current
-                else:  # SHORT
-                    equity += qty * (2 * entry - current)  # Entry + profit
-            else:
-                equity += size_usd
+            qty = size_usd / entry
+            if side == 1:  # LONG
+                unrealized_pnl = qty * (current - entry)
+            else:  # SHORT
+                unrealized_pnl = qty * (entry - current)
+            equity += size_usd + unrealized_pnl
         else:
-            equity += pos["size_usd"]
+            # No live price — use cost basis (approximate)
+            equity += size_usd
     return equity
 
 
@@ -1002,37 +1009,11 @@ def main():
     status = "success" if not errors else "partial" if trades_this_run else "failed"
     log_run(status, duration, len(trades_this_run), errors, equity)
 
-    # Send Telegram notifications
+    # Send Telegram notifications — ONE consolidated message
     if notifier:
         try:
-            # Send trade notifications
-            for t in trades_this_run:
-                if t["action"].startswith("OPEN"):
-                    side_str = "buy" if "LONG" in t["action"] else "sell"
-                    notifier.notify_trade_open(
-                        pair=format_pair(t["pair"]),
-                        side=side_str,
-                        price=t["price"],
-                        amount=t["size_usd"],
-                        strategy=t["strategy"],
-                        confidence=0.8,
-                        mode="paper",
-                    )
-                elif t["action"] == "CLOSE":
-                    notifier.notify_trade_close(
-                        pair=format_pair(t["pair"]),
-                        side="buy" if t.get("side", "LONG") == "LONG" else "sell",
-                        entry_price=t["entry_price"],
-                        exit_price=t["exit_price"],
-                        pnl_pct=t["pnl_pct"],
-                        pnl_usd=t["pnl_usd"],
-                        reason=t["reason"],
-                        mode="paper",
-                    )
-            
-            # Calculate unrealized P&L for summary
-            total_unrealized = 0
-            positions_list = []
+            # Calculate unrealized P&L for each position
+            positions_detail = []
             for pair, pos in state["positions"].items():
                 current = current_prices.get(pair, pos["entry_price"])
                 entry = pos["entry_price"]
@@ -1044,34 +1025,63 @@ def main():
                         upnl = qty * (current - entry)
                     else:
                         upnl = qty * (entry - current)
-                    total_unrealized += upnl
                     upnl_pct = upnl / size * 100
                 else:
                     upnl = 0
                     upnl_pct = 0
-                positions_list.append({
+                positions_detail.append({
                     "pair": format_pair(pair),
-                    "side": "long" if side == 1 else "short",
-                    "entry_price": entry,
-                    "current_price": current,
-                    "unrealized_pnl_pct": upnl_pct,
-                    "unrealized_pnl_usd": upnl,
+                    "side": "LONG" if side == 1 else "SHORT",
+                    "entry": entry,
+                    "current": current,
+                    "pnl_pct": upnl_pct,
+                    "pnl_usd": upnl,
+                    "size": size,
                     "strategy": pos.get("strategy", "Unknown"),
                 })
             
-            # Send summary only on actual trades or significant equity changes
-            equity_changed = abs(equity - INITIAL_CAPITAL) > INITIAL_CAPITAL * 0.01  # >1% change
-            if trades_this_run or equity_changed:
-                notifier.notify_daily_summary(
-                    equity=equity,
-                    daily_pnl=state["total_pnl"] + total_unrealized,
-                    daily_pnl_pct=(equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100,
-                    trades_today=len(trades_this_run),
-                    open_positions=positions_list,
-                    win_rate=wr,
-                    total_trades=state["total_trades"],
-                )
-            print("Telegram notifications sent.")
+            # Build the consolidated message
+            total_unrealized = sum(p["pnl_usd"] for p in positions_detail)
+            total_pnl = state["total_pnl"] + total_unrealized
+            total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+            
+            msg = f"TRADING BOT REPORT\n"
+            msg += f"{'='*30}\n"
+            
+            # Equity line
+            msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}% from ${INITIAL_CAPITAL:.0f})\n"
+            msg += f"Cash: ${state['cash']:,.2f}\n"
+            msg += f"Total P&L: ${total_pnl:+,.2f}"
+            if state['total_trades'] > 0:
+                msg += f" | Win: {wr:.0f}% ({state['wins']}W/{state['losses']}L)"
+            msg += f"\n"
+            
+            # Positions
+            if positions_detail:
+                msg += f"\nOPEN POSITIONS ({len(positions_detail)}):\n"
+                for p in positions_detail:
+                    arrow = "->"
+                    msg += f"  {p['pair']} {p['side']}\n"
+                    msg += f"    Entry: ${p['entry']:,.2f} {arrow} Now: ${p['current']:,.2f}\n"
+                    msg += f"    P&L: {p['pnl_pct']:+.1f}% (${p['pnl_usd']:+.2f}) | ${p['size']:.2f} | {p['strategy']}\n"
+            else:
+                msg += f"\nNo open positions\n"
+            
+            # Trades this run
+            if trades_this_run:
+                msg += f"\nTRADES THIS RUN ({len(trades_this_run)}):\n"
+                for t in trades_this_run:
+                    if t["action"].startswith("OPEN"):
+                        direction = "LONG" if "LONG" in t["action"] else "SHORT"
+                        msg += f"  + {format_pair(t['pair'])} {direction} @ ${t['price']:,.2f} (${t['size_usd']:.2f})\n"
+                    elif t["action"] == "CLOSE":
+                        msg += f"  - {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
+                        msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
+            
+            msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Paper Trading"
+            
+            notifier._send_message(msg)
+            print("Telegram: Consolidated report sent.")
         except Exception as e:
             print(f"Telegram failed: {e}")
 
