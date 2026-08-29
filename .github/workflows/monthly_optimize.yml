@@ -1,0 +1,69 @@
+name: Monthly Strategy Re-Optimization
+
+on:
+  schedule:
+    # Run on the 1st of every month at 06:00 UTC
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why running manually?'
+        required: false
+        default: 'Manual trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run walk-forward optimization
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -u scripts/monthly_reoptimize.py 2>&1 | tee data/results/reoptimize_log.txt
+
+      - name: Save optimized params
+        run: |
+          if [ -f data/results/bot_strategy_params.json ]; then
+            echo "=== Optimized params ==="
+            cat data/results/bot_strategy_params.json
+          else
+            echo "ERROR: bot_strategy_params.json not found"
+            exit 1
+          fi
+
+      - name: Commit updated params
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/results/bot_strategy_params.json data/results/optimized_params.json data/results/reoptimize_log.txt
+          git diff --cached --quiet || git commit -m "Monthly re-optimization: $(date -u +'%Y-%m-%d')"
+          git push
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoptimization-report
+          path: |
+            data/results/optimized_params.json
+            data/results/bot_strategy_params.json
+            data/results/reoptimize_log.txt
+          retention-days: 90

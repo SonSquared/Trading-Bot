@@ -59,6 +59,53 @@ STRATEGIES = {
     },
 }
 
+
+
+def load_optimized_strategies() -> dict:
+    """Load strategy params from optimized JSON if available.
+    
+    Falls back to hardcoded defaults if no optimized file exists.
+    This allows monthly re-optimization to update params without code changes.
+    """
+    if OPTIMIZED_PARAMS_FILE.exists():
+        try:
+            with open(OPTIMIZED_PARAMS_FILE) as f:
+                optimized = json.load(f)
+            if optimized:
+                print(f"  Loaded optimized params from {OPTIMIZED_PARAMS_FILE.name}")
+                return optimized
+        except Exception as e:
+            print(f"  WARNING: Could not load optimized params: {e}")
+    return None
+
+
+# Active strategies — set by load_active_strategies(), used by all functions
+ACTIVE_STRATEGIES: dict = STRATEGIES.copy()
+
+
+def load_active_strategies() -> dict:
+    """Load strategy configs, preferring optimized params if available.
+    Sets the module-level ACTIVE_STRATEGIES variable.
+    """
+    global ACTIVE_STRATEGIES
+    optimized = load_optimized_strategies()
+    if optimized:
+        valid = {}
+        for key, cfg in optimized.items():
+            required = ["strategy", "pair", "timeframe", "weight", "params"]
+            if all(k in cfg for k in required) and cfg["strategy"] in STRATEGY_REGISTRY:
+                valid[key] = cfg
+            else:
+                print(f"  WARNING: Skipping invalid optimized config '{key}'")
+        if valid:
+            ACTIVE_STRATEGIES = valid
+            print(f"  Using {len(valid)} optimized strategy configs")
+            return valid
+        print(f"  WARNING: No valid optimized configs, using defaults")
+    ACTIVE_STRATEGIES = STRATEGIES.copy()
+    return ACTIVE_STRATEGIES
+
+
 # --- Config ---
 INITIAL_CAPITAL = 97.0
 FEE_RATE = 0.0005
@@ -71,6 +118,7 @@ TRADE_LOG = LOG_DIR / "paper_trades.jsonl"
 STATE_FILE = LOG_DIR / "paper_state.json"
 SUMMARY_FILE = LOG_DIR / "paper_summary.json"
 RUN_LOG = LOG_DIR / "run_history.jsonl"
+OPTIMIZED_PARAMS_FILE = LOG_DIR / "bot_strategy_params.json"
 
 
 # --- Retry Decorator ---
@@ -262,7 +310,7 @@ def handle_telegram_commands(token: str, chat_id: str):
             live_prices = {}
             for pair in state.get("positions", {}).keys():
                 try:
-                    for name, cfg in STRATEGIES.items():
+                    for name, cfg in ACTIVE_STRATEGIES.items():
                         if cfg["pair"] == pair:
                             df = fetch_latest(cfg["pair"], cfg["timeframe"])
                             if df is not None and len(df) > 0:
@@ -321,7 +369,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                 live_prices = {}
                 for pair in positions.keys():
                     try:
-                        for name, cfg in STRATEGIES.items():
+                        for name, cfg in ACTIVE_STRATEGIES.items():
                             if cfg["pair"] == pair:
                                 df = fetch_latest(cfg["pair"], cfg["timeframe"])
                                 if df is not None and len(df) > 0:
@@ -366,7 +414,7 @@ def handle_telegram_commands(token: str, chat_id: str):
             try:
                 from trading_system.strategies import STRATEGY_REGISTRY as SR
                 signals_text = "CURRENT SIGNALS\n\n"
-                for name, cfg in STRATEGIES.items():
+                for name, cfg in ACTIVE_STRATEGIES.items():
                     try:
                         df = fetch_latest(cfg["pair"], cfg["timeframe"])
                         strat = SR[cfg["strategy"]]
@@ -681,7 +729,7 @@ def run_strategies() -> tuple[dict, list]:
     signals = {}
     errors = []
 
-    for name, cfg in STRATEGIES.items():
+    for name, cfg in ACTIVE_STRATEGIES.items():
         try:
             df = fetch_latest(cfg["pair"], cfg["timeframe"])
             if df is None or len(df) < 50:
@@ -773,9 +821,13 @@ def main():
     start_time = time.time()
     errors = []
 
+    # Load strategies (optimized params if available, else defaults)
+    load_active_strategies()
+
     print("=" * 50)
     print("PAPER TRADING BOT")
     print(f"Time: {datetime.now(timezone.utc).isoformat()}")
+    print(f"Strategies: {', '.join(ACTIVE_STRATEGIES.keys())}")
     print("=" * 50)
     print()
 
@@ -851,7 +903,7 @@ def main():
         else:
             # Fetch price directly if not in signals
             try:
-                for name, cfg in STRATEGIES.items():
+                for name, cfg in ACTIVE_STRATEGIES.items():
                     if cfg["pair"] == pair:
                         df = fetch_latest(cfg["pair"], cfg["timeframe"])
                         if df is not None and len(df) > 0:
