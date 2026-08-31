@@ -242,7 +242,9 @@ def handle_telegram_commands(token: str, chat_id: str):
         return
 
     state = load_state()
-    equity = get_equity(state)
+    # Always fetch live prices for command responses
+    cmd_prices = fetch_live_prices() if state.get("positions") else {}
+    equity = get_equity(state, cmd_prices)
     total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
     wr = state["wins"] / state["total_trades"] * 100 if state["total_trades"] > 0 else 0
 
@@ -306,22 +308,8 @@ def handle_telegram_commands(token: str, chat_id: str):
 
         elif text in ("/equity", "/balance"):
             print(f"  -> {text}")
-            # Calculate live equity with current prices
-            live_prices = {}
-            for pair in state.get("positions", {}).keys():
-                try:
-                    for name, cfg in ACTIVE_STRATEGIES.items():
-                        if cfg["pair"] == pair:
-                            df = fetch_latest(cfg["pair"], cfg["timeframe"])
-                            if df is not None and len(df) > 0:
-                                live_prices[pair] = float(df["close"].iloc[-1])
-                                break
-                except Exception:
-                    pass
-            live_equity = get_equity(state, live_prices) if live_prices else equity
-            live_return = (live_equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
             tg_send_message(token, chat_id, (
-                f"${live_equity:,.2f} ({live_return:+.1f}%) | Cash: ${state['cash']:,.2f}"
+                f"${equity:,.2f} ({total_return:+.1f}%) | Cash: ${state['cash']:,.2f}"
             ))
 
         elif text == "/status":
@@ -329,13 +317,25 @@ def handle_telegram_commands(token: str, chat_id: str):
             positions_text = ""
             for pair, pos in state.get("positions", {}).items():
                 side = "LONG" if pos.get("side") == 1 else "SHORT"
-                emoji = "+" if pos.get("side") == 1 else ""
-                positions_text += f"{emoji} {format_pair(pair)} {side} @ ${pos.get('entry_price', 0):,.2f}\n"
+                entry = pos.get('entry_price', 0)
+                current = cmd_prices.get(pair, entry)
+                size = pos.get('size_usd', 0)
+                side_int = pos.get('side', 0)
+                if entry > 0 and size > 0:
+                    qty = size / entry
+                    if side_int == 1:
+                        upnl = qty * (current - entry)
+                    else:
+                        upnl = qty * (entry - current)
+                    upnl_pct = upnl / size * 100
+                    positions_text += f"{'+' if upnl >= 0 else ''}{format_pair(pair)} {side} @ ${entry:,.2f} -> ${current:,.2f} ({upnl_pct:+.1f}% ${upnl:+.2f})\n"
+                else:
+                    positions_text += f"{'+' if side_int == 1 else ''}{format_pair(pair)} {side} @ ${entry:,.2f}\n"
             if not positions_text:
                 positions_text = "No open positions\n"
             tg_send_message(token, chat_id, (
                 f"PORTFOLIO\n\n"
-                f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
+                f"Equity: ${equity:,.2f} ({total_return:+.1f}% from ${INITIAL_CAPITAL:.0f})\n"
                 f"Cash: ${state['cash']:,.2f}\n"
                 f"Trades: {state['total_trades']} ({wr:.0f}% win)\n"
                 f"P&L: ${state['total_pnl']:+,.2f}\n\n"
@@ -784,8 +784,39 @@ def aggregate_signals(signals: dict) -> dict:
     return results
 
 
+def fetch_live_prices(pairs: list[str] = None) -> dict[str, float]:
+    """Fetch live prices for all pairs. Returns {pair: price} dict.
+    
+    Always fetches fresh data — never uses cached/stale prices.
+    This is the SINGLE source of truth for all equity calculations.
+    """
+    all_pairs = set()
+    # Add pairs from active strategies
+    for name, cfg in ACTIVE_STRATEGIES.items():
+        all_pairs.add(cfg["pair"])
+    # Add any explicitly requested pairs
+    if pairs:
+        all_pairs.update(pairs)
+    
+    prices = {}
+    for pair in all_pairs:
+        try:
+            for name, cfg in ACTIVE_STRATEGIES.items():
+                if cfg["pair"] == pair:
+                    df = fetch_latest(pair, cfg["timeframe"])
+                    if df is not None and len(df) > 0:
+                        prices[pair] = float(df["close"].iloc[-1])
+                        break
+        except Exception as e:
+            print(f"    WARNING: Could not fetch live price for {pair}: {e}")
+    return prices
+
+
 def get_equity(state: dict, prices: dict = None) -> float:
     """Calculate total equity = cash + position market values.
+    
+    ALWAYS fetches live prices if not provided.
+    This prevents stale/missing prices from showing wrong equity.
     
     Cash was debited by (size_usd + fees) on open.
     When you close, cash gets back size_usd + pnl_usd.
@@ -796,6 +827,16 @@ def get_equity(state: dict, prices: dict = None) -> float:
     
     Position value (both sides) = size_usd + unrealized_pnl
     """
+    # If we have open positions and no prices provided, fetch them
+    if state.get("positions") and (prices is None or len(prices) < len(state["positions"])):
+        missing = [p for p in state["positions"] if p not in (prices or {})]
+        if missing:
+            fetched = fetch_live_prices(missing)
+            if prices:
+                prices = {**prices, **fetched}
+            else:
+                prices = fetched
+    
     equity = state["cash"]
     for pair, pos in state["positions"].items():
         entry = pos.get("entry_price", 0)
@@ -811,7 +852,7 @@ def get_equity(state: dict, prices: dict = None) -> float:
                 unrealized_pnl = qty * (entry - current)
             equity += size_usd + unrealized_pnl
         else:
-            # No live price — use cost basis (approximate)
+            # Last resort: use cost basis (cash was already debited)
             equity += size_usd
     return equity
 
@@ -844,7 +885,13 @@ def main():
 
     state = load_state()
 
-    equity = get_equity(state)
+    # Fetch ALL live prices ONCE — single source of truth for entire run
+    print("Fetching live prices...")
+    current_prices = fetch_live_prices()
+    print(f"  Live prices: {', '.join(f'{format_pair(pair)}=${price:,.2f}' for pair, price in current_prices.items())}")
+    print()
+
+    equity = get_equity(state, current_prices)
     print(f"Starting equity: ${equity:,.2f}")
     print(f"Cash: ${state['cash']:,.2f}")
     print(f"Open positions: {len(state['positions'])}")
@@ -861,9 +908,8 @@ def main():
         errors.append(f"Strategy execution failed: {e}")
         print(f"FATAL: Strategy execution failed: {e}")
         traceback.print_exc()
-        # Save run log and exit
         duration = time.time() - start_time
-        log_run("failed", duration, 0, errors, get_equity(state))
+        log_run("failed", duration, 0, errors, equity)
         if notifier:
             try:
                 notifier.notify_error(f"Bot run failed: {e}", "Strategy execution")
@@ -893,50 +939,30 @@ def main():
     risk_closes = []
     risk_alerts = []
     
-    # Build price dict for all positions (for risk checks and equity calculation)
-    current_prices = {}
-    for pair in list(state["positions"].keys()) + list(portfolio.keys()):
-        if pair in portfolio:
-            current_prices[pair] = portfolio[pair]["price"]
-        elif pair in signals:
-            current_prices[pair] = signals[pair]["price"]
-        else:
-            # Fetch price directly if not in signals
-            try:
-                for name, cfg in ACTIVE_STRATEGIES.items():
-                    if cfg["pair"] == pair:
-                        df = fetch_latest(cfg["pair"], cfg["timeframe"])
-                        if df is not None and len(df) > 0:
-                            current_prices[pair] = float(df["close"].iloc[-1])
-                            break
-            except Exception:
-                pass
-    
     if state["positions"]:
-        risk_prices = current_prices
-        
         # Update trailing stops
-        state["positions"] = risk_manager.update_trailing_stops(state["positions"], risk_prices)
+        state["positions"] = risk_manager.update_trailing_stops(state["positions"], current_prices)
         
-        # Check for risk violations (use equity with current prices)
-        equity_now = get_equity(state, risk_prices)
+        # Check for risk violations
+        equity_now = get_equity(state, current_prices)
         risk_closes, risk_alerts = risk_manager.check_positions(
-            state["positions"], risk_prices, equity_now, state.get("peak_equity", equity_now)
+            state["positions"], current_prices, equity_now, state.get("peak_equity", equity_now)
         )
         
         # Execute risk-based closes
         for close in risk_closes:
             symbol = close["symbol"]
             if symbol in state["positions"]:
-                price = risk_prices.get(symbol, state["positions"][symbol]["entry_price"])
+                price = current_prices.get(symbol, state["positions"][symbol]["entry_price"])
                 t = close_position(state, symbol, price, close["reason"])
                 if t:
                     trades_this_run.append(t)
                     print(f"  RISK CLOSE {symbol}: {close['reason']} -> P&L ${t['pnl_usd']:+.2f}")
                     if notifier:
                         try:
-                            notifier.notify_trade_close(                pair=format_pair(symbol),
-                side="buy" if t.get("side", "LONG") == "LONG" else "sell",
+                            notifier.notify_trade_close(
+                                pair=format_pair(symbol),
+                                side="buy" if t.get("side", "LONG") == "LONG" else "sell",
                                 entry_price=t["entry_price"],
                                 exit_price=t["exit_price"],
                                 pnl_pct=t["pnl_pct"],
@@ -959,11 +985,8 @@ def main():
                     pass
         
         # Check if new positions can open
-        risk_prices_for_open = {}
-        for sname, sdata in signals.items():
-            risk_prices_for_open[sdata["pair"]] = sdata["price"]
         can_open, reason = risk_manager.can_open_position(
-            state["positions"], get_equity(state), state["cash"], risk_prices_for_open
+            state["positions"], get_equity(state, current_prices), state["cash"], current_prices
         )
         if not can_open:
             print(f"  Risk manager: Cannot open new positions ({reason})")

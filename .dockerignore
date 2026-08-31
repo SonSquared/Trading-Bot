@@ -1,0 +1,15 @@
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+data/raw/*.parquet
+data/results/experiments.db
+data/results/*.db
+*.egg-info
+.env
+.venv
+venv
+node_modules
+.DS_Store
+Thumbs.db

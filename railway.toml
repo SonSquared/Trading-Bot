@@ -1,0 +1,15 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -u scripts/bot_scheduler.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# Persistent volume for state files (survives restarts/redeploys)
+[[volumes]]
+mountPath = "/app/data/results"
+name = "trading-state"
