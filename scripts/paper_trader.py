@@ -241,6 +241,9 @@ def handle_telegram_commands(token: str, chat_id: str):
         print("  No pending commands.")
         return
 
+    # Track highest update_id so we can acknowledge processed updates
+    max_update_id = 0
+
     state = load_state()
     # Always fetch live prices for command responses
     cmd_prices = fetch_live_prices() if state.get("positions") else {}
@@ -253,6 +256,10 @@ def handle_telegram_commands(token: str, chat_id: str):
         text = msg.get("text", "").strip().lower()
         msg_chat_id = str(msg.get("chat", {}).get("id", ""))
         update_id = update.get("update_id", 0)
+
+        # Track highest update_id regardless of chat
+        if update_id > max_update_id:
+            max_update_id = update_id
 
         if msg_chat_id != chat_id:
             continue
@@ -309,7 +316,7 @@ def handle_telegram_commands(token: str, chat_id: str):
         elif text in ("/equity", "/balance"):
             print(f"  -> {text}")
             tg_send_message(token, chat_id, (
-                f"${equity:,.2f} ({total_return:+.1f}%) | Cash: ${state['cash']:,.2f}"
+                f"${equity:,.2f} ({total_return:+.1f}%)"
             ))
 
         elif text == "/status":
@@ -333,14 +340,28 @@ def handle_telegram_commands(token: str, chat_id: str):
                     positions_text += f"{'+' if side_int == 1 else ''}{format_pair(pair)} {side} @ ${entry:,.2f}\n"
             if not positions_text:
                 positions_text = "No open positions\n"
+            # Calculate unrealized P&L
+            total_unrealized = 0.0
+            for pair, pos in state.get("positions", {}).items():
+                current = cmd_prices.get(pair, pos.get('entry_price', 0))
+                entry = pos.get('entry_price', 0)
+                size = pos.get('size_usd', 0)
+                side_int = pos.get('side', 0)
+                if entry > 0 and size > 0:
+                    qty = size / entry
+                    if side_int == 1:
+                        total_unrealized += qty * (current - entry)
+                    else:
+                        total_unrealized += qty * (entry - current)
+            total_pnl = state['total_pnl'] + total_unrealized
             tg_send_message(token, chat_id, (
-                f"PORTFOLIO\n\n"
-                f"Equity: ${equity:,.2f} ({total_return:+.1f}% from ${INITIAL_CAPITAL:.0f})\n"
-                f"Cash: ${state['cash']:,.2f}\n"
-                f"Trades: {state['total_trades']} ({wr:.0f}% win)\n"
-                f"P&L: ${state['total_pnl']:+,.2f}\n\n"
-                f"Open:\n{positions_text}"
-                f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
+                f"STATUS\n"
+                f"{'='*28}\n"
+                f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
+                f"P&L: ${total_pnl:+.2f}"
+                + (f" | {wr:.0f}% win ({state['total_trades']} trades)" if state['total_trades'] > 0 else "")
+                + f"\n\n{positions_text}"
+                + f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
             ))
 
         elif text == "/positions":
@@ -478,6 +499,10 @@ def handle_telegram_commands(token: str, chat_id: str):
         elif text.startswith("/"):
             print(f"  -> Unknown: {text}")
             tg_send_message(token, chat_id, f"Unknown command: {text}\nType /help for commands.")
+
+    # Acknowledge all processed updates so they aren't re-processed
+    if max_update_id > 0:
+        tg_api_call(token, "getUpdates", {"offset": max_update_id + 1, "limit": 1, "timeout": 0})
 
     print("  Command check done.")
 
