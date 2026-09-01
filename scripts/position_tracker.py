@@ -255,23 +255,13 @@ def check_positions():
     positions = paper["positions"]
 
     if not positions:
-        print("  No open positions.")
-        # Only send "no positions" once per day
-        today = now.strftime("%Y-%m-%d")
-        last_msg_date = tracker.get("last_no_positions_date")
-        if last_msg_date != today:
-            send_telegram(
-                f"No open positions\n"
-                f"Cash: ${paper['cash']:.2f}\n"
-                f"{now.strftime('%b %d, %H:%M UTC')}"
-            )
-            tracker["last_no_positions_date"] = today
-            save_tracker_state(tracker)
+        print("  No open positions — nothing to track.")
         return
 
     updates_to_send = []
     total_unrealized = 0.0
     position_summaries = []
+    price_alerts_sent = []
 
     for symbol, pos in positions.items():
         # Format: ETH_USDT_USDT -> ETH/USDT
@@ -296,6 +286,7 @@ def check_positions():
         for alert in price_alerts:
             print(f"  ALERT: {alert}")
             send_telegram(alert)
+            price_alerts_sent.append(alert)
 
         # Calculate P&L
         if side == 1:  # LONG
@@ -360,26 +351,13 @@ def check_positions():
                 unrealized_pnl = qty * (pos['entry'] - pos['current'])
             live_equity += pos['size'] + unrealized_pnl
 
-    # Only send Telegram if there are updates worth reporting
-    if updates_to_send:
-        # Build consolidated position + equity message
-        msg = f"POSITION UPDATE\n"
-        msg += f"{'='*30}\n"
-        
-        total_pnl = 0
-        for pos in position_summaries:
-            msg += f"{pos['pair']} {pos['side']}\n"
-            msg += f"  Entry: ${pos['entry']:,.2f} -> Now: ${pos['current']:,.2f}\n"
-            msg += f"  P&L: {pos['pnl_pct']:+.1f}% (${pos['pnl_usd']:+.2f}) | ${pos['size']:.2f}\n"
-            msg += f"  Strategy: {pos['strategy']}\n"
-            total_pnl += pos['pnl_usd']
-        
-        msg += f"\nEquity: ${live_equity:.2f} | P&L: ${total_pnl:+.2f}\n"
-        msg += f"{now.strftime('%b %d, %H:%M UTC')}"
-        
-        send_telegram(msg)
+    # Position tracker only sends PRICE ALERTS (>2% moves).
+    # Regular status updates are handled by the bot (once per day or on trades).
+    # This prevents duplicate/confusing messages.
+    if price_alerts_sent:
+        print(f"  Sent {len(price_alerts_sent)} price alert(s).")
     else:
-        print("  No significant changes — skipping Telegram update.")
+        print("  No alerts — bot handles daily status updates.")
 
     # Update tracker state
     tracker["last_update"] = now.isoformat()

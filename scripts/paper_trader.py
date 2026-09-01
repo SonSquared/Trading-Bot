@@ -1084,79 +1084,94 @@ def main():
     status = "success" if not errors else "partial" if trades_this_run else "failed"
     log_run(status, duration, len(trades_this_run), errors, equity)
 
-    # Send Telegram notifications — ONE consolidated message
+    # --- Telegram Notifications ---
+    # Strategy: send ONE message only when something meaningful happens:
+    #   1. Trades were executed (open/close)
+    #   2. First run of the day (daily status)
+    #   3. Errors occurred
+    # This prevents 96 messages/day spam.
     if notifier:
         try:
-            # Calculate unrealized P&L for each position
-            positions_detail = []
-            for pair, pos in state["positions"].items():
-                current = current_prices.get(pair, pos["entry_price"])
-                entry = pos["entry_price"]
-                side = pos.get("side", 0)
-                size = pos["size_usd"]
-                if entry > 0:
-                    qty = size / entry
-                    if side == 1:
-                        upnl = qty * (current - entry)
-                    else:
-                        upnl = qty * (entry - current)
-                    upnl_pct = upnl / size * 100
-                else:
-                    upnl = 0
-                    upnl_pct = 0
-                positions_detail.append({
-                    "pair": format_pair(pair),
-                    "side": "LONG" if side == 1 else "SHORT",
-                    "entry": entry,
-                    "current": current,
-                    "pnl_pct": upnl_pct,
-                    "pnl_usd": upnl,
-                    "size": size,
-                    "strategy": pos.get("strategy", "Unknown"),
-                })
+            should_notify = False
+            notify_reason = ""
             
-            # Build the consolidated message
-            total_unrealized = sum(p["pnl_usd"] for p in positions_detail)
-            total_pnl = state["total_pnl"] + total_unrealized
-            total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
-            
-            msg = f"TRADING BOT REPORT\n"
-            msg += f"{'='*30}\n"
-            
-            # Equity line
-            msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}% from ${INITIAL_CAPITAL:.0f})\n"
-            msg += f"Cash: ${state['cash']:,.2f}\n"
-            msg += f"Total P&L: ${total_pnl:+,.2f}"
-            if state['total_trades'] > 0:
-                msg += f" | Win: {wr:.0f}% ({state['wins']}W/{state['losses']}L)"
-            msg += f"\n"
-            
-            # Positions
-            if positions_detail:
-                msg += f"\nOPEN POSITIONS ({len(positions_detail)}):\n"
-                for p in positions_detail:
-                    arrow = "->"
-                    msg += f"  {p['pair']} {p['side']}\n"
-                    msg += f"    Entry: ${p['entry']:,.2f} {arrow} Now: ${p['current']:,.2f}\n"
-                    msg += f"    P&L: {p['pnl_pct']:+.1f}% (${p['pnl_usd']:+.2f}) | ${p['size']:.2f} | {p['strategy']}\n"
-            else:
-                msg += f"\nNo open positions\n"
-            
-            # Trades this run
+            # Always notify if trades happened
             if trades_this_run:
-                msg += f"\nTRADES THIS RUN ({len(trades_this_run)}):\n"
-                for t in trades_this_run:
-                    if t["action"].startswith("OPEN"):
-                        direction = "LONG" if "LONG" in t["action"] else "SHORT"
-                        msg += f"  + {format_pair(t['pair'])} {direction} @ ${t['price']:,.2f} (${t['size_usd']:.2f})\n"
-                    elif t["action"] == "CLOSE":
-                        msg += f"  - {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
-                        msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
+                should_notify = True
+                notify_reason = "trade"
             
-            msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Paper Trading"
+            # Daily status check: send once per day if no trades
+            if not should_notify:
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                daily_file = LOG_DIR / ".last_daily_alert"
+                last_daily = ""
+                if daily_file.exists():
+                    last_daily = daily_file.read_text().strip()
+                if last_daily != today:
+                    should_notify = True
+                    notify_reason = "daily"
+                    daily_file.write_text(today)
             
-            notifier._send_message(msg)
-            print("Telegram: Consolidated report sent.")
+            if should_notify:
+                # Calculate unrealized P&L for each position
+                total_unrealized = 0.0
+                pos_lines = []
+                for pair, pos in state["positions"].items():
+                    current = current_prices.get(pair, pos["entry_price"])
+                    entry = pos["entry_price"]
+                    side = pos.get("side", 0)
+                    size = pos["size_usd"]
+                    if entry > 0:
+                        qty = size / entry
+                        if side == 1:
+                            upnl = qty * (current - entry)
+                        else:
+                            upnl = qty * (entry - current)
+                        upnl_pct = upnl / size * 100
+                        total_unrealized += upnl
+                        side_str = "LONG" if side == 1 else "SHORT"
+                        pos_lines.append(
+                            f"{format_pair(pair)} {side_str} "
+                            f"{upnl_pct:+.1f}% (${upnl:+.2f})"
+                        )
+                
+                total_pnl = state["total_pnl"] + total_unrealized
+                total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+                
+                # Build clean, professional message
+                if notify_reason == "trade":
+                    msg = "TRADE ALERT"
+                else:
+                    msg = "DAILY STATUS"
+                msg += f"\n{'='*28}\n"
+                msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
+                msg += f"P&L: ${total_pnl:+.2f}"
+                if state['total_trades'] > 0:
+                    msg += f" | {wr:.0f}% win ({state['total_trades']} trades)"
+                msg += f"\n"
+                
+                # Trades this run
+                if trades_this_run:
+                    msg += f"\nTrades:\n"
+                    for t in trades_this_run:
+                        if t["action"].startswith("OPEN"):
+                            d = "LONG" if "LONG" in t["action"] else "SHORT"
+                            msg += f"  + {format_pair(t['pair'])} {d} @ ${t['price']:,.2f}"
+                            msg += f" (${t['size_usd']:.0f})\n"
+                        elif t["action"] == "CLOSE":
+                            msg += f"  - {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
+                            msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
+                
+                # Open positions
+                if pos_lines:
+                    msg += f"\nPositions:\n"
+                    for line in pos_lines:
+                        msg += f"  {line}\n"
+                
+                msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
+                
+                notifier._send_message(msg)
+                print(f"Telegram: {notify_reason} notification sent.")
         except Exception as e:
             print(f"Telegram failed: {e}")
 
