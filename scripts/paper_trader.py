@@ -185,18 +185,8 @@ def get_notifier():
     cfg = load_telegram_config()
     if cfg.get("enabled") and cfg.get("bot_token"):
         n = TelegramNotifier(bot_token=cfg["bot_token"], chat_id=str(cfg["chat_id"]), enabled=True)
-        # Try sending a test message directly instead of test_connection
-        # (test_connection can time out on slow connections but individual sends work)
-        try:
-            ok = n._send_message("Bot connected")
-            if ok:
-                print("  Telegram: Connected")
-                return n
-            print("  Telegram: Test message failed, will retry on each send")
-            return n  # Return notifier anyway — individual sends may work
-        except Exception as e:
-            print(f"  Telegram: Test failed ({e}), will retry on each send")
-            return n  # Return anyway — don't gate all notifications on test
+        print("  Telegram: Configured")
+        return n
     else:
         print("  Telegram: Not configured")
     return None
