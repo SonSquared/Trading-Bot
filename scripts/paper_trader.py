@@ -526,6 +526,8 @@ def _fresh_state() -> dict:
         "realized_pnl": 0.0,
         "peak_equity": INITIAL_CAPITAL,
         "max_drawdown": 0.0,
+        # Signal history for hysteresis — prevents overtrading
+        "signal_history": {},  # {pair: [last_signal, prev_signal, ...]}
     }
 
 
@@ -776,7 +778,14 @@ def run_strategies() -> tuple[dict, list]:
     return signals, errors
 
 
-def aggregate_signals(signals: dict) -> dict:
+def aggregate_signals(signals: dict, state: dict = None) -> dict:
+    """Aggregate signals with hysteresis to prevent overtrading.
+    
+    Hysteresis rules:
+    - If we have NO current position: require score > 0.4 (LONG) or < -0.4 (SHORT)
+    - If we HAVE a position: only flip if score crosses 0 (neutral) or reverses strongly
+    - This widens the dead zone when entering and prevents whipsaws when holding
+    """
     pair_scores = {}
     for name, s in signals.items():
         pair = s["pair"]
@@ -785,16 +794,33 @@ def aggregate_signals(signals: dict) -> dict:
         pair_scores[pair]["weighted_sum"] += s["signal"] * s["weight"]
         pair_scores[pair]["total_weight"] += s["weight"]
 
+    state_positions = state.get("positions", {}) if state else {}
+    
     results = {}
     for pair, data in pair_scores.items():
         if data["total_weight"] > 0:
             score = data["weighted_sum"] / data["total_weight"]
-            if score > 0.3:
-                final = 1
-            elif score < -0.3:
-                final = -1
+            current_pos = state_positions.get(pair)
+            current_side = current_pos["side"] if current_pos else 0
+            
+            if current_side == 0:
+                # No position — require strong signal to enter (wider dead zone)
+                if score > 0.4:
+                    final = 1
+                elif score < -0.4:
+                    final = -1
+                else:
+                    final = 0
             else:
-                final = 0
+                # Have a position — only flip if score clearly reverses
+                # Close SHORT when score > 0.1 (slightly positive = trend reversing up)
+                # Close LONG when score < -0.1 (slightly negative = trend reversing down)
+                # This prevents closing on tiny score fluctuations
+                if current_side == 1:  # LONG
+                    final = 1 if score > -0.1 else 0
+                else:  # SHORT
+                    final = -1 if score < 0.1 else 0
+            
             results[pair] = {"score": score, "signal": final, "price": data["price"], "atr": data["atr"]}
     return results
 
@@ -936,7 +962,7 @@ def main():
     # Aggregate
     print("Aggregating signals...")
     try:
-        portfolio = aggregate_signals(signals)
+        portfolio = aggregate_signals(signals, state)
         for pair, data in portfolio.items():
             direction = "LONG" if data["signal"] == 1 else "FLAT" if data["signal"] == 0 else "SHORT"
             print(f"  {pair}: {direction} (score={data['score']:.3f})")
@@ -1017,10 +1043,29 @@ def main():
 
             if desired != current_side:
                 if current_side != 0:
-                    t = close_position(state, pair, data["price"], "Signal reversal")
-                    if t:
-                        trades_this_run.append(t)
-                        print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
+                    # MINIMUM HOLD TIME CHECK: Don't close if position was opened < 2 candles ago
+                    # For 4h timeframe, 2 candles = 8 hours minimum hold
+                    entry_time_str = current_pos.get("entry_time", "")
+                    min_hold_hours = 8  # Minimum hold time in hours
+                    can_close = True
+                    if entry_time_str:
+                        try:
+                            entry_dt = datetime.fromisoformat(entry_time_str)
+                            hours_held = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
+                            if hours_held < min_hold_hours:
+                                print(f"  {pair}: HOLD (open {hours_held:.1f}h ago, min {min_hold_hours}h)")
+                                can_close = False
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if can_close:
+                        t = close_position(state, pair, data["price"], "Signal reversal")
+                        if t:
+                            trades_this_run.append(t)
+                            print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
+                    else:
+                        # Position stays open — keep the current side
+                        continue
 
                 if desired != 0 and can_open:
                     equity_now = get_equity(state)
@@ -1145,9 +1190,11 @@ def main():
                         upnl_pct = upnl / size * 100
                         total_unrealized += upnl
                         side_str = "LONG" if side == 1 else "SHORT"
+                        entry_str = f"${entry:,.2f}"
+                        current_str = f"${current:,.2f}"
                         pos_lines.append(
-                            f"{format_pair(pair)} {side_str} "
-                            f"{upnl_pct:+.1f}% (${upnl:+.2f})"
+                            f"  {format_pair(pair)} {side_str}\n"
+                            f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f})"
                         )
                 
                 total_pnl = state["total_pnl"] + total_unrealized
@@ -1155,35 +1202,37 @@ def main():
                 
                 # Build clean, professional message
                 if notify_reason == "trade":
-                    msg = "TRADE ALERT"
+                    msg = "TRADING BOT"
                 else:
-                    msg = "DAILY STATUS"
+                    msg = "PORTFOLIO UPDATE"
                 msg += f"\n{'='*28}\n"
+                # Show equity and total return (always consistent)
                 msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
-                msg += f"P&L: ${total_pnl:+.2f}"
+                # Show realized P&L separately
                 if state['total_trades'] > 0:
-                    msg += f" | {wr:.0f}% win ({state['total_trades']} trades)"
+                    msg += f"Realized: ${state['total_pnl']:+.2f} ({wr:.0f}% win, {state['total_trades']} trades)\n"
+                if total_unrealized > 0.005 or total_unrealized < -0.005:
+                    msg += f"Unrealized: ${total_unrealized:+.2f}\n"
                 msg += f"\n"
                 
                 # Trades this run
                 if trades_this_run:
-                    msg += f"\nTrades:\n"
                     for t in trades_this_run:
                         if t["action"].startswith("OPEN"):
                             d = "LONG" if "LONG" in t["action"] else "SHORT"
-                            msg += f"  + {format_pair(t['pair'])} {d} @ ${t['price']:,.2f}"
+                            msg += f">> {format_pair(t['pair'])} {d} @ ${t['price']:,.2f}"
                             msg += f" (${t['size_usd']:.0f})\n"
                         elif t["action"] == "CLOSE":
-                            msg += f"  - {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
+                            msg += f">> {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
                             msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
                 
                 # Open positions
                 if pos_lines:
-                    msg += f"\nPositions:\n"
+                    msg += f"Open Positions:\n"
                     for line in pos_lines:
-                        msg += f"  {line}\n"
+                        msg += f"{line}\n"
                 
-                msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
+                msg += f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | PAPER"
                 
                 notifier._send_message(msg)
                 print(f"Telegram: {notify_reason} notification sent.")
