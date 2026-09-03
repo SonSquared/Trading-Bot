@@ -528,6 +528,7 @@ def _fresh_state() -> dict:
         "max_drawdown": 0.0,
         # Signal history for hysteresis — prevents overtrading
         "signal_history": {},  # {pair: [last_signal, prev_signal, ...]}
+        "last_daily_alert_date": "",  # Track daily status to avoid duplicates across restarts
     }
 
 
@@ -1145,11 +1146,8 @@ def main():
     log_run(status, duration, len(trades_this_run), errors, equity)
 
     # --- Telegram Notifications ---
-    # Strategy: send ONE message only when something meaningful happens:
-    #   1. Trades were executed (open/close)
-    #   2. First run of the day (daily status)
-    #   3. Errors occurred
-    # This prevents 96 messages/day spam.
+    # Strategy: ONE message per run, ONE format, always clear.
+    # Only send when: trades happened OR first run of the day.
     if notifier:
         try:
             should_notify = False
@@ -1161,17 +1159,22 @@ def main():
                 notify_reason = "trade"
             
             # Daily status check: send once per day if no trades
+            # Store flag IN the state file so it persists across Railway restarts
             if not should_notify:
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                daily_file = LOG_DIR / ".last_daily_alert"
-                last_daily = ""
-                if daily_file.exists():
-                    last_daily = daily_file.read_text().strip()
+                last_daily = state.get("last_daily_alert_date", "")
                 if last_daily != today:
                     should_notify = True
                     notify_reason = "daily"
-                    daily_file.write_text(today)
+                    state["last_daily_alert_date"] = today
+                    save_state(state)  # Persist the daily flag
             
+            # Always update the daily flag so we don't re-send today's daily status
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if state.get("last_daily_alert_date") != today:
+                state["last_daily_alert_date"] = today
+                save_state(state)
+
             if should_notify:
                 # Calculate unrealized P&L for each position
                 total_unrealized = 0.0
@@ -1193,29 +1196,25 @@ def main():
                         entry_str = f"${entry:,.2f}"
                         current_str = f"${current:,.2f}"
                         pos_lines.append(
-                            f"  {format_pair(pair)} {side_str}\n"
+                            f"  {side_str} {format_pair(pair)}\n"
                             f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f})"
                         )
                 
-                total_pnl = state["total_pnl"] + total_unrealized
                 total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
                 
-                # Build clean, professional message
+                # ONE clean message format — always the same structure
                 if notify_reason == "trade":
-                    msg = "TRADING BOT"
+                    msg = "TRADE ALERT"
                 else:
-                    msg = "PORTFOLIO UPDATE"
+                    msg = "PORTFOLIO"
                 msg += f"\n{'='*28}\n"
-                # Show equity and total return (always consistent)
                 msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
-                # Show realized P&L separately
+                msg += f"P&L: ${state['total_pnl']:+.2f}"
                 if state['total_trades'] > 0:
-                    msg += f"Realized: ${state['total_pnl']:+.2f} ({wr:.0f}% win, {state['total_trades']} trades)\n"
-                if total_unrealized > 0.005 or total_unrealized < -0.005:
-                    msg += f"Unrealized: ${total_unrealized:+.2f}\n"
-                msg += f"\n"
+                    msg += f" | {wr:.0f}% win ({state['total_trades']} trades)"
+                msg += f"\n\n"
                 
-                # Trades this run
+                # Trades this run (only on trade alerts)
                 if trades_this_run:
                     for t in trades_this_run:
                         if t["action"].startswith("OPEN"):
@@ -1223,12 +1222,13 @@ def main():
                             msg += f">> {format_pair(t['pair'])} {d} @ ${t['price']:,.2f}"
                             msg += f" (${t['size_usd']:.0f})\n"
                         elif t["action"] == "CLOSE":
-                            msg += f">> {format_pair(t['pair'])} CLOSED @ ${t['exit_price']:,.2f}"
+                            msg += f">> {format_pair(t['pair'])} CLOSED"
                             msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
+                    msg += f"\n"
                 
                 # Open positions
                 if pos_lines:
-                    msg += f"Open Positions:\n"
+                    msg += f"Positions:\n"
                     for line in pos_lines:
                         msg += f"{line}\n"
                 
