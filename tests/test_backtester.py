@@ -11,7 +11,7 @@ import pytest
 from trading_system.backtester.engine import BacktestEngine
 from trading_system.backtester.results import BacktestResults
 from trading_system.backtester.fees import FeeCalculator
-from trading_system.backtester.slippage import FixedSlippage, ATRAdaptiveSlippage, NoSlippage
+from trading_system.backtester.slippage import FixedSlippage, NoSlippage
 from trading_system.config import (
     BacktestConfig, FeeConfig, SlippageConfig, ExecutionConfig,
 )

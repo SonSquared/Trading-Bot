@@ -8,11 +8,9 @@ on the final trading decision and its share of the portfolio.
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import structlog
@@ -23,7 +21,9 @@ from trading_system.bot.telegram_notifier import TelegramNotifier
 from trading_system.bot.risk import RiskManager
 from trading_system.bot.sltp_manager import SLTPManager
 from trading_system.bot.state import BotState
-from trading_system.config import SystemConfig, BotConfig
+from trading_system.bot.candles import closed_candles
+from trading_system.bot.accounting import FEE_RATE, SLIPPAGE_RATE, funding_cost
+from trading_system.config import SystemConfig
 from trading_system.strategies import get_strategy
 
 logger = structlog.get_logger(__name__)
@@ -90,6 +90,7 @@ class PortfolioTradingBot:
 
         # Build strategy instances from portfolio config
         self.strategy_instances: list[StrategyInstance] = []
+        self._portfolio_file = Path("configs/bot_live.yaml")
         self._load_strategies()
 
         # SL manager (3x ATR, disaster protection only)
@@ -106,7 +107,7 @@ class PortfolioTradingBot:
     def _load_strategies(self):
         """Load strategy instances from the YAML config."""
         # Try to load from portfolio config in YAML
-        portfolio_file = Path("configs/bot_live.yaml")
+        portfolio_file = getattr(self, "_portfolio_file", Path("configs/bot_live.yaml"))
         if portfolio_file.exists():
             import yaml
             with open(portfolio_file) as f:
@@ -253,51 +254,56 @@ class PortfolioTradingBot:
         if not strategies:
             return
 
-        # Fetch data for each timeframe used by strategies
+        # Fetch data for each timeframe used by strategies (closed candles only)
         timeframes = list(set(s.timeframe for s in strategies))
         data = {}
+        latest_closed = {}
         for tf in timeframes:
             df = self.exchange.get_ohlcv(pair, tf, limit=250)
-            if not df.empty:
-                data[tf] = df
+            if df.empty:
+                continue
+            closed = closed_candles(df, tf)
+            if closed.empty:
+                continue
+            data[tf] = closed
+            latest_closed[tf] = closed.index[-1]
 
         if not data:
             return
 
-        # Check for abnormal price movement on the primary timeframe
         primary_tf = timeframes[0]
-        if primary_tf in data and len(data[primary_tf]) >= 2:
-            df = data[primary_tf]
-            price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2]
+        primary_df = data.get(primary_tf)
+        ticker = self.exchange.get_ticker(pair)
+        live_price = float(ticker.get("last", 0)) or float(primary_df["close"].iloc[-1])
+
+        # Check for abnormal price movement on the primary timeframe
+        if primary_df is not None and len(primary_df) >= 2:
+            price_change = (primary_df["close"].iloc[-1] - primary_df["close"].iloc[-2]) / primary_df["close"].iloc[-2]
             self.risk.check_abnormal_conditions(price_change)
 
         # ── SL Check FIRST (before new signal generation) ──────
-        current_price = float(data[primary_tf]["close"].iloc[-1]) if primary_tf in data else 0
-        sltp_actions = self.sltp.check_price(pair, current_price)
+        # Uses the live ticker price so stops fire between candles too.
+        sltp_actions = self.sltp.check_price(pair, live_price)
         for action in sltp_actions:
             if action["action"] == "close":
                 logger.info("sltp_closing", pair=pair, reason=action["reason"],
                             pnl=action.get("pnl_pct", 0))
-                # Create a fake position dict for close_position
+                # Create a fake position dict for close_position.
+                # size comes from the action so the close actually executes;
+                # entry_time lets the shared model charge 8h funding.
                 fake_pos = {
                     "pair": pair,
                     "side": "long" if action["side"] == "sell" else "short",
-                    "size": 0,  # Will be handled by paper/live execution
-                    "notional": 0,
-                }
-                self._close_position(pair, fake_pos, action["reason"])
-                self.state.record_trade({
-                    "pair": pair, "side": action["side"],
-                    "mode": self.bot_config.mode,
-                    "action": "sltp_close",
-                    "reason": action["reason"],
-                    "entry": action.get("entry", 0),
-                    "exit_price": action.get("exit", 0),
+                    "size": action.get("size", 0),
+                    "notional": action.get("size", 0) * action.get("entry", 0),
+                    "entry_price": action.get("entry", 0),
+                    "entry_time": action.get("entry_time", ""),
                     "pnl_pct": action.get("pnl_pct", 0),
-                    "strategy": action.get("strategy", "portfolio"),
-                })
+                }
+                self._close_position(pair, fake_pos, action["reason"],
+                                     exit_price=action.get("exit", live_price))
 
-        # ── Aggregate signals ──────────────────────────────────────
+        # ── Aggregate signals (closed candles only) ─────────────
         agg = self.aggregate_signals(pair, data)
 
         logger.info("signals_aggregated",
@@ -309,19 +315,26 @@ class PortfolioTradingBot:
 
         # Get current state
         positions = self.exchange.get_positions(pair)
-        ticker = self.exchange.get_ticker(pair)
         balance = self.exchange.get_balance()
         current_equity = balance.get("total", 0)
         self.risk.update(current_equity)
 
-        # Execute based on aggregated signal
-        self._execute_portfolio_signal(
-            pair=pair,
-            agg_signal=agg,
-            ticker=ticker,
-            equity=current_equity,
-            current_positions=positions,
-        )
+        # Only act on a strategy signal once per closed candle — never on
+        # the forming candle — so live behavior matches the backtest.
+        last_seen = self.state.get("last_candle_seen", {})
+        latest_ts = latest_closed.get(primary_tf)
+        new_candle = latest_ts is not None and last_seen.get(pair) != str(latest_ts)
+        if new_candle:
+            last_seen[pair] = str(latest_ts)
+            self.state.set("last_candle_seen", last_seen)
+            self._execute_portfolio_signal(
+                pair=pair,
+                agg_signal=agg,
+                ticker=ticker,
+                equity=current_equity,
+                current_positions=positions,
+                data=data,
+            )
 
         # Record signal for state tracking
         self.state.set("last_signals", {
@@ -341,17 +354,34 @@ class PortfolioTradingBot:
         ticker: dict[str, float],
         equity: float,
         current_positions: list[dict],
+        data: dict[str, pd.DataFrame] | None = None,
     ) -> None:
         """Execute trading based on aggregated portfolio signal."""
         direction = agg_signal["direction"]
         confidence = agg_signal["confidence"]
 
         existing = [p for p in current_positions if p["pair"] == pair]
+        if not existing and self.bot_config.mode == "paper":
+            # Paper mode tracks positions in the SL manager, not on the exchange.
+            sl_pos = self.sltp.find_position(pair)
+            if sl_pos is not None:
+                existing = [{
+                    "pair": pair,
+                    "side": sl_pos.side,
+                    "size": sl_pos.size,
+                    "notional": sl_pos.size,
+                    "entry_price": sl_pos.entry_price,
+                    "entry_time": sl_pos.entry_time,
+                }]
+
+        # Reference price for signal exits (paper mode fills here with slippage;
+        # live mode places a real order whose fill supersedes it).
+        exit_ref = float(ticker.get("last", 0) or 0)
 
         if direction == 0:
             # Close any existing position (signal says flat)
             for pos in existing:
-                self._close_position(pair, pos, "portfolio_exit")
+                self._close_position(pair, pos, "portfolio_exit", exit_price=exit_ref)
             return
 
         is_long = direction > 0
@@ -365,10 +395,10 @@ class PortfolioTradingBot:
                 return
 
             # Close and reverse
-            self._close_position(pair, pos, "portfolio_reverse")
+            self._close_position(pair, pos, "portfolio_reverse", exit_price=exit_ref)
 
         # Open new position
-        self._open_position(pair, is_long, equity, ticker, confidence)
+        self._open_position(pair, is_long, equity, ticker, confidence, data=data)
 
     def _open_position(
         self,
@@ -377,6 +407,7 @@ class PortfolioTradingBot:
         equity: float,
         ticker: dict[str, float],
         confidence: float,
+        data: dict[str, pd.DataFrame] | None = None,
     ) -> None:
         """Open a new position with portfolio-aware sizing."""
         # Position sizing: base risk * confidence adjustment
@@ -403,38 +434,61 @@ class PortfolioTradingBot:
             logger.warning("position_rejected", pair=pair, reason=reason)
             return
 
+        fill_price = price
         if self.bot_config.mode == "paper":
-            self._paper_execute(pair, side, amount, price, confidence)
+            # Simulated fill embeds the shared model's slippage (0.02% per side)
+            # around the reference price, exactly like the deployed paper trader.
+            fill_price = self._fill_with_slippage(price, side)
+            self._paper_execute(pair, side, amount, fill_price, confidence)
             self.telegram.notify_trade_open(
-                pair=pair, side=side, price=price, amount=amount,
+                pair=pair, side=side, price=fill_price, amount=amount,
                 confidence=confidence, strategy="portfolio", mode="paper",
             )
-            # Register with SL manager
-            primary_tf = strategies[0].timeframe if strategies else "4h"
-            df = data.get(primary_tf)
-            if df is not None and not df.empty:
-                self.sltp.open_position(
-                    pair=pair, side="long" if is_long else "short",
-                    entry_price=price, size=amount,
-                    strategy="portfolio", df=df,
-                )
         elif self.bot_config.mode == "live":
-            self._live_execute(pair, side, amount, price, confidence)
+            order = self._live_execute(pair, side, amount, price, confidence)
+            if not order or float(order.get("filled", 0) or 0) <= 0:
+                # Order rejected/timeout with no fill. Registering the SL here
+                # would desync the ledger from the exchange and make the next
+                # close path fight a position that doesn't exist. Bail out.
+                logger.error("live_open_unfilled", pair=pair, side=side,
+                             order_id=(order or {}).get("order_id"))
+                return
+            if float(order.get("filled", 0) or 0) < amount * 0.999:
+                # Partial fill: only register what actually filled, or the
+                # close path would try to reduce more than the exchange holds.
+                logger.warning("live_open_partial_fill", pair=pair,
+                               requested=amount, filled=order.get("filled"))
+                amount = float(order["filled"])
+            if order.get("average_price"):
+                fill_price = float(order["average_price"])
             self.telegram.notify_trade_open(
-                pair=pair, side=side, price=price, amount=amount,
+                pair=pair, side=side, price=fill_price, amount=amount,
                 confidence=confidence, strategy="portfolio", mode="live",
             )
-            primary_tf = strategies[0].timeframe if strategies else "4h"
-            df = data.get(primary_tf)
-            if df is not None and not df.empty:
-                self.sltp.open_position(
-                    pair=pair, side="long" if is_long else "short",
-                    entry_price=price, size=amount,
-                    strategy="portfolio", df=df,
-                )
         elif self.bot_config.mode == "dry_run":
             logger.info("dry_run_order", pair=pair, side=side, amount=amount,
                         price=price, confidence=confidence)
+
+        # Register with SL manager (disaster protection only).
+        # A failure here must never crash the trading cycle after an order.
+        try:
+            df = self._primary_df(pair, data)
+            if df is not None and not df.empty:
+                self.sltp.open_position(
+                    pair=pair, side="long" if is_long else "short",
+                    entry_price=fill_price, size=amount,
+                    strategy="portfolio", df=df,
+                )
+        except Exception as e:
+            logger.error("sl_register_failed", pair=pair, error=str(e))
+
+    def _primary_df(self, pair: str, data: dict[str, pd.DataFrame] | None) -> pd.DataFrame | None:
+        """Pick the primary-timeframe DataFrame for SL computation."""
+        if not data:
+            return None
+        strategies = self._get_strategies_for_pair(pair)
+        primary_tf = strategies[0].timeframe if strategies else "4h"
+        return data.get(primary_tf)
 
     def _paper_execute(self, pair, side, amount, price, confidence):
         """Simulate order execution for paper trading."""
@@ -451,6 +505,7 @@ class PortfolioTradingBot:
         self.notifications.notify_trade({
             "pair": pair, "side": side, "price": price, "pnl": 0,
         })
+        return trade
 
     def _live_execute(self, pair, side, amount, price, confidence):
         """Execute real order on exchange."""
@@ -470,48 +525,162 @@ class PortfolioTradingBot:
                 "pair": pair, "side": side,
                 "price": order.get("average_price", price), "pnl": 0,
             })
+            return order
+        return None
 
-    def _close_position(self, pair: str, position: dict, reason: str):
-        """Close an existing position."""
-        side = "sell" if position["side"] == "long" else "buy"
+    @staticmethod
+    def _fill_with_slippage(price: float, side: str) -> float:
+        """Reference price -> simulated fill price (0.02% per side, shared model)."""
+        if price <= 0:
+            return price
+        if side == "buy":
+            return price * (1.0 + SLIPPAGE_RATE)
+        return price * (1.0 - SLIPPAGE_RATE)
+
+    def _close_position(self, pair: str, position: dict, reason: str,
+                        exit_price: float = 0.0) -> dict | None:
+        """Close an existing position. Returns the close record, or None if skipped.
+
+        P&L uses the SHARED accounting model (trading_system.bot.accounting) —
+        the same numbers as the deployed paper trader and the backtest engines:
+
+          - 0.05% taker fee on the notional of each side (entry + exit)
+          - 0.02% slippage per side, embedded in the fills
+          - 0.01% funding per 8h UTC boundary while held
+
+        ``pnl_pct`` is a percentage (the convention Telegram and the paper
+        trader's trade records use). ``pnl_usd`` is in quote currency.
+        """
+        side = "sell" if position.get("side") == "long" else "buy"
         amount = abs(position.get("size", 0))
+        entry_price = position.get("entry_price", 0)
+        entry_time = position.get("entry_time") or ""
+
+        # Positions live in the SL manager ledger in paper mode, and live mode
+        # registers there too — it is the only place entry timestamps are kept.
+        # Recover size / entry / entry_time from the ledger when the caller
+        # couldn't supply them (e.g. an SLTP action built before threading them).
+        sl_pos = self.sltp.find_position(pair)
+        if sl_pos is not None:
+            if amount <= 0:
+                amount = sl_pos.size
+                side = "sell" if sl_pos.side == "long" else "buy"
+            if entry_price <= 0:
+                entry_price = sl_pos.entry_price
+            if not entry_time:
+                entry_time = sl_pos.entry_time
 
         if amount <= 0:
-            return
+            logger.warning("close_skipped", pair=pair, reason=reason, size=amount)
+            return None
 
         logger.info("closing_position", pair=pair, side=side, amount=amount, reason=reason)
 
-        entry_price = position.get("entry_price", 0)
-        exit_price = position.get("mark_price", 0)
-        pnl_pct = position.get("unrealized_pnl_pct", 0)
-        pnl_usd = position.get("unrealized_pnl", 0)
+        now = datetime.now(timezone.utc)
+        # side is the CLOSE side: selling a long is +1, buying a short is -1.
+        direction = 1 if side == "sell" else -1
+        notional = amount * entry_price if entry_price > 0 else 0.0
 
         if self.bot_config.mode == "paper":
-            logger.info("paper_close", pair=pair, side=side, amount=amount)
+            # Remove the ledger entry (signal close) and keep its recorded entry.
+            sl_record = self.sltp.close_position(pair, exit_price, reason)
+            if sl_record is not None:
+                if sl_record.get("entry"):
+                    entry_price = sl_record["entry"]
+                if not entry_time:
+                    entry_time = sl_record.get("entry_time") or entry_time
+
+            # Simulated fills embed slippage around the reference price.
+            exit_ref = exit_price if exit_price > 0 else (sl_record or {}).get("exit") or entry_price
+            entry_fill = entry_price
+            exit_fill = self._fill_with_slippage(exit_ref, side)
+            gross = amount * (exit_fill - entry_fill) * direction
+            fee_entry = notional * FEE_RATE
+            fee_exit = notional * FEE_RATE
+            funding = funding_cost(notional, entry_time, now) if entry_time and notional > 0 else 0.0
+            pnl_usd = gross - fee_entry - fee_exit - funding
+            pnl_pct = ((exit_fill - entry_fill) / entry_fill * direction * 100.0
+                       if entry_fill > 0 else 0.0)
             self.state.record_trade({
                 "pair": pair, "side": side, "amount": amount,
                 "mode": "paper", "action": "close", "reason": reason,
+                "entry_price": entry_price, "exit_price": exit_fill,
+                "pnl_pct": pnl_pct, "pnl_usd": pnl_usd,
+                "fee": fee_entry + fee_exit, "funding": funding,
             })
             self.telegram.notify_trade_close(
                 pair=pair, side=side, entry_price=entry_price,
-                exit_price=exit_price, pnl_pct=pnl_pct, pnl_usd=pnl_usd,
+                exit_price=exit_fill, pnl_pct=pnl_pct, pnl_usd=pnl_usd,
                 reason=reason, mode="paper",
             )
-        elif self.bot_config.mode == "live":
+            return {"pair": pair, "side": side, "amount": amount, "reason": reason,
+                    "entry_price": entry_price, "exit_price": exit_fill,
+                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd}
+
+        if self.bot_config.mode == "live":
             order = self.exchange.place_market_order(pair, side, amount, reduce_only=True)
-            if order:
-                exit_price = order.get("average_price", exit_price)
-                self.state.record_trade({
-                    "pair": pair, "side": side, "amount": amount,
-                    "price": exit_price,
-                    "order_id": order["order_id"],
-                    "mode": "live", "action": "close", "reason": reason,
-                })
-                self.telegram.notify_trade_close(
-                    pair=pair, side=side, entry_price=entry_price,
-                    exit_price=exit_price, pnl_pct=pnl_pct, pnl_usd=pnl_usd,
-                    reason=reason, mode="live",
-                )
+            filled = float(order.get("filled", 0) or 0) if order else 0.0
+            if not order or filled <= 0:
+                # A failed reduce-only order — rejected, timeout, or zero
+                # fill — on a position the EXCHANGE no longer holds (closed
+                # externally / liquidated) must clear the ledger, or every
+                # future cycle retries this close forever. A rejection with
+                # filled=0 is the common real-world failure mode, not just
+                # a None return. If the exchange STILL holds the position,
+                # the failure is retryable: keep the entry and try again.
+                live_positions = self.exchange.get_positions(pair)
+                still_open = any(
+                    p["pair"] == pair and abs(float(p.get("size", 0) or 0)) > 0
+                    for p in live_positions)
+                if not still_open:
+                    logger.warning("live_close_ledger_desync", pair=pair,
+                                   reason=reason, action="clearing stale ledger entry")
+                    self.sltp.close_position(pair, exit_price or entry_price,
+                                             f"{reason} (ledger desync cleared)")
+                else:
+                    logger.error("live_close_unfilled", pair=pair,
+                                 order_id=(order or {}).get("order_id"))
+                return None
+            # Real fills already contain real slippage (average_price). Fees and
+            # funding are ESTIMATES at the shared-model rates so reported live
+            # P&L matches the paper trader / backtest accounting.
+            exit_fill = float(order.get("average_price", 0) or exit_price or entry_price)
+            gross = amount * (exit_fill - entry_price) * direction
+            fee_entry = notional * FEE_RATE
+            fee_exit = notional * FEE_RATE
+            funding = funding_cost(notional, entry_time, now) if entry_time and notional > 0 else 0.0
+            pnl_usd = gross - fee_entry - fee_exit - funding
+            pnl_pct = ((exit_fill - entry_price) / entry_price * direction * 100.0
+                       if entry_price > 0 else 0.0)
+            # The close is CONFIRMED (real fill on the exchange): remove the
+            # ledger entry now. Leaving it in place made the next cycle
+            # re-detect the phantom position, fire the SL again, and send a
+            # real reduce-only order for a position that no longer existed —
+            # double-reporting the trade and relying on the desync cleanup
+            # to self-heal after wasting an order.
+            self.sltp.close_position(pair, exit_fill,
+                                     f"{reason} (confirmed live fill)")
+            self.state.record_trade({
+                "pair": pair, "side": side, "amount": amount,
+                "price": exit_fill,
+                "order_id": order["order_id"],
+                "mode": "live", "action": "close", "reason": reason,
+                "entry_price": entry_price, "exit_price": exit_fill,
+                "pnl_pct": pnl_pct, "pnl_usd": pnl_usd,
+                "fee_estimate": fee_entry + fee_exit, "funding_estimate": funding,
+            })
+            self.telegram.notify_trade_close(
+                pair=pair, side=side, entry_price=entry_price,
+                exit_price=exit_fill, pnl_pct=pnl_pct, pnl_usd=pnl_usd,
+                reason=reason, mode="live",
+            )
+            return {"pair": pair, "side": side, "amount": amount, "reason": reason,
+                    "entry_price": entry_price, "exit_price": exit_fill,
+                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd}
+
+        # dry_run
+        logger.info("dry_run_close", pair=pair, side=side, amount=amount, reason=reason)
+        return {"pair": pair, "side": side, "amount": amount, "reason": reason}
 
     def get_status(self) -> dict:
         """Get current bot status including portfolio signals and SL/TP."""

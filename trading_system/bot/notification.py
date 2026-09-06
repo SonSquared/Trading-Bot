@@ -6,8 +6,6 @@ Supports webhook notifications (Telegram, Discord, Slack).
 
 from __future__ import annotations
 
-import json
-from typing import Any
 
 import requests
 import structlog

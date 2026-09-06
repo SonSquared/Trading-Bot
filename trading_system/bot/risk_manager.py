@@ -11,9 +11,7 @@ Auto-closes positions when risk thresholds are breached:
 Integrates with paper_trader.py — called on every run before new positions open.
 """
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 class RiskManager:
@@ -28,6 +26,7 @@ class RiskManager:
         max_position_hours: int = 72,
         max_open_positions: int = 3,
         max_portfolio_heat_pct: float = 30.0,
+        dd_cooldown_hours: float = 24.0,
     ):
         self.position_stop_loss_pct = position_stop_loss_pct
         self.portfolio_max_dd_pct = portfolio_max_dd_pct
@@ -36,6 +35,10 @@ class RiskManager:
         self.max_position_hours = max_position_hours
         self.max_open_positions = max_open_positions
         self.max_portfolio_heat_pct = max_portfolio_heat_pct
+        # How long after a portfolio drawdown stop the bot must stay flat.
+        # The caller re-arms ``peak_equity`` to the post-stop equity so the
+        # protection measures from the new baseline after the cooldown.
+        self.dd_cooldown_hours = dd_cooldown_hours
 
     def check_positions(
         self, positions: dict, prices: dict, equity: float, peak_equity: float
@@ -151,9 +154,49 @@ class RiskManager:
         return closes, alerts
 
     def can_open_position(
-        self, positions: dict, equity: float, cash: float, prices: dict
+        self, positions: dict, equity: float, cash: float, prices: dict,
+        peak_equity: float | None = None,
+        dd_cooldown_until=None,
+        now=None,
     ) -> tuple[bool, str]:
-        """Check if a new position can be opened."""
+        """Check if a new position can be opened.
+
+        Drawdown protection has TWO parts, both of which prevent the
+        close-all -> re-open oscillation observed in the forward replay:
+
+        1. ``dd_cooldown_until`` / ``now``: after a portfolio drawdown stop
+           the caller keeps the account flat for ``dd_cooldown_hours`` and
+           re-arms ``peak_equity`` to the post-stop equity, so protection is
+           measured from the new baseline once trading resumes.
+        2. ``peak_equity`` (without re-arming this would be a permanent
+           shutdown: a flat cash account can never climb back above the dd
+           line, so a static peak must NOT gate re-entry).
+        """
+        if dd_cooldown_until is not None and now is not None:
+            try:
+                cd = dd_cooldown_until
+                if isinstance(cd, str):
+                    cd = datetime.fromisoformat(cd)
+                elif hasattr(cd, "to_pydatetime"):
+                    cd = cd.to_pydatetime()
+                cur = now
+                if isinstance(cur, str):
+                    cur = datetime.fromisoformat(cur)
+                elif hasattr(cur, "to_pydatetime"):
+                    cur = cur.to_pydatetime()
+                if cd.tzinfo is None:
+                    cd = cd.replace(tzinfo=timezone.utc)
+                if cur.tzinfo is None:
+                    cur = cur.replace(tzinfo=timezone.utc)
+                if cur < cd:
+                    return False, f"Drawdown cooldown until {cd.isoformat()}"
+            except (ValueError, TypeError):
+                pass
+        if peak_equity is not None and peak_equity > 0:
+            dd_pct = (peak_equity - equity) / peak_equity * 100
+            if dd_pct >= self.portfolio_max_dd_pct:
+                return False, (f"Portfolio drawdown {dd_pct:.1f}% >= "
+                               f"{self.portfolio_max_dd_pct}% — below the dd line")
         # Max positions check
         if len(positions) >= self.max_open_positions:
             return False, f"Max {self.max_open_positions} positions reached"

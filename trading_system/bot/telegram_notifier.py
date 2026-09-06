@@ -7,9 +7,7 @@ No cluttered separators or excessive emojis — just the data you need.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from typing import Optional
 
 import requests
 import structlog
@@ -187,15 +185,17 @@ class TelegramNotifier:
         open_positions: list[dict],
         win_rate: float = 0.0,
         total_trades: int = 0,
+        initial_capital: float = 0.0,
     ) -> bool:
         """Send consolidated portfolio report."""
-        msg = f"TRADING BOT REPORT\n"
+        msg = "TRADING BOT REPORT\n"
         msg += f"{'='*30}\n"
-        msg += f"Equity: ${equity:,.2f} ({daily_pnl_pct:+.1f}% from $97)\n"
+        base = initial_capital if initial_capital > 0 else "start"
+        msg += f"Equity: ${equity:,.2f} ({daily_pnl_pct:+.1f}% from {base})\n"
         msg += f"P&L: ${daily_pnl:+,.2f}"
         if total_trades > 0:
             msg += f" | Win: {win_rate:.0f}% ({total_trades} trades)"
-        msg += f"\n"
+        msg += "\n"
 
         if open_positions:
             msg += f"\nOPEN POSITIONS ({len(open_positions)}):\n"
@@ -216,7 +216,7 @@ class TelegramNotifier:
                 else:
                     msg += f"    Strategy: {strategy}\n"
         else:
-            msg += f"\nNo open positions\n"
+            msg += "\nNo open positions\n"
 
         msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Paper Trading"
         return self._send_message(msg)
@@ -236,7 +236,7 @@ class TelegramNotifier:
         # Strategies
         strategies = status.get("strategies", [])
         if strategies:
-            msg += f"\n<b>Signals:</b>\n"
+            msg += "\n<b>Signals:</b>\n"
             for s in strategies:
                 sig = s.get("last_signal", "N/A")
                 sig_emoji = "🟢" if sig == "LONG" else "🔴" if sig == "SHORT" else "⚪"
@@ -245,7 +245,7 @@ class TelegramNotifier:
         # Risk
         risk = status.get("risk", {})
         if risk:
-            msg += f"\n<b>Risk:</b>\n"
+            msg += "\n<b>Risk:</b>\n"
             msg += f"DD: {risk.get('current_drawdown', 0):.1f}%\n"
             msg += f"Positions: {risk.get('open_positions', 0)}/{risk.get('max_positions', 3)}\n"
 

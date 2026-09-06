@@ -32,9 +32,10 @@ TRACKER_FILE = Path("data/results/position_tracker.json")
 LOG_DIR = Path("data/results")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Telegram config
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8783971913:AAH1ZdvtKvHjgVuC2c9LLebYnM-o8gBMQaY")
-TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5421461006")
+# Telegram config — credentials come ONLY from environment variables.
+# Never hardcode a bot token in source: it leaks the bot to anyone with repo access.
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # Alert thresholds
 PNL_CHANGE_THRESHOLD = 1.0  # Alert if P&L changes by 1%
@@ -46,6 +47,9 @@ PRICE_ALERT_COOLDOWN_HOURS = 1  # Don't spam — 1 alert per symbol per hour
 
 def send_telegram(text: str):
     """Send a Telegram message via requests (most reliable cross-platform)."""
+    if not TG_TOKEN or not TG_CHAT:
+        print("  Telegram: NOT CONFIGURED — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. Skipping send.")
+        return
     try:
         import requests as _requests
         resp = _requests.post(
@@ -54,7 +58,7 @@ def send_telegram(text: str):
             timeout=20,
         )
         if resp.status_code == 200 and resp.json().get("ok"):
-            print(f"  Telegram: sent")
+            print("  Telegram: sent")
             return
         print(f"  Telegram: API error - {resp.text[:100]}")
     except Exception as e:
@@ -130,9 +134,11 @@ def load_tracker_state() -> dict:
 
 
 def save_tracker_state(state: dict):
-    """Save tracker state."""
-    with open(TRACKER_FILE, "w") as f:
+    """Atomically persist tracker state (write temp file, then rename)."""
+    tmp = TRACKER_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2, default=str)
+    os.replace(tmp, TRACKER_FILE)
 
 
 def should_update(tracker: dict, symbol: str, current_pnl_pct: float) -> tuple[bool, str]:
@@ -186,19 +192,7 @@ def check_price_alerts(tracker: dict, symbol: str, pair_label: str, current_pric
     price_history[:] = [p for p in price_history
                         if datetime.fromisoformat(p["time"]) > cutoff]
     
-    # Check for >2% move in the last hour
-    one_hour_ago = now - timedelta(hours=1)
-    oldest_in_hour = None
-    for p in price_history:
-        try:
-            t = datetime.fromisoformat(p["time"])
-            if t <= now and (oldest_in_hour is None or t > oldest_in_hour_time):
-                oldest_in_hour = p
-                oldest_in_hour_time = t
-        except Exception:
-            continue
-    
-    # Actually, just find the price closest to 1 hour ago
+    # Find the price closest to 1 hour ago (dead first loop removed)
     target_time = now - timedelta(hours=1)
     best_match = None
     best_diff = timedelta(hours=99)
@@ -362,7 +356,7 @@ def check_positions():
     # Update tracker state
     tracker["last_update"] = now.isoformat()
     save_tracker_state(tracker)
-    print(f"\n  Check saved.")
+    print("\n  Check saved.")
 
 
 if __name__ == "__main__":

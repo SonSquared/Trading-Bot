@@ -7,8 +7,6 @@ Handles order placement, position queries, and account info.
 
 from __future__ import annotations
 
-import time
-from typing import Any
 
 import ccxt
 import pandas as pd

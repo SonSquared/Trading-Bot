@@ -359,7 +359,8 @@ def main():
         # Simple proxy: weight by adjusted score
         scores = np.array([max(s.get("adjusted_score", 0.01), 0.01) for s in selected])
         weights = scores / scores.sum()
-        print(f"  Suggested weights: {', '.join(f'{s['strategy_name']}: {w:.1%}' for s, w in zip(selected, weights))}")
+        inner = ", ".join(f"{s['strategy_name']}: {w:.1%}" for s, w in zip(selected, weights))
+        print(f"  Suggested weights: {inner}")
     else:
         print("  Not enough strategies for portfolio analysis")
 

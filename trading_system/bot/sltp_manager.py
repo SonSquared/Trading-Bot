@@ -134,6 +134,8 @@ class SLTPManager:
                     "entry": pos.entry_price,
                     "exit": current_price,
                     "strategy": pos.strategy,
+                    "size": pos.size,
+                    "entry_time": pos.entry_time,
                 })
                 self._closed_positions.append({
                     **actions[-1],
@@ -149,6 +151,45 @@ class SLTPManager:
             del self.positions[key]
 
         return actions
+
+    def find_position(self, pair: str) -> PositionLevel | None:
+        """Find the tracked position for a pair (paper mode uses this as its ledger)."""
+        for pos in self.positions.values():
+            if pos.pair == pair:
+                return pos
+        return None
+
+    def close_position(self, pair: str, exit_price: float, reason: str) -> dict | None:
+        """
+        Close a tracked position at the given price and record it.
+
+        Used for signal-based exits in paper mode where the SL manager is
+        the position ledger. Returns the close record, or None if no
+        position was tracked for this pair.
+        """
+        for key in list(self.positions):
+            pos = self.positions[key]
+            if pos.pair != pair:
+                continue
+            del self.positions[key]
+            pnl = pos.unrealized_pnl(exit_price)
+            record = {
+                "action": "close",
+                "pair": pos.pair,
+                "side": "sell" if pos.side == "long" else "buy",
+                "reason": reason,
+                "pnl_pct": pnl,
+                "entry": pos.entry_price,
+                "exit": exit_price,
+                "strategy": pos.strategy,
+                "entry_time": pos.entry_time,
+                "exit_time": datetime.now(timezone.utc).isoformat(),
+            }
+            self._closed_positions.append(record)
+            logger.info("position_closed", pair=pair, exit=exit_price, reason=reason,
+                        pnl=f"{pnl * 100:.2f}%")
+            return record
+        return None
 
     def get_status(self) -> dict[str, Any]:
         """Get current SL status for all positions."""

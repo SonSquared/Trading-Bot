@@ -25,10 +25,9 @@ Features (25+):
 
 from __future__ import annotations
 
-import json
 import pickle
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,13 +35,12 @@ import numpy as np
 import pandas as pd
 import structlog
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 
 from trading_system.indicators import (
-    adx, atr, bollinger_bands, cci, ema, mfi, rsi, roc, sma,
-    stochastic, williams_r, true_range, obv, relative_volume,
-    historical_volatility, normalized_atr,
+    adx, atr, bollinger_bands, cci, ema, rsi, roc, sma,
+    stochastic, williams_r, true_range, obv, historical_volatility, normalized_atr,
 )
 
 logger = structlog.get_logger(__name__)
@@ -418,7 +416,7 @@ class MLRegimeDetector:
             # Top 10 features
             imp = metrics["feature_importance"]
             top_features = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:10]
-            print(f"\n  Top 10 features:")
+            print("\n  Top 10 features:")
             for name, score in top_features:
                 bar = "#" * int(score * 100)
                 print(f"    {name:25s} {score:.4f} {bar}")

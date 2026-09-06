@@ -152,33 +152,39 @@ def supertrend(
     basic_upper = hl2 + multiplier * atr
     basic_lower = hl2 - multiplier * atr
 
-    # Initialize arrays
+    close_arr = close.to_numpy(dtype=float)
+    upper_band = basic_upper.to_numpy(dtype=float).copy()
+    lower_band = basic_lower.to_numpy(dtype=float).copy()
+    atr_arr = atr.to_numpy(dtype=float)
+
     n = len(df)
-    st = np.zeros(n)
-    direction = np.zeros(n)
-    upper_band = basic_upper.values.copy()
-    lower_band = basic_lower.values.copy()
+    st = np.full(n, np.nan)
+    direction = np.full(n, np.nan)
 
-    st[0] = basic_upper.iloc[0]
-    direction[0] = -1
+    for i in range(n):
+        # Warm-up: ATR (and thus the bands) is NaN for the first `period`
+        # rows. Any value carried through NaN comparisons would stay NaN
+        # forever, so skip until the bands are valid.
+        if np.isnan(atr_arr[i]):
+            continue
 
-    close_arr = close.values
+        if i > 0 and np.isfinite(upper_band[i - 1]):
+            # Final upper band: keep the basic band only if it ratchets
+            # down or price closed above the previous final band.
+            if not (upper_band[i] < upper_band[i - 1] or close_arr[i - 1] > upper_band[i - 1]):
+                upper_band[i] = upper_band[i - 1]
 
-    for i in range(1, n):
-        # Final upper band
-        if upper_band[i] < upper_band[i - 1] or close_arr[i - 1] > upper_band[i - 1]:
-            upper_band[i] = upper_band[i]
+            # Final lower band: ratchet up or price closed below.
+            if not (lower_band[i] > lower_band[i - 1] or close_arr[i - 1] < lower_band[i - 1]):
+                lower_band[i] = lower_band[i - 1]
+            prev_dir = direction[i - 1]
         else:
-            upper_band[i] = upper_band[i - 1]
-
-        # Final lower band
-        if lower_band[i] > lower_band[i - 1] or close_arr[i - 1] < lower_band[i - 1]:
-            lower_band[i] = lower_band[i]
-        else:
-            lower_band[i] = lower_band[i - 1]
+            # First valid row: bands start fresh; canonical start in a
+            # downtrend (the first close above the upper band flips us).
+            prev_dir = -1.0
 
         # Direction
-        if direction[i - 1] == 1:  # Was uptrend
+        if prev_dir == 1:  # Was uptrend
             if close_arr[i] < lower_band[i]:
                 direction[i] = -1
                 st[i] = upper_band[i]

@@ -24,10 +24,11 @@ from functools import wraps
 sys.path.insert(0, ".")
 
 import pandas as pd
-import numpy as np
 
 from trading_system.strategies import STRATEGY_REGISTRY
-from trading_system.bot.risk_manager import RiskManager, DEFAULT_RISK_MANAGER
+from trading_system.bot.risk_manager import DEFAULT_RISK_MANAGER
+from trading_system.bot.candles import closed_candles
+from trading_system.bot.accounting import charge_funding, FEE_RATE, SLIPPAGE_RATE
 
 
 # --- Strategy Configs (from FULL 2022-2026 backtest optimization) ---
@@ -101,15 +102,15 @@ def load_active_strategies() -> dict:
             ACTIVE_STRATEGIES = valid
             print(f"  Using {len(valid)} optimized strategy configs")
             return valid
-        print(f"  WARNING: No valid optimized configs, using defaults")
+        print("  WARNING: No valid optimized configs, using defaults")
     ACTIVE_STRATEGIES = STRATEGIES.copy()
     return ACTIVE_STRATEGIES
 
 
 # --- Config ---
+# Cost model is shared with the backtest engines (trading_system.bot.accounting):
+# 0.05% fee per side, 0.02% slippage per side, funding at 8h UTC boundaries.
 INITIAL_CAPITAL = 97.0
-FEE_RATE = 0.0005
-SLIPPAGE_RATE = 0.0002
 MAX_POSITION_PCT = 0.35
 MIN_TRADE_USD = 5.0  # Minimum trade size (reduced from 100 for small accounts)
 LOG_DIR = Path("data/results")
@@ -119,6 +120,8 @@ STATE_FILE = LOG_DIR / "paper_state.json"
 SUMMARY_FILE = LOG_DIR / "paper_summary.json"
 RUN_LOG = LOG_DIR / "run_history.jsonl"
 OPTIMIZED_PARAMS_FILE = LOG_DIR / "bot_strategy_params.json"
+LOCK_FILE = LOG_DIR / "bot.lock"
+_LOCK_HELD = False
 
 
 # --- Retry Decorator ---
@@ -139,6 +142,8 @@ def retry(max_attempts: int = 3, base_delay: float = 2.0, exceptions: tuple = (E
                         time.sleep(delay)
                     else:
                         print(f"    Failed after {max_attempts} attempts: {e}")
+            if last_error is None:
+                last_error = RuntimeError(f"{func.__name__}: retry loop exhausted without result")
             raise last_error
         return wrapper
     return decorator
@@ -157,6 +162,53 @@ def log_run(status: str, duration: float, trades: int, errors: list, equity: flo
     }
     with open(RUN_LOG, "a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+# --- Run Lock (prevents concurrent instances from double-opening positions) ---
+def acquire_lock(max_wait_seconds: int = 180, stale_seconds: int = 600) -> bool:
+    """Acquire an exclusive run lock. Returns True if acquired.
+
+    Uses an atomic O_CREAT|O_EXCL file create. A lock older than
+    ``stale_seconds`` is considered abandoned (e.g. crash) and broken.
+    """
+    global _LOCK_HELD
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + max_wait_seconds
+    while True:
+        try:
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            _LOCK_HELD = True
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - os.path.getmtime(LOCK_FILE)
+                if age > stale_seconds:
+                    print(f"  Run lock is stale ({age:.0f}s old) — removing and retrying.")
+                    os.remove(LOCK_FILE)
+                    continue
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                print("  Could not acquire run lock (another instance is running).")
+                return False
+            time.sleep(min(5, max(0.1, deadline - time.time())))
+        except OSError as e:
+            print(f"  Could not acquire run lock: {e}")
+            return False
+
+
+def release_lock():
+    """Release the run lock if this process holds it."""
+    global _LOCK_HELD
+    if not _LOCK_HELD:
+        return
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+    _LOCK_HELD = False
 
 
 # --- Telegram ---
@@ -330,7 +382,9 @@ def handle_telegram_commands(token: str, chat_id: str):
                     positions_text += f"{'+' if side_int == 1 else ''}{format_pair(pair)} {side} @ ${entry:,.2f}\n"
             if not positions_text:
                 positions_text = "No open positions\n"
-            # Calculate unrealized P&L
+            # Calculate unrealized P&L (net of funding already charged —
+            # realized total_pnl includes funding, so unrealized must too
+            # or realized + unrealized would double-mismatch equity).
             total_unrealized = 0.0
             for pair, pos in state.get("positions", {}).items():
                 current = cmd_prices.get(pair, pos.get('entry_price', 0))
@@ -343,6 +397,8 @@ def handle_telegram_commands(token: str, chat_id: str):
                         total_unrealized += qty * (current - entry)
                     else:
                         total_unrealized += qty * (entry - current)
+            total_unrealized -= sum(
+                p.get('funding_paid', 0.0) for p in state.get('positions', {}).values())
             total_pnl = state['total_pnl'] + total_unrealized
             tg_send_message(token, chat_id, (
                 f"STATUS\n"
@@ -404,6 +460,9 @@ def handle_telegram_commands(token: str, chat_id: str):
                             pnl_usd = qty * (current - entry)
                         else:  # SHORT
                             pnl_usd = qty * (entry - current)
+                        # Net of funding already charged — matches the daily
+                        # message's per-position numbers.
+                        pnl_usd -= pos.get("funding_paid", 0.0)
                         pnl_pct = pnl_usd / size * 100 if size > 0 else 0
                     else:
                         pnl_usd = 0
@@ -416,7 +475,7 @@ def handle_telegram_commands(token: str, chat_id: str):
                     msg_text += f"  P&L: {pnl_pct:+.1f}% (${pnl_usd:+.2f})\n"
                     msg_text += f"  Size: ${size:.2f} | {strategy}\n\n"
                 
-                msg_text += f"Total: ${total_pnl:+.2f}\n"
+                msg_text += f"Total (net of funding): ${total_pnl:+.2f}\n"
                 msg_text += f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
                 tg_send_message(token, chat_id, msg_text)
 
@@ -562,17 +621,17 @@ def load_state() -> dict:
     
     if cash > MAX_PLAUSIBLE_EQUITY:
         print(f"  WARNING: cash=${cash:.2f} exceeds max plausible ${MAX_PLAUSIBLE_EQUITY:.2f}")
-        print(f"  WARNING: Stale cache from previous code version — resetting")
+        print("  WARNING: Stale cache from previous code version — resetting")
         return _fresh_state()
     
     if apparent_equity > MAX_PLAUSIBLE_EQUITY:
         print(f"  WARNING: equity=${apparent_equity:.2f} exceeds max plausible ${MAX_PLAUSIBLE_EQUITY:.2f}")
-        print(f"  WARNING: Stale cache — resetting")
+        print("  WARNING: Stale cache — resetting")
         return _fresh_state()
     
     if state.get("peak_equity", 0) > MAX_PLAUSIBLE_EQUITY:
         print(f"  WARNING: peak_equity=${state['peak_equity']:.2f} exceeds max plausible")
-        print(f"  WARNING: Stale cache — resetting")
+        print("  WARNING: Stale cache — resetting")
         return _fresh_state()
     
     # Also check if cash is negative (should never happen)
@@ -584,8 +643,86 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    with open(STATE_FILE, "w") as f:
+    """Atomically persist state (write temp file, then rename)."""
+    tmp = STATE_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_FILE)
+
+
+# --- Data-freshness guard ---
+# A trading decision on stale candles is a decision on a market that no
+# longer exists. Every signal must come from a candle that CLOSED recently:
+# at most one candle interval plus a small fetch margin ago.
+MAX_CANDLE_AGE_FACTOR = 2.0  # candle may be at most 2x its interval old
+
+
+def candle_age_seconds(df: pd.DataFrame, timeframe: str) -> float | None:
+    """Age of the most recent CLOSED candle in seconds, or None if unknown."""
+    from trading_system.bot.candles import TIMEFRAME_SECONDS
+    tf_sec = TIMEFRAME_SECONDS.get(timeframe, 3600)
+    closed = closed_candles(df, timeframe)
+    if closed is None or len(closed) == 0 or "timestamp" not in closed.columns:
+        return None
+    try:
+        last_ts = pd.to_datetime(closed["timestamp"].iloc[-1], utc=True)
+    except Exception:
+        return None
+    # The candle opened at last_ts; it closed last_ts + tf_sec.
+    close_ts = last_ts + pd.Timedelta(seconds=tf_sec)
+    now = pd.Timestamp.now(tz="UTC")
+    return max(0.0, (now - close_ts).total_seconds())
+
+
+def assert_fresh_candles(df: pd.DataFrame, timeframe: str, pair: str = "") -> None:
+    """Raise if the most recent closed candle is too old to trade on.
+
+    Guards against: exchange API silently returning old data, a fallback
+    cache being used without timestamps, clock issues, and any future
+    regression in the data pipeline. Fail loud, never trade stale.
+    """
+    age = candle_age_seconds(df, timeframe)
+    from trading_system.bot.candles import TIMEFRAME_SECONDS
+    max_age = TIMEFRAME_SECONDS.get(timeframe, 3600) * MAX_CANDLE_AGE_FACTOR
+    if age is None:
+        raise RuntimeError(
+            f"STALE/UNKNOWN data for {pair}: cannot determine candle age")
+    if age > max_age:
+        raise RuntimeError(
+            f"STALE data for {pair}: latest closed candle is {age/60:.0f}min old "
+            f"(max {max_age/60:.0f}min) — refusing to trade")
+
+
+# --- Idempotent open guard ---
+def already_open(state: dict, pair: str, side: int, max_age_seconds: int = 3600) -> bool:
+    """True if an identical open was already logged recently for this pair+side.
+
+    Defense in depth against duplicate opens: the run lock and the workflow
+    concurrency group prevent concurrent runs, but a state save that fails
+    after an open (crash, disk full, timeout) would lose the position from
+    paper_state.json while the trade log still shows it — the next run would
+    open the same position again. This cross-checks the trade log.
+    """
+    if not TRADE_LOG.exists():
+        return False
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+    action = "OPEN_LONG" if side == 1 else "OPEN_SHORT"
+    try:
+        with open(TRADE_LOG) as f:
+            for line in reversed(f.readlines()[-200:]):
+                try:
+                    t = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = t.get("timestamp", "")
+                if ts < cutoff:      # ISO strings sort chronologically
+                    break
+                if (t.get("pair") == pair and t.get("action") == action
+                        and "paper-state-consistency" not in str(t.get("note", ""))):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 # --- Data ---
@@ -637,7 +774,7 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
         return fresh
 
     # Fallback: try cached files, but ONLY if they have recent timestamps
-    print(f"    API failed, trying cached files...")
+    print("    API failed, trying cached files...")
     for pattern in [f"data/raw/{pair}/{timeframe}.parquet", f"data/raw/{pair}/klines_{timeframe}.parquet"]:
         cache_path = Path(pattern)
         if cache_path.exists():
@@ -653,7 +790,7 @@ def fetch_latest(pair: str, timeframe: str, lookback_days: int = 30) -> pd.DataF
                 else:
                     print(f"    Cache stale: no candles after {cutoff}")
             else:
-                print(f"    Cache rejected: no timestamp column (optimization data, not trading data)")
+                print("    Cache rejected: no timestamp column (optimization data, not trading data)")
 
     raise Exception(f"All data sources failed for {pair}")
 
@@ -668,14 +805,19 @@ def simulate_fills(price: float, side: int, size_usd: float) -> tuple[float, flo
 
 def open_position(state: dict, pair: str, side: int, price: float, strategy: str, size_usd: float) -> dict:
     fill_price, fee, slip = simulate_fills(price, side, size_usd)
-    state["cash"] -= (size_usd + fee + slip)
+    # Slippage is embedded in the fill price (like the backtest engine), so
+    # only the fee is an extra cash cost. Deducting slippage here as well
+    # would double-charge it and make paper P&L diverge from the backtest.
+    state["cash"] -= (size_usd + fee)
+    state["total_pnl"] -= fee  # entry fee is an immediate P&L cost (matches cash)
     state["positions"][pair] = {
         "side": side,
         "entry_price": fill_price,
         "size_usd": size_usd,
         "entry_time": datetime.now(timezone.utc).isoformat(),
         "strategy": strategy,
-        "fees_paid": fee + slip,
+        "fees_paid": fee + slip,  # informational total cost; cash impact is the fee only
+        "funding_paid": 0.0,
     }
     trade = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -703,8 +845,10 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
 
     fill_price, fee, slip = simulate_fills(price, -side, size_usd)
     pnl_pct = (fill_price - entry_price) / entry_price * side
-    # Entry fees already reflected in entry fill price and deducted from cash on open
-    pnl_usd = size_usd * pnl_pct - fee - slip
+    # Gross P&L is computed on fill prices, so slippage is already included
+    # on both sides. Only the exit fee is an extra cost (the entry fee was
+    # already booked into total_pnl at open). Matches the backtest engine.
+    pnl_usd = size_usd * pnl_pct - fee
 
     state["cash"] += size_usd + pnl_usd
     state["total_trades"] += 1
@@ -728,6 +872,7 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
         "pnl_usd": pnl_usd,
         "fee": fee,
         "slippage": slip,
+        "funding": pos.get("funding_paid", 0.0),
         "reason": reason,
         "strategy": pos["strategy"],
         "cash_after": state["cash"],
@@ -755,18 +900,41 @@ def run_strategies() -> tuple[dict, list]:
                 print(f"  {name}: Insufficient data ({len(df) if df is not None else 0} candles)")
                 continue
 
+            # Signals must come from fully-closed candles only, so live
+            # behavior matches the next-open backtest model.
+            closed = closed_candles(df, cfg["timeframe"])
+            if closed is None or len(closed) < 50:
+                errors.append(f"{name}: insufficient closed candles ({len(closed) if closed is not None else 0})")
+                print(f"  {name}: Insufficient closed candles ({len(closed) if closed is not None else 0})")
+                continue
+            # NEVER trade on stale candles: a signal computed on hours-old
+            # data describes a market that no longer exists. Fail loud.
+            try:
+                assert_fresh_candles(df, cfg["timeframe"], cfg["pair"])
+            except RuntimeError as e:
+                errors.append(f"{name}: {e}")
+                print(f"  {name}: STALE — {e}")
+                continue
             strat = STRATEGY_REGISTRY[cfg["strategy"]]
-            sig = strat.generate_signals(df, cfg["params"])
+            sig = strat.generate_signals(closed, cfg["params"])
             latest = int(sig.iloc[-1])
-            price = float(df["close"].iloc[-1])
-            atr = float(df["close"].diff().abs().rolling(14).mean().iloc[-1]) if len(df) > 14 else price * 0.01
+            price = float(closed["close"].iloc[-1])
+            candle_time = pd.to_datetime(closed["timestamp"].iloc[-1], utc=True)
+            # Next-open fill price: the open of the currently forming candle is
+            # exactly the "next open" after the last closed candle, which is the
+            # backtest engine's fill convention. Falls back to the last closed
+            # close only if the exchange returned no forming candle.
+            next_open = float(df["open"].iloc[-1]) if len(df) > len(closed) else price
+            atr = float(closed["close"].diff().abs().rolling(14).mean().iloc[-1]) if len(closed) > 14 else price * 0.01
             signals[name] = {
                 "signal": latest,
                 "weight": cfg["weight"],
                 "pair": cfg["pair"],
                 "strategy": cfg["strategy"],
                 "price": price,
+                "next_open": next_open,
                 "atr": atr,
+                "candle_time": candle_time,
             }
             direction = "LONG" if latest == 1 else "FLAT" if latest == 0 else "SHORT"
             print(f"  {name}: {direction} @ ${price:,.2f}")
@@ -790,10 +958,17 @@ def aggregate_signals(signals: dict, state: dict = None) -> dict:
     pair_scores = {}
     for name, s in signals.items():
         pair = s["pair"]
-        if pair not in pair_scores:
-            pair_scores[pair] = {"weighted_sum": 0.0, "total_weight": 0.0, "price": s["price"], "atr": s["atr"]}
+        if pair not in pair_scores:        pair_scores[pair] = {"weighted_sum": 0.0, "total_weight": 0.0,
+                             "price": s["price"], "next_open": s.get("next_open") or s["price"],
+                             "atr": s["atr"], "candle_time": None}
         pair_scores[pair]["weighted_sum"] += s["signal"] * s["weight"]
         pair_scores[pair]["total_weight"] += s["weight"]
+        ct = s.get("candle_time")
+        if ct is not None:
+            cur = pair_scores[pair].get("candle_time")
+            if cur is None or ct > cur:
+                pair_scores[pair]["candle_time"] = ct
+                pair_scores[pair]["next_open"] = s.get("next_open") or s["price"]
 
     state_positions = state.get("positions", {}) if state else {}
     
@@ -822,7 +997,9 @@ def aggregate_signals(signals: dict, state: dict = None) -> dict:
                 else:  # SHORT
                     final = -1 if score < 0.1 else 0
             
-            results[pair] = {"score": score, "signal": final, "price": data["price"], "atr": data["atr"]}
+            results[pair] = {"score": score, "signal": final, "price": data["price"],
+                             "next_open": data.get("next_open") or data["price"],
+                             "atr": data["atr"], "candle_time": data.get("candle_time")}
     return results
 
 
@@ -925,7 +1102,22 @@ def main():
         except Exception as e:
             print(f"  Telegram command check failed: {e}")
 
+    # Exclusive run lock: concurrent schedulers, manual runs, and Telegram
+    # /restart must never run this bot simultaneously (observed double-open bug).
+    if not acquire_lock():
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Another bot instance is running — skipping this run.")
+        return
+
     state = load_state()
+
+    # Charge 8h funding (00:00/08:00/16:00 UTC) on all open positions, so
+    # P&L matches the backtest engine's cost model. Must run after the lock
+    # and before any equity calculation or trade.
+    funding_total, funding_per_pair = charge_funding(state)
+    if funding_total > 0:
+        print(f"  Funding charged: ${funding_total:.4f}")
+        for pair, amt in funding_per_pair.items():
+            print(f"    {format_pair(pair)}: ${amt:.4f}")
 
     # Fetch ALL live prices ONCE — single source of truth for entire run
     print("Fetching live prices...")
@@ -957,6 +1149,7 @@ def main():
                 notifier.notify_error(f"Bot run failed: {e}", "Strategy execution")
             except Exception:
                 pass
+        release_lock()
         return
     print()
 
@@ -1014,6 +1207,26 @@ def main():
                         except Exception:
                             pass
         
+        # Portfolio drawdown stop: close all, then RE-ARM the peak to the
+        # post-stop equity and enforce a flat cooldown. Without the re-arm a
+        # flat cash account can never climb back above the old dd line (the
+        # bot would stay dormant forever); without the cooldown the same run
+        # would re-open and oscillate close->open->close every cycle
+        # (observed in the forward replay: hundreds of dd closes).
+        if any(c["reason"].startswith("Portfolio drawdown") for c in risk_closes):
+            eq_after_dd = get_equity(state, current_prices)
+            state["peak_equity"] = eq_after_dd
+            state["dd_cooldown_until"] = (
+                datetime.now(timezone.utc) + timedelta(hours=risk_manager.dd_cooldown_hours)
+            ).isoformat()
+            print(f"  RISK: drawdown stop -> flat {risk_manager.dd_cooldown_hours:.0f}h, "
+                  f"peak re-armed at ${eq_after_dd:.2f}")
+
+        # Incremental save: closed positions are durable immediately, so a
+        # crash after a risk close can never resurrect the position next run.
+        if risk_closes:
+            save_state(state)
+
         # Send risk alerts
         for alert in risk_alerts:
             print(f"  RISK ALERT: {alert['message']}")
@@ -1025,19 +1238,34 @@ def main():
                         tg_send_message(cfg["bot_token"], str(cfg["chat_id"]), msg)
                 except Exception:
                     pass
-        
-        # Check if new positions can open
-        can_open, reason = risk_manager.can_open_position(
-            state["positions"], get_equity(state, current_prices), state["cash"], current_prices
-        )
-        if not can_open:
-            print(f"  Risk manager: Cannot open new positions ({reason})")
-    else:
-        can_open = True
+
+    # Open gate: always evaluated (flat accounts included) and aware of the
+    # drawdown cooldown so a stopped-out bot stays flat until it expires.
+    can_open, can_open_reason = risk_manager.can_open_position(
+        state["positions"],
+        get_equity(state, current_prices),
+        state["cash"],
+        current_prices,
+        peak_equity=state.get("peak_equity"),
+        dd_cooldown_until=state.get("dd_cooldown_until"),
+        now=datetime.now(timezone.utc),
+    )
+    if not can_open:
+        print(f"  Risk manager: Cannot open new positions ({can_open_reason})")
     
     # Execute paper trades
+    last_seen = state.setdefault("last_candle_seen", {})
     for pair, data in portfolio.items():
         try:
+            # Only trade once per closed candle — matches next-open backtest.
+            candle_time = data.get("candle_time")
+            if candle_time is not None:
+                candle_key = str(candle_time)
+                if last_seen.get(pair) == candle_key:
+                    print(f"  {pair}: no new closed candle yet, skipping trades")
+                    continue
+                last_seen[pair] = candle_key
+
             current_pos = state["positions"].get(pair)
             desired = data["signal"]
             current_side = current_pos["side"] if current_pos else 0
@@ -1060,7 +1288,8 @@ def main():
                             pass
                     
                     if can_close:
-                        t = close_position(state, pair, data["price"], "Signal reversal")
+                        fill = data.get("next_open") or data["price"]
+                        t = close_position(state, pair, fill, "Signal reversal")
                         if t:
                             trades_this_run.append(t)
                             print(f"  CLOSED {pair}: P&L ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.2f}%)")
@@ -1069,22 +1298,50 @@ def main():
                         continue
 
                 if desired != 0 and can_open:
+                    # IDEMPOTENT-OPEN GUARD: if a crash/failed save lost this
+                    # position from state but the trade log recorded it, do not
+                    # open it a second time.
+                    if already_open(state, pair, desired):
+                        print(f"  {pair}: skip duplicate open (recently logged, "
+                              f"position missing from state)")
+                        errors.append(f"{pair}: duplicate open prevented "
+                                      f"(logged open, position absent from state)")
+                        continue
+
                     equity_now = get_equity(state)
                     size_usd = min(
                         equity_now * MAX_POSITION_PCT,
                         state["cash"] * 0.95,
                         INITIAL_CAPITAL * 0.50,  # Never risk more than 50% of initial capital per trade
                     )
+                    # Per-open heat re-check: `can_open` was evaluated BEFORE
+                    # this loop, so multiple opens in one run would each pass
+                    # the gate while accumulating heat (0.35 + 0.35 = 70%,
+                    # bypassing the 50% portfolio heat limit). Re-check with
+                    # the exposure this new position would add.
+                    existing_exposure = sum(
+                        p.get("size_usd", 0) for p in state["positions"].values())
+                    heat_pct = (existing_exposure + size_usd) / equity_now * 100                         if equity_now > 0 else 999.0
+                    if heat_pct > risk_manager.max_portfolio_heat_pct:
+                        print(f"  {pair}: OPEN rejected — heat {heat_pct:.0f}% would "
+                              f"exceed {risk_manager.max_portfolio_heat_pct:.0f}% limit")
+                        continue
                     if size_usd > MIN_TRADE_USD:
                         strat_name = "Unknown"
                         for sname, sdata in signals.items():
                             if sdata["pair"] == pair:
                                 strat_name = sdata["strategy"]
                                 break
-                        t = open_position(state, pair, desired, data["price"], strat_name, size_usd)
+                        fill = data.get("next_open") or data["price"]
+                        t = open_position(state, pair, desired, fill, strat_name, size_usd)
                         trades_this_run.append(t)
                         side = "LONG" if desired == 1 else "SHORT"
                         print(f"  OPENED {pair} {side}: ${size_usd:,.2f} @ ${data['price']:,.2f}")
+                        # Incremental save: the position is durable IMMEDIATELY.
+                        # A crash later in this run can no longer lose it (the
+                        # old end-of-run-only save is what let a crash turn a
+                        # logged open into a phantom re-open on the next run).
+                        save_state(state)
                     else:
                         print(f"  {pair}: Insufficient cash (${state['cash']:.2f})")
         except Exception as e:
@@ -1101,6 +1358,14 @@ def main():
     dd = (state["peak_equity"] - equity) / state["peak_equity"] if state["peak_equity"] > 0 else 0
     state["max_drawdown"] = max(state.get("max_drawdown", 0), dd)
 
+    # Persist MARKED-TO-MARKET equity and last known prices. Previously the
+    # state only recorded cash + entry-price sizes, so every reader
+    # (run history, dashboards, /status between runs) showed equity frozen at
+    # entry price — e.g. +2.9% true P&L displayed as ~0%.
+    state["last_equity_marked"] = equity
+    state["last_prices"] = {p: float(v) for p, v in current_prices.items()}
+    state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+
     save_state(state)
 
     # Build summary
@@ -1116,6 +1381,7 @@ def main():
         "losses": state["losses"],
         "win_rate": wr,
         "realized_pnl": state["total_pnl"],
+        "funding_charged": funding_total,
         "max_drawdown_pct": state["max_drawdown"] * 100,
         "open_positions": {p: {"side": v["side"], "entry": v["entry_price"], "size": v["size_usd"], "strategy": v["strategy"]} for p, v in state["positions"].items()},
         "trades_this_run": len(trades_this_run),
@@ -1132,6 +1398,7 @@ def main():
     print(f"Trades:     {state['total_trades']} (W:{state['wins']} / L:{state['losses']})")
     print(f"Win Rate:   {wr:.1f}%")
     print(f"P&L:        ${state['total_pnl']:+,.2f}")
+    print(f"Funding:    ${funding_total:,.4f} (8h UTC schedule)")
     print(f"Max DD:     {state['max_drawdown']*100:.2f}%")
     print(f"Open:       {len(state['positions'])} positions")
     print(f"Duration:   {duration:.1f}s")
@@ -1190,6 +1457,10 @@ def main():
                             upnl = qty * (current - entry)
                         else:
                             upnl = qty * (entry - current)
+                        # Funding already charged for this position is a real
+                        # cost — net it out so per-position P&L reconciles
+                        # with equity (gross P&L overstated the account).
+                        upnl -= pos.get("funding_paid", 0.0)
                         upnl_pct = upnl / size * 100
                         total_unrealized += upnl
                         side_str = "LONG" if side == 1 else "SHORT"
@@ -1197,22 +1468,33 @@ def main():
                         current_str = f"${current:,.2f}"
                         pos_lines.append(
                             f"  {side_str} {format_pair(pair)}\n"
-                            f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f})"
+                            f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f} net)"
                         )
-                
-                total_return = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
-                
+                # POST-TRADE equity for the message: `equity` was computed
+                # before this run's trades/funding, so on a trade alert it
+                # would disagree with the trade lines below it (the "wrong
+                # equity number" bug). Recompute from live state + prices.
+                equity_now = get_equity(state, current_prices)
+                total_return_now = (equity_now - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+
                 # ONE clean message format — always the same structure
                 if notify_reason == "trade":
                     msg = "TRADE ALERT"
                 else:
                     msg = "PORTFOLIO"
                 msg += f"\n{'='*28}\n"
-                msg += f"Equity: ${equity:,.2f} ({total_return:+.1f}%)\n"
-                msg += f"P&L: ${state['total_pnl']:+.2f}"
+                msg += f"Equity: ${equity_now:,.2f} ({total_return_now:+.1f}%)\n"
+                # total_pnl includes entry fees + funding (booked at cost), so
+                # equity - start == total_pnl + open-position mark-to-market.
+                # Show realized (cash) and unrealized (mark) separately.
+                msg += f"P&L (realized): ${state['total_pnl']:+.2f}"
                 if state['total_trades'] > 0:
                     msg += f" | {wr:.0f}% win ({state['total_trades']} trades)"
-                msg += f"\n\n"
+                msg += "\n"
+                if state["positions"]:
+                    # Full reconciliation: equity = start + realized + unrealized
+                    msg += f"P&L (unrealized): ${total_unrealized:+.2f}\n"
+                msg += "\n"
                 
                 # Trades this run (only on trade alerts)
                 if trades_this_run:
@@ -1224,11 +1506,11 @@ def main():
                         elif t["action"] == "CLOSE":
                             msg += f">> {format_pair(t['pair'])} CLOSED"
                             msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
-                    msg += f"\n"
+                    msg += "\n"
                 
-                # Open positions
+                # Open positions (net P&L: includes funding already charged)
                 if pos_lines:
-                    msg += f"Positions:\n"
+                    msg += "Positions:\n"
                     for line in pos_lines:
                         msg += f"{line}\n"
                 
@@ -1246,6 +1528,7 @@ def main():
         except Exception:
             pass
 
+    release_lock()
     print("Done.")
 
 

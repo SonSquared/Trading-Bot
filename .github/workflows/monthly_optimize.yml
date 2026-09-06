@@ -33,6 +33,64 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Forward edge check (deployed params, trailing 30d)
+        # Runs BEFORE re-optimization so the replay evaluates the params that
+        # actually ran this month (loaded from the repo's committed
+        # bot_strategy_params.json) — a true out-of-sample edge check. The
+        # optimizer below then updates params for the month ahead.
+        run: python -u scripts/forward_run.py --days 30
+
+      - name: Post forward edge check to Telegram
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, urllib.request
+          from pathlib import Path
+
+          token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+          if not (token and chat_id):
+              print('Telegram not configured, skipping')
+              raise SystemExit(0)
+
+          p = Path('data/results/forward_run_report.json')
+          if not p.exists():
+              text = '⚠️ FORWARD EDGE CHECK FAILED — no report generated'
+          else:
+              r = json.loads(p.read_text())
+              cap = r['capital']
+              tr = r['trades']
+              co = r['costs']
+              bench = r['benchmark']['buy_hold_35pct_each_pct']
+              alpha = round(cap['return_pct'] - bench, 2)
+              if cap['return_pct'] > 0 and tr['closed'] >= 3 and alpha > 2.0:
+                  verdict = 'positive and beats buy & hold — suggestive, not proof'
+              elif cap['return_pct'] > 0:
+                  verdict = 'positive but within %.1fpp of buy & hold — looks like beta, no edge' % abs(alpha)
+              else:
+                  verdict = 'NEGATIVE — no edge demonstrated, keep paper'
+              text = (
+                  f'📈 <b>FORWARD EDGE CHECK</b> (deployed bot, trailing 30d)\n'
+                  f'━━━━━━━━━━━━━━━━━━━━━\n'
+                  f'Window: {r["window"]["start"]} → {r["window"]["end"]} UTC\n'
+                  f'Net return: <b>{cap["return_pct"]:+.2f}%</b>\n'
+                  f'Buy & hold: {bench:+.2f}% | Alpha: {alpha:+.2f} pp\n'
+                  f'Trades: {tr["closed"]} ({tr["win_rate_pct"]:.0f}% WR) | Max DD: {r["risk"]["max_drawdown_pct"]:.1f}%\n'
+                  f'Costs: ${co["total"]:.2f}\n\n'
+                  f'Verdict: {verdict}'
+              )
+
+          url = f'https://api.telegram.org/bot{token}/sendMessage'
+          data = json.dumps({'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}).encode()
+          req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+          urllib.request.urlopen(req, timeout=10)
+          print('Forward edge check sent to Telegram')
+          PYEOF
+
       - name: Run walk-forward optimization
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -46,15 +104,26 @@ jobs:
             echo "=== Optimized params ==="
             cat data/results/bot_strategy_params.json
           else
-            echo "ERROR: bot_strategy_params.json not found"
-            exit 1
+            echo "NOTE: bot_strategy_params.json not found (no strategy passed the OOS gate — existing params kept)"
           fi
+
+      - name: Strategy league (honest tournament vs incumbent)
+        # Runs AFTER re-optimization so it compares challengers against the
+        # freshly gated incumbent. Its own promotion gate is stricter: a
+        # challenger must beat the incumbent OOS on mean return,
+        # profitable-window fraction AND worst window, with a -15% worst-
+        # window floor. Nothing clears it, nothing changes. The previous
+        # params file is backed up before any promotion.
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scripts/strategy_league.py
 
       - name: Commit updated params
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/results/bot_strategy_params.json data/results/optimized_params.json data/results/reoptimize_log.txt
+          git add data/results/bot_strategy_params.json data/results/optimized_params.json data/results/reoptimize_log.txt data/results/forward_run_report.md data/results/forward_run_report.json data/results/strategy_league_report.md data/results/strategy_league_report.json
           git diff --cached --quiet || git commit -m "Monthly re-optimization: $(date -u +'%Y-%m-%d')"
           git push
 
@@ -66,4 +135,8 @@ jobs:
             data/results/optimized_params.json
             data/results/bot_strategy_params.json
             data/results/reoptimize_log.txt
+            data/results/forward_run_report.md
+            data/results/forward_run_report.json
+            data/results/strategy_league_report.md
+            data/results/strategy_league_report.json
           retention-days: 90

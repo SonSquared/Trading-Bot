@@ -34,7 +34,7 @@ from rich.table import Table
 from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine
-from trading_system.strategies import ALL_STRATEGIES
+from trading_system.strategies import ALL_STRATEGIES, get_strategy
 from trading_system.optimization.runner import ExperimentRunner
 from trading_system.optimization.param_space import count_combinations
 from trading_system.optimization.scoring import calculate_composite_score

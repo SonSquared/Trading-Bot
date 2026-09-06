@@ -14,17 +14,15 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any
 
-import pandas as pd
 import structlog
 
-from trading_system.backtester.engine import BacktestEngine
+from trading_system.bot.candles import closed_candles
 from trading_system.bot.exchange import ExchangeInterface
 from trading_system.bot.notification import NotificationManager
 from trading_system.bot.risk import RiskManager
 from trading_system.bot.state import BotState
-from trading_system.config import BotConfig, BacktestConfig, SystemConfig
+from trading_system.config import SystemConfig
 from trading_system.strategies import get_strategy
 
 logger = structlog.get_logger(__name__)
@@ -111,38 +109,44 @@ class TradingBot:
 
     def _process_pair(self, pair: str, now: datetime) -> None:
         """Process a single trading pair."""
-        # Get current market data
-        for timeframe in self.config.exchange.timeframes:
-            df = self.exchange.get_ohlcv(pair, timeframe, limit=250)
-            if df.empty:
-                continue
+        # Trade only on the primary timeframe and only on closed candles,
+        # so live behavior matches the next-open backtest model. Evaluating
+        # every configured timeframe would open duplicate positions.
+        timeframe = self.config.exchange.timeframes[0]
+        df = self.exchange.get_ohlcv(pair, timeframe, limit=250)
+        if df.empty:
+            return
 
-            # Check for abnormal price movement
-            if len(df) >= 2:
-                price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2]
-                self.risk.check_abnormal_conditions(price_change)
+        df = closed_candles(df, timeframe)
+        if df.empty or len(df) < 50:
+            return
 
-            # Generate signals from each strategy
-            all_signals = {}
-            for name, strategy in self.strategies.items():
-                params = self.strategy_params.get(name, {})
-                signals = strategy.generate_signals(df, params)
-                all_signals[name] = signals.iloc[-1] if len(signals) > 0 else 0
+        # Check for abnormal price movement
+        if len(df) >= 2:
+            price_change = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2]
+            self.risk.check_abnormal_conditions(price_change)
 
-            # Get current position state
-            positions = self.exchange.get_positions(pair)
-            ticker = self.exchange.get_ticker(pair)
-            balance = self.exchange.get_balance()
+        # Generate signals from each strategy
+        all_signals = {}
+        for name, strategy in self.strategies.items():
+            params = self.strategy_params.get(name, {})
+            signals = strategy.generate_signals(df, params)
+            all_signals[name] = signals.iloc[-1] if len(signals) > 0 else 0
 
-            # Process signals
-            self._execute_signals(
-                pair=pair,
-                timeframe=timeframe,
-                signals=all_signals,
-                ticker=ticker,
-                balance=balance,
-                current_positions=positions,
-            )
+        # Get current position state
+        positions = self.exchange.get_positions(pair)
+        ticker = self.exchange.get_ticker(pair)
+        balance = self.exchange.get_balance()
+
+        # Process signals
+        self._execute_signals(
+            pair=pair,
+            timeframe=timeframe,
+            signals=all_signals,
+            ticker=ticker,
+            balance=balance,
+            current_positions=positions,
+        )
 
     def _execute_signals(
         self,

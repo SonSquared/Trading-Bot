@@ -7,11 +7,14 @@ Splits historical data into rolling windows:
 
 For each window:
   1. Grid search over parameter combinations on in-sample data
-  2. Rank by risk-adjusted return (Sharpe-like) on in-sample
-  3. Validate top candidates on out-of-sample data
-  4. Select the most robust parameter set
+  2. Rank by risk-adjusted return on in-sample only
+  3. Evaluate EVERY candidate on EVERY out-of-sample window
+  4. Deploy only if mean OOS return is positive AND profitable in a
+     majority of windows; otherwise keep the existing bot params.
 
-The final "current regime" params come from the most recent window.
+Selection never peeks at the test set: picking the "best by test
+score" (the old behavior) curve-fits the validation data and
+overstates out-of-sample performance.
 
 Strategy families optimized:
   - Bollinger_Reversion (ETH + BTC)
@@ -30,12 +33,11 @@ import pandas as pd
 import numpy as np
 
 from trading_system.strategies import STRATEGY_REGISTRY
+from trading_system.bot.accounting import FEE_RATE, SLIPPAGE_RATE, funding_cost
 
 
 # --- Config ---
 INITIAL_CAPITAL = 97.0
-FEE_RATE = 0.0005
-SLIPPAGE_RATE = 0.0002
 MAX_POS_PCT = 0.35
 RESULTS_DIR = Path("data/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -84,28 +86,43 @@ def load_parquet(pair: str, tf: str = "4h") -> pd.DataFrame:
 
 # --- Backtest Engine ---
 def backtest_single(df: pd.DataFrame, strat_name: str, params: dict) -> dict:
-    """Backtest a single strategy on a single pair."""
+    """Backtest a single strategy on a single pair, next-open + full costs.
+
+    Costs match the paper trader exactly (trading_system.bot.accounting):
+    0.05% fee per side, 0.02% slippage per side, funding at 8h UTC
+    boundaries while held.
+    """
     sig = STRATEGY_REGISTRY[strat_name].generate_signals(df, params)
+    sig_prev = sig.shift(1).fillna(0)  # act on the previous CLOSED candle's signal
+
     cash = INITIAL_CAPITAL
-    position = None  # (side, entry_price, qty, cost)
+    position = None  # (side, entry_price, qty, entry_fee, entry_time)
     trades = []
     equity_curve = []
 
     for i in range(len(df)):
-        price = float(df["close"].iloc[i])
-        signal = int(sig.iloc[i])
+        ts_i = df["timestamp"].iloc[i]  # open time of candle i == the fill time
+        price = float(df["open"].iloc[i])  # fill at next candle open
+        signal = int(sig_prev.iloc[i])
 
+        # Close on signal reversal
         if position and signal != position[0]:
-            side, entry, qty, cost = position
+            side, entry, qty, cost, entry_dt = position
             exit_p = price * (1 - SLIPPAGE_RATE * side)
+            funding = funding_cost(qty * entry, entry_dt, ts_i)
+            exit_fee = qty * entry * FEE_RATE
             if side == 1:
-                pnl = qty * (exit_p - entry) - cost
+                pnl = qty * (exit_p - entry) - cost - exit_fee - funding
             else:
-                pnl = qty * (entry - exit_p) - cost
-            cash += qty * entry + pnl
+                pnl = qty * (entry - exit_p) - cost - exit_fee - funding
+            # Return the entry fee (already debited at open) so the ledger
+            # charges each fee exactly once. ``pnl`` is the full round-trip
+            # P&L (entry + exit fees + funding), matching the paper trader.
+            cash += qty * entry + cost + pnl
             trades.append({"pnl": pnl, "side": side})
             position = None
 
+        # Open new position
         if not position and signal != 0:
             size = min(cash * MAX_POS_PCT, cash * 0.95)
             if size > 5:
@@ -113,27 +130,30 @@ def backtest_single(df: pd.DataFrame, strat_name: str, params: dict) -> dict:
                 qty = size / entry_p
                 fee = size * FEE_RATE
                 cash -= (size + fee)
-                position = (signal, entry_p, qty, fee)
+                position = (signal, entry_p, qty, fee, ts_i)
 
         eq = cash
         if position:
-            side, entry, qty, cost = position
+            side, entry, qty, cost, entry_dt = position
+            funding = funding_cost(qty * entry, entry_dt, ts_i)
             if side == 1:
-                eq += qty * price
+                eq += qty * price - funding
             else:
-                eq += qty * entry + qty * (entry - price)
+                eq += qty * entry + qty * (entry - price) - funding
         equity_curve.append(eq)
 
     # Close remaining
     if position:
-        side, entry, qty, cost = position
+        side, entry, qty, cost, entry_dt = position
         price = float(df["close"].iloc[-1])
         exit_p = price * (1 - SLIPPAGE_RATE * side)
+        funding = funding_cost(qty * entry, entry_dt, df["timestamp"].iloc[-1])
+        exit_fee = qty * entry * FEE_RATE
         if side == 1:
-            pnl = qty * (exit_p - entry) - cost
+            pnl = qty * (exit_p - entry) - cost - exit_fee - funding
         else:
-            pnl = qty * (entry - exit_p) - cost
-        cash += qty * entry + pnl
+            pnl = qty * (entry - exit_p) - cost - exit_fee - funding
+        cash += qty * entry + cost + pnl
         trades.append({"pnl": pnl, "side": side})
 
     final = cash
@@ -179,17 +199,20 @@ def backtest_portfolio(strategies: dict, eth_data: pd.DataFrame, btc_data: pd.Da
     sig_data = {}
     for name, cfg in strategies.items():
         df = eth_data if "ETH" in cfg["pair"] else btc_data
-        sig = STRATEGY_REGISTRY[cfg["strategy"]].generate_signals(df, cfg["params"])
+        sig = STRATEGY_REGISTRY[cfg["strategy"]].generate_signals(df, cfg["params"]).shift(1).fillna(0)
         sig_data[name] = {"signal": sig, "weight": cfg["weight"], "pair": cfg["pair"]}
 
     cash = INITIAL_CAPITAL
-    positions = {}
+    positions = {}  # pair -> (side, entry, qty, cost, entry_time)
     trades = []
     equity_curve = []
 
     for i in range(len(eth_data)):
-        eth_price = float(eth_data["close"].iloc[i])
-        btc_price = float(btc_data["close"].iloc[i])
+        ts_i = eth_data["timestamp"].iloc[i]
+        eth_price = float(eth_data["open"].iloc[i])   # next-open execution
+        btc_price = float(btc_data["open"].iloc[i])
+        eth_close = float(eth_data["close"].iloc[i])
+        btc_close = float(btc_data["close"].iloc[i])
 
         pair_scores = {}
         for name, s in sig_data.items():
@@ -208,16 +231,19 @@ def backtest_portfolio(strategies: dict, eth_data: pd.DataFrame, btc_data: pd.Da
             fs = 1 if score > 0.3 else (-1 if score < -0.3 else 0)
             price = data["price"]
             cur = positions.get(pair)
-            cs = cur["side"] if cur else 0
+            cs = cur[0] if cur else 0
 
             if fs != cs:
                 if cs != 0:
-                    ep = price * (1 - SLIPPAGE_RATE * cs)
-                    if cs == 1:
-                        pnl = cur["qty"] * (ep - cur["entry"]) - cur["cost"]
+                    side, entry, qty, cost, entry_dt = cur
+                    ep = price * (1 - SLIPPAGE_RATE * side)
+                    funding = funding_cost(qty * entry, entry_dt, ts_i)
+                    exit_fee = qty * entry * FEE_RATE
+                    if side == 1:
+                        pnl = qty * (ep - entry) - cost - exit_fee - funding
                     else:
-                        pnl = cur["qty"] * (cur["entry"] - ep) - cur["cost"]
-                    cash += cur["qty"] * cur["entry"] + pnl
+                        pnl = qty * (entry - ep) - cost - exit_fee - funding
+                    cash += qty * entry + cost + pnl
                     trades.append({"pnl": pnl, "pair": pair})
                     del positions[pair]
                 if fs != 0:
@@ -227,25 +253,30 @@ def backtest_portfolio(strategies: dict, eth_data: pd.DataFrame, btc_data: pd.Da
                         qty = sz / ep
                         fee = sz * FEE_RATE
                         cash -= (sz + fee)
-                        positions[pair] = {"side": fs, "entry": ep, "qty": qty, "cost": fee}
+                        positions[pair] = (fs, ep, qty, fee, ts_i)
 
         eq = cash
         for pair, pos in positions.items():
-            p = float(eth_data["close"].iloc[i]) if "ETH" in pair else float(btc_data["close"].iloc[i])
-            if pos["side"] == 1:
-                eq += pos["qty"] * p
+            p = eth_close if "ETH" in pair else btc_close
+            side, entry, qty, cost, entry_dt = pos
+            funding = funding_cost(qty * entry, entry_dt, ts_i)
+            if side == 1:
+                eq += qty * p - funding
             else:
-                eq += pos["qty"] * pos["entry"] + pos["qty"] * (pos["entry"] - p)
+                eq += qty * entry + qty * (entry - p) - funding
         equity_curve.append(eq)
 
     for pair, pos in list(positions.items()):
         p = float(eth_data["close"].iloc[-1]) if "ETH" in pair else float(btc_data["close"].iloc[-1])
-        ep = p * (1 - SLIPPAGE_RATE * pos["side"])
-        if pos["side"] == 1:
-            pnl = pos["qty"] * (ep - pos["entry"]) - pos["cost"]
+        side, entry, qty, cost, entry_dt = pos
+        ep = p * (1 - SLIPPAGE_RATE * side)
+        funding = funding_cost(qty * entry, entry_dt, eth_data["timestamp"].iloc[-1])
+        exit_fee = qty * entry * FEE_RATE
+        if side == 1:
+            pnl = qty * (ep - entry) - cost - exit_fee - funding
         else:
-            pnl = pos["qty"] * (pos["entry"] - ep) - pos["cost"]
-        cash += pos["qty"] * pos["entry"] + pnl
+            pnl = qty * (entry - ep) - cost - exit_fee - funding
+        cash += qty * entry + cost + pnl
         trades.append({"pnl": pnl, "pair": pair})
 
     final = cash
@@ -331,16 +362,17 @@ def walk_forward_split(eth_data: pd.DataFrame, btc_data: pd.DataFrame, train_mon
             "test_end_date": str(ts.iloc[test_end_idx])[:10],
         })
 
-        # Slide forward by test_months
-        start_idx = train_end_idx
+        # Anchor forward: the next window starts AFTER this window's test set,
+        # so test data is never reused as training data for another window.
+        start_idx = test_end_idx
 
     return windows
 
 
 def run_walk_forward():
-    """Main walk-forward optimization loop."""
+    """Main walk-forward optimization loop (honest selection)."""
     print("=" * 70)
-    print("WALK-FORWARD OPTIMIZATION")
+    print("WALK-FORWARD OPTIMIZATION (honest selection)")
     print("=" * 70)
     print()
 
@@ -360,89 +392,120 @@ def run_walk_forward():
         print(f"  Window {i+1}: Train {w['train_start_date']} to {w['train_end_date']} | Test {w['test_start_date']} to {w['test_end_date']}")
     print()
 
-    # For each strategy, optimize across all windows
-    regime_params = {}  # Will hold the latest optimized params
+    regime_params = {}   # Only strategies that pass the OOS gate go here
+    all_window_results = []
+    skipped = []
 
     for strat_name, config in STRATEGY_CONFIGS.items():
         print(f"{'='*70}")
         print(f"OPTIMIZING: {strat_name}")
         print(f"{'='*70}")
 
-        all_window_results = []
+        for pair in config["pairs"]:
+            pair_label = pair.replace("_USDT_USDT", "")
+            data_full = eth_data if "ETH" in pair else btc_data
 
-        for w_idx, window in enumerate(windows):
-            print(f"\n  Window {w_idx+1}/{len(windows)}:")
-
-            for pair in config["pairs"]:
-                pair_label = pair.replace("_USDT_USDT", "")
-                data_full = eth_data if "ETH" in pair else btc_data
-
-                # Slice data
+            # 1. Candidate pool from TRAIN-only selection per window.
+            #    The test set is never used to pick parameters.
+            candidates = {}
+            for w_idx, window in enumerate(windows):
                 train_data = data_full.iloc[window["train_start"]:window["train_end"]].reset_index(drop=True)
                 test_data = data_full.iloc[window["test_start"]:window["test_end"]].reset_index(drop=True)
-
                 if len(train_data) < 50 or len(test_data) < 20:
-                    print(f"    {pair_label}: Insufficient data (train={len(train_data)}, test={len(test_data)})")
                     continue
-
-                # Optimize on train
-                print(f"    {pair_label}: Optimizing on {len(train_data)} train candles...", end="", flush=True)
+                print(f"    {pair_label} w{w_idx+1}: optimizing on {len(train_data)} train candles...", end="", flush=True)
                 train_results = optimize_strategy(strat_name, pair, train_data, config["grid"], max_combos=300)
+                for tr in train_results[:3]:
+                    candidates.setdefault(json.dumps(tr["params"], sort_keys=True), tr["params"])
+                print(f" top3 train={train_results[0]['return_pct'] if train_results else 0:+.1f}%")
 
-                if not train_results:
-                    print(" No valid results")
+            if not candidates:
+                skipped.append(f"{strat_name}_{pair}")
+                print(f"  {pair_label}: no valid train candidates")
+                continue
+
+            # 2. Honest OOS evaluation: EVERY candidate on EVERY test window.
+            evals = {}
+            for key, params in candidates.items():
+                test_returns = []
+                for window in windows:
+                    test_data = data_full.iloc[window["test_start"]:window["test_end"]].reset_index(drop=True)
+                    if len(test_data) < 20:
+                        continue
+                    r = backtest_single(test_data, strat_name, params)
+                    test_returns.append(r["return_pct"])
+                if not test_returns:
                     continue
+                profitable = sum(1 for r in test_returns if r > 0)
+                evals[key] = {
+                    "params": params,
+                    "mean_test_return": float(np.mean(test_returns)),
+                    "profitable_windows": profitable,
+                    "total_windows": len(test_returns),
+                }
 
-                # Validate top 5 on test
-                top_5 = train_results[:5]
-                test_results = []
-                for tr in top_5:
-                    test_r = backtest_single(test_data, strat_name, tr["params"])
-                    test_results.append({
-                        "params": tr["params"],
-                        "train_score": tr["score"],
-                        "train_return": tr["return_pct"],
-                        "test_score": test_r["score"],
-                        "test_return": test_r["return_pct"],
-                        "test_win_rate": test_r["win_rate"],
-                        "test_max_dd": test_r["max_dd"],
-                    })
+            if not evals:
+                skipped.append(f"{strat_name}_{pair}")
+                print(f"  {pair_label}: no evaluable candidates")
+                continue
 
-                # Select best by test score
-                best = max(test_results, key=lambda x: x["test_score"])
-                print(f" Best: train={best['train_return']:+.1f}% test={best['test_return']:+.1f}% (WR={best['test_win_rate']:.0f}%, DD={best['test_max_dd']:.1f}%)")
+            # 3. Deploy gate: mean OOS return > 0 AND profitable in >= half the windows.
+            deployable = {k: v for k, v in evals.items()
+                          if v["mean_test_return"] > 0 and v["profitable_windows"] / v["total_windows"] >= 0.5}
+            if deployable:
+                best_key = max(deployable, key=lambda k: deployable[k]["mean_test_return"])
+                ok_to_deploy = True
+            else:
+                best_key = max(evals, key=lambda k: evals[k]["mean_test_return"])
+                ok_to_deploy = False
 
-                all_window_results.append({
+            best = evals[best_key]
+            params = best["params"]
+            key = f"{strat_name}_{pair}"
+
+            if ok_to_deploy:
+                regime_params[key] = params
+            else:
+                skipped.append(key)
+
+            # Per-window OOS table for the CHOSEN params (honest reporting)
+            window_results = []
+            for w_idx, window in enumerate(windows):
+                test_data = data_full.iloc[window["test_start"]:window["test_end"]].reset_index(drop=True)
+                if len(test_data) < 20:
+                    continue
+                r = backtest_single(test_data, strat_name, params)
+                window_results.append({
                     "window": w_idx + 1,
-                    "strategy": strat_name,
-                    "pair": pair,
-                    "best_params": best["params"],
-                    "train_return": best["train_return"],
-                    "test_return": best["test_return"],
-                    "test_win_rate": best["test_win_rate"],
-                    "test_max_dd": best["test_max_dd"],
+                    "test_dates": f"{window['test_start_date']} to {window['test_end_date']}",
+                    "test_return": r["return_pct"],
+                    "test_win_rate": r["win_rate"],
+                    "test_max_dd": r["max_dd"],
+                    "test_trades": r["trades"],
                 })
 
-                # The latest window's best params become the "current regime" params
-                regime_params[f"{strat_name}_{pair}"] = best["params"]
+            all_window_results.append({
+                "strategy": strat_name,
+                "pair": pair,
+                "params": params,
+                "deployed": ok_to_deploy,
+                "mean_test_return": best["mean_test_return"],
+                "profitable_windows": best["profitable_windows"],
+                "total_windows": best["total_windows"],
+                "window_results": window_results,
+            })
+
+            status = "DEPLOY" if ok_to_deploy else "REJECT (kept old params)"
+            print(f"  {pair_label}: {status}")
+            print(f"    Params: {json.dumps(params)}")
+            print(f"    OOS: mean {best['mean_test_return']:+.1f}% | "
+                  f"{best['profitable_windows']}/{best['total_windows']} profitable windows")
 
             time.sleep(0.3)
 
-        # Summary for this strategy
-        if all_window_results:
-            print(f"\n  --- {strat_name} Walk-Forward Summary ---")
-            avg_test_return = np.mean([r["test_return"] for r in all_window_results])
-            avg_test_wr = np.mean([r["test_win_rate"] for r in all_window_results])
-            avg_test_dd = np.mean([r["test_max_dd"] for r in all_window_results])
-            profitable_windows = sum(1 for r in all_window_results if r["test_return"] > 0)
-            print(f"  Avg test return: {avg_test_return:+.1f}%")
-            print(f"  Avg test win rate: {avg_test_wr:.0f}%")
-            print(f"  Avg test max DD: {avg_test_dd:.1f}%")
-            print(f"  Profitable windows: {profitable_windows}/{len(all_window_results)}")
-
-    # --- Build current regime portfolio ---
+    # --- Build current regime portfolio (deployed strategies only) ---
     print(f"\n{'='*70}")
-    print("CURRENT REGIME PARAMETERS (from latest window)")
+    print("CURRENT REGIME PARAMETERS")
     print(f"{'='*70}")
 
     portfolio = {}
@@ -468,19 +531,28 @@ def run_walk_forward():
         }
         print(f"  {key}: {params}")
 
-    # Validate current regime on full data
-    print(f"\n  Validating current regime on full dataset...")
-    full_result = backtest_portfolio(portfolio, eth_data, btc_data)
-    print(f"  Full dataset result: {full_result['return_pct']:+.1f}% return, {full_result['win_rate']:.0f}% win rate, {full_result['max_dd']:.1f}% max DD")
+    if skipped:
+        print(f"\n  WARNING: Kept existing params for: {', '.join(sorted(set(skipped)))}")
+        print("  (these strategies failed the OOS robustness gate)")
+
+    # Validate current regime on full data (informational)
+    if portfolio:
+        print("\n  Validating current regime on full dataset...")
+        full_result = backtest_portfolio(portfolio, eth_data, btc_data)
+        print(f"  Full dataset result: {full_result['return_pct']:+.1f}% return, {full_result['win_rate']:.0f}% win rate, {full_result['max_dd']:.1f}% max DD")
+    else:
+        full_result = None
+        print("\n  WARNING: Nothing passed the OOS gate — bot params NOT updated.")
 
     # Save optimized params
     output = {
         "timestamp": datetime.now().isoformat(),
         "data_range": f"{eth_data['timestamp'].iloc[0]} to {eth_data['timestamp'].iloc[-1]}",
         "windows": len(windows),
+        "selection": "train-only selection + multi-window OOS deploy gate",
         "strategies": {},
         "portfolio": {k: {"strategy": v["strategy"], "pair": v["pair"], "weight": v["weight"], "params": v["params"]} for k, v in portfolio.items()},
-        "full_backtest": {k: v for k, v in full_result.items() if k != "equity_curve"},
+        "full_backtest": {k: v for k, v in (full_result or {}).items() if k != "equity_curve"},
     }
 
     # Add per-strategy window results
@@ -494,7 +566,7 @@ def run_walk_forward():
         json.dump(output, f, indent=2, default=str)
     print(f"\n  Saved to {out_path}")
 
-    # Also save a separate file with just the params for the bot to load
+    # Bot params — deployed strategies only
     bot_params = {}
     for key, data in portfolio.items():
         bot_params[key] = {
@@ -506,9 +578,12 @@ def run_walk_forward():
         }
 
     bot_params_path = RESULTS_DIR / "bot_strategy_params.json"
-    with open(bot_params_path, "w") as f:
-        json.dump(bot_params, f, indent=2)
-    print(f"  Bot params saved to {bot_params_path}")
+    if bot_params:
+        with open(bot_params_path, "w") as f:
+            json.dump(bot_params, f, indent=2)
+        print(f"  Bot params saved to {bot_params_path}")
+    else:
+        print(f"  Bot params NOT updated ({bot_params_path} left untouched)")
 
     return portfolio
 

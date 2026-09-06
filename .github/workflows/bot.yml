@@ -1,5 +1,7 @@
 name: Trading Bot Runner
 on:
+  push:
+    branches: [main]
   schedule:
     # Run every 15 minutes for faster command responses
     - cron: '*/15 * * * *'
@@ -8,8 +10,57 @@ on:
 permissions:
   contents: write  # For pushing trade logs
 
+# CRITICAL: serialize bot runs. Scheduled runs fire every 15 min and each
+# GitHub Actions runner is a SEPARATE machine, so the bot's file lock cannot
+# prevent two runners from trading simultaneously (this caused the observed
+# duplicate opens on Sep 3: two runs 75s apart, both restoring the same
+# cached state and both opening positions). A concurrency group makes
+# GitHub queue instead of parallel-run; cancel-in-progress=false because a
+# trading cycle must never be killed mid-trade.
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
 jobs:
+  # Lint + smoke tests run on EVERY push (and on schedule) so regressions
+  # like the _open_position NameError or the dead stop-loss close path are
+  # caught the moment they land, before real money is involved.
+  quality:
+    # Skip on schedule: the concurrency group serializes the whole workflow,
+    # so a 2-minute lint job every 15 min would push real bot runs back.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pytest
+
+      - name: Lint (ruff)
+        # Pyflakes on the bot-critical paths: catches the regression classes
+        # (F821 undefined names like the old _open_position NameError, dead
+        # imports, placeholder-less f-strings). Scoped deliberately — the
+        # research scripts carry a large pre-existing style backlog that is
+        # out of scope for this gate.
+        run: ruff check --select F821,F401,F811,F822,F823,F541 trading_system/bot/ scripts/paper_trader.py scripts/watchdog.py scripts/strategy_league.py scripts/position_tracker.py scripts/monthly_reoptimize.py scripts/walk_forward_optimize.py scripts/walk_forward_report.py tests/test_bot_guardrails.py tests/test_bot_portfolio.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py tests/conftest.py
+
+      - name: Bot smoke tests (paper / dry_run / live modes)
+        run: pytest tests/test_bot_portfolio.py tests/test_bot_guardrails.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py -q
+
   run-bot:
+    # Only schedule/dispatch runs trade; push runs just run quality checks.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -33,8 +84,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/results/paper_state.json
-          key: paper-state-v2-${{ github.run_number }}
-          restore-keys: paper-state-v2-
+          # Stable key: a per-run key (v2) could miss and reset the bot to a
+          # fresh $97 state, causing the same positions to be re-opened and
+          # fees to be burned. A stable key always restores and updates.
+          key: paper-state-v3
       # Clear stale state from previous code versions (e.g. $10,000 accounts)
       - name: Validate state file
         run: |
@@ -66,6 +119,18 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -u scripts/position_tracker.py
+
+      - name: Watchdog (production anomalies)
+        # Missed runs, stale state, ledger desync, desync storms, duplicate
+        # opens. A finding exits 1 -> red run + Telegram alert. Runs on
+        # every scheduled bot cycle so anomalies surface within ~15 minutes.
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
+          WATCHDOG_RUN_INTERVAL_MINUTES: '15'
+        run: python -u scripts/watchdog.py
 
       - name: Upload trade log & state
         if: always()

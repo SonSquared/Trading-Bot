@@ -11,10 +11,10 @@ import pytest
 from trading_system.indicators.trend import (
     sma, ema, macd, adx, donchian_channel, supertrend,
 )
-from trading_system.indicators.momentum import rsi, roc, stochastic, williams_r, cci
-from trading_system.indicators.volatility import atr, bollinger_bands, keltner_channel
-from trading_system.indicators.volume import obv, vwap, relative_volume
-from trading_system.indicators.utils import crossover, crossunder, zscore, heikin_ashi
+from trading_system.indicators.momentum import rsi
+from trading_system.indicators.volatility import atr, bollinger_bands
+from trading_system.indicators.volume import obv
+from trading_system.indicators.utils import crossover, crossunder, heikin_ashi
 
 
 @pytest.fixture
@@ -171,6 +171,58 @@ class TestDonchianChannel:
         valid = result.dropna()
         assert (valid["middle"] >= valid["lower"]).all()
         assert (valid["middle"] <= valid["upper"]).all()
+
+
+class TestSupertrend:
+    """Regression tests for the NaN-poisoning bug: the old implementation
+    seeded st[0] with a NaN band (ATR needs `period` rows) and the band-carry
+    comparisons then copied NaN forever, locking direction at -1 so the
+    Supertrend strategy never traded."""
+
+    def test_direction_both_sides(self, sample_ohlcv):
+        result = supertrend(sample_ohlcv, period=10, multiplier=3.0)
+        valid = result["direction"].dropna()
+        assert len(valid) > 0
+        assert set(valid.unique()) <= {-1.0, 1.0}
+        # Both directions must occur on a 500-bar random walk.
+        assert valid.nunique() == 2, (
+            f"direction locked at {valid.unique()} — NaN poisoning likely")
+
+    def test_direction_flips_multiple_times(self, sample_ohlcv):
+        result = supertrend(sample_ohlcv, period=10, multiplier=3.0)
+        valid = result["direction"].dropna()
+        flips = int((valid.diff().abs() == 2).sum())
+        assert flips >= 3, f"only {flips} direction flips — indicator stuck"
+
+    def test_supertrend_finite_after_warmup(self, sample_ohlcv):
+        result = supertrend(sample_ohlcv, period=10, multiplier=3.0)
+        # Everything after the ATR warm-up (first `period` rows) must be
+        # finite; NaN beyond warm-up means the poison survived.
+        tail = result["supertrend"].iloc[10:]
+        assert tail.notna().all(), "NaN supertrend values beyond ATR warm-up"
+
+    def test_warmup_rows_are_nan_not_stuck_direction(self, sample_ohlcv):
+        result = supertrend(sample_ohlcv, period=10, multiplier=3.0)
+        warmup = result.iloc[:9]
+        assert warmup["supertrend"].isna().all()
+        assert warmup["direction"].isna().all()
+
+    def test_causality(self):
+        """Appending future bars must not change earlier values."""
+        idx = pd.date_range("2024-01-01", periods=120, freq="1h")
+        rng = np.random.default_rng(7)
+        close = 100 * np.cumprod(1 + rng.normal(0, 0.01, 120))
+        df = pd.DataFrame({
+            "open": close, "high": close * 1.004,
+            "low": close * 0.996, "close": close, "volume": 1000.0,
+        }, index=idx)
+        full = supertrend(df, period=10, multiplier=3.0)
+        cut = supertrend(df.iloc[:80], period=10, multiplier=3.0)
+        np.testing.assert_allclose(
+            cut["direction"].dropna().values,
+            full["direction"].iloc[:80].dropna().values,
+            err_msg="supertrend has look-ahead bias",
+        )
 
 
 class TestCrossover:

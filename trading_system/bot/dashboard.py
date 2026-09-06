@@ -12,12 +12,10 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any
 
 import structlog
 

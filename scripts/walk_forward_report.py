@@ -18,7 +18,6 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-import pandas as pd
 import numpy as np
 
 # Fix Windows console encoding
@@ -30,7 +29,6 @@ if sys.platform == "win32":
 from scripts.walk_forward_optimize import (
     load_parquet,
     backtest_single,
-    backtest_portfolio,
     optimize_strategy,
     walk_forward_split,
     STRATEGY_CONFIGS,
@@ -111,8 +109,11 @@ def generate_report():
                         "oos_score": test_r["score"],
                     })
 
-                # Best by OOS score
-                best_oos = max(test_results_all, key=lambda x: x["oos_score"])
+                # Honest comparison: use the TOP TRAIN candidate (rank 1 on
+                # in-sample), never the one that happened to score best on the
+                # test set — picking "best by OOS" makes the diagnostic
+                # itself overfit to the validation data.
+                best_oos = test_results_all[0]
 
                 # Overfitting detection
                 is_ret = best_oos["is_return"]
