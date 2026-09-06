@@ -80,7 +80,8 @@ jobs:
           BOT_MODE: paper
           EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
           EXCHANGE_API_SECRET: ${{ secrets.EXCHANGE_API_SECRET }}
-        run: python -u scripts/run_github_bot.py
+        # run_github_bot.py is deprecated; the scheduled runner is paper_trader.py
+        run: python -u scripts/paper_trader.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

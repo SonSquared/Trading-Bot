@@ -154,9 +154,56 @@ For live trading, set these in a `.env` file:
 ```
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
+TELEGRAM_BOT_TOKEN=your_bot_token   # from @BotFather
+TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-**Never commit API keys to source control.**
+Telegram credentials come from the environment **only** — never commit a
+bot token (see `docs/rotate-telegram-token.md` if one was ever leaked).
+Missing credentials print a loud warning and disable Telegram; there is no
+hardcoded fallback.
+
+**Never commit API keys or bot tokens to source control.**
+
+## Deployment (single runner)
+
+**GitHub Actions is the only bot runner.** `.github/workflows/bot.yml` runs
+`scripts/paper_trader.py` every 15 minutes (schedule + manual dispatch) and
+runs a `quality` job (ruff + bot smoke tests) on every push. All other
+runners — Railway, Fly.io, a VPS docker-compose, and the duplicate
+`position_tracker.yml`/`deploy/github_actions.yml` workflows — are archived
+under `deploy/disabled/` (see `deploy/disabled/README.md` for teardown of
+any apps that are still running and how to re-enable a platform). The run
+lock in `paper_trader.py` is the safety net if a second runner is ever
+re-added; a single runner is the real fix.
+
+The monthly re-optimization runs `scripts/monthly_reoptimize.py` on the 1st
+(`monthly_optimize.yml`); `health_check.yml` alerts if the bot stops; the
+scheduled walk-forward is `reoptimize.yml`. None of these trade positions.
+
+## Forward evaluation
+
+To answer "does the deployed strategy have an edge net of costs?" without
+waiting 30 days, run the forward replay over the most recent window:
+
+```bash
+python scripts/forward_run.py --days 30
+python scripts/forward_run.py --compare   # prior-60d vs recent-30d regimes
+```
+
+It replays the exact paper-bot logic (closed-candle signals, hysteresis,
+next-open fills, 0.05% fees + 0.02% slippage per side + 0.01%/8h funding)
+plus the full paper-bot risk manager (5% disaster stop-loss, trailing stop
+after +5% / 3% retrace, 72h max hold, 10% portfolio-drawdown stop with a
+24h flat cooldown and peak re-arm) and writes
+`data/results/forward_run_report.md`. Replay runs never touch the production
+trade log. The same cost model backs `paper_trader.py`, the walk-forward
+backtests, and `portfolio_bot.py`'s P&L
+(`trading_system/bot/accounting.py`).
+
+The monthly edge check is automated: `monthly_optimize.yml` runs the 30-day
+replay (against the params that actually traded that month) before
+re-optimizing and posts the result to Telegram.
 
 ## Limitations
 

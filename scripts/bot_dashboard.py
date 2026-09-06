@@ -17,9 +17,8 @@ import os
 import sys
 import json
 import subprocess
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from collections import Counter
 
 sys.path.insert(0, ".")
 
@@ -145,7 +144,7 @@ def print_dashboard():
     print(f"\nStatus: [{status_emoji}] {stats['last_status'].upper()}")
 
     # Core metrics
-    print(f"\n--- RUN STATS ---")
+    print("\n--- RUN STATS ---")
     print(f"Total runs:      {stats['total_runs']}")
     print(f"Successful:      {stats['successful']}")
     print(f"Failed:          {stats['failed']}")
@@ -155,7 +154,7 @@ def print_dashboard():
     print(f"Avg duration:    {stats['avg_duration']:.1f}s")
 
     # Today
-    print(f"\n--- TODAY ---")
+    print("\n--- TODAY ---")
     print(f"Runs today:      {stats['runs_today']}")
     print(f"Errors today:    {stats['errors_today']}")
     print(f"Consec. fails:   {stats['consecutive_failures']}")
@@ -167,7 +166,7 @@ def print_dashboard():
     win_rate = summary.get("win_rate", 0)
     realized_pnl = summary.get("realized_pnl", state.get("total_pnl", 0))
 
-    print(f"\n--- PERFORMANCE ---")
+    print("\n--- PERFORMANCE ---")
     print(f"Equity:          ${equity:,.2f}")
     print(f"Return:          {total_return:+.2f}%")
     print(f"Total trades:    {total_trades}")
@@ -182,17 +181,17 @@ def print_dashboard():
             for e in r["errors"][:2]:
                 recent_errors.append(f"  [{r['timestamp'][:16]}] {e}")
     if recent_errors:
-        print(f"\n--- RECENT ERRORS ---")
+        print("\n--- RECENT ERRORS ---")
         for e in recent_errors[-5:]:
             print(e)
     else:
-        print(f"\n--- RECENT ERRORS ---")
+        print("\n--- RECENT ERRORS ---")
         print("  None")
 
     # Last run details
     if stats["last_run"]:
         lr = stats["last_run"]
-        print(f"\n--- LAST RUN ---")
+        print("\n--- LAST RUN ---")
         print(f"Time:     {lr['timestamp'][:19]}")
         print(f"Status:   {lr.get('status', '?')}")
         print(f"Duration: {lr.get('duration_seconds', 0):.1f}s")

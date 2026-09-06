@@ -1,5 +1,8 @@
 # Deployment Guide: Running the Bot 24/7 Without touching Your Computer
 
+> **⚠️ ARCHIVED (2026-09):** The bot now runs on **GitHub Actions only** (`.github/workflows/bot.yml`, every 15 min) — see README "Deployment". This VPS guide and `deploy/` were moved to `deploy/disabled/`; the paths below work only if you restore the original layout.
+
+
 ## Overview
 
 The bot needs to run on a **cloud server (VPS)** that stays online 24/7.
@@ -49,8 +52,8 @@ git clone https://your-repo.git .
 ```bash
 ssh ${VPS_USER}@${VPS_IP}
 cd ~/trading-bot
-chmod +x deploy/setup_vps.sh
-bash deploy/setup_vps.sh
+chmod +x deploy/disabled/vps/setup_vps.sh
+bash deploy/disabled/vps/setup_vps.sh
 ```
 
 That's it. The bot starts automatically in **paper mode**.
@@ -59,13 +62,13 @@ That's it. The bot starts automatically in **paper mode**.
 
 ```bash
 # Watch live logs
-docker compose -f deploy/docker-compose.yml logs -f
+docker compose -f deploy/disabled/vps/docker-compose.yml logs -f
 
 # Check if bot is running
-docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/disabled/vps/docker-compose.yml ps
 
 # View last 50 log lines
-docker compose -f deploy/docker-compose.yml logs --tail 50
+docker compose -f deploy/disabled/vps/docker-compose.yml logs --tail 50
 ```
 
 ### Step 5: Go Live (When Ready)
@@ -81,10 +84,10 @@ nano ~/trading-bot/configs/bot_live.yaml
 #   exchange.api_secret: "YOUR_BINANCE_API_SECRET"
 
 # 2. Restart the bot
-docker compose -f deploy/docker-compose.yml restart
+docker compose -f deploy/disabled/vps/docker-compose.yml restart
 
 # 3. Verify it restarted correctly
-docker compose -f deploy/docker-compose.yml logs --tail 20
+docker compose -f deploy/disabled/vps/docker-compose.yml logs --tail 20
 ```
 
 ---
@@ -152,16 +155,16 @@ The bot sends alerts for:
 
 ### Simple Health Check Script
 
-Create `deploy/health_check.sh` on the VPS:
+Create `deploy/disabled/vps/health_check.sh` on the VPS:
 ```bash
 #!/bin/bash
-# Run this via cron every hour: 0 * * * * /root/trading-bot/deploy/health_check.sh
+# Run this via cron every hour: 0 * * * * /root/trading-bot/deploy/disabled/vps/health_check.sh
 
 CONTAINER="trading-bot"
 if ! docker ps | grep -q $CONTAINER; then
     echo "$(date): Bot is DOWN. Restarting..." >> /root/trading-bot/data/health.log
     cd /root/trading-bot
-    docker compose -f deploy/docker-compose.yml up -d
+    docker compose -f deploy/disabled/vps/docker-compose.yml up -d
 fi
 ```
 
@@ -169,7 +172,7 @@ Add to crontab:
 ```bash
 crontab -e
 # Add this line:
-0 * * * * /root/trading-bot/deploy/health_check.sh
+0 * * * * /root/trading-bot/deploy/disabled/vps/health_check.sh
 ```
 
 ---
@@ -215,7 +218,7 @@ sudo ufw enable
 ### Bot crashes on start
 ```bash
 # Check logs
-docker compose -f deploy/docker-compose.yml logs
+docker compose -f deploy/disabled/vps/docker-compose.yml logs
 
 # Common fix: data directory permissions
 sudo chown -R 1000:1000 ~/trading-bot/data/
@@ -224,19 +227,19 @@ sudo chown -R 1000:1000 ~/trading-bot/data/
 ### Bot stops trading
 ```bash
 # Check if it's actually running
-docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/disabled/vps/docker-compose.yml ps
 
 # Check for errors
-docker compose -f deploy/docker-compose.yml logs --tail 100
+docker compose -f deploy/disabled/vps/docker-compose.yml logs --tail 100
 
 # Restart
-docker compose -f deploy/docker-compose.yml restart
+docker compose -f deploy/disabled/vps/docker-compose.yml restart
 ```
 
 ### Exchange connection issues
 ```bash
 # Test API connectivity from VPS
-docker compose -f deploy/docker-compose.yml exec trading-bot python -c "
+docker compose -f deploy/disabled/vps/docker-compose.yml exec trading-bot python -c "
 import ccxt
 exchange = ccxt.binance({'options': {'defaultType': 'future'}})
 print(exchange.fetch_ticker('ETH/USDT:USDT'))
@@ -249,5 +252,5 @@ print(exchange.fetch_ticker('ETH/USDT:USDT'))
 docker stats trading-bot
 
 # If > 500MB, restart periodically
-# Add to crontab: 0 */6 * * * docker compose -f /root/trading-bot/deploy/docker-compose.yml restart
+# Add to crontab: 0 */6 * * * docker compose -f /root/trading-bot/deploy/disabled/vps/docker-compose.yml restart
 ```

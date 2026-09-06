@@ -1,12 +1,32 @@
 """
-GitHub Actions Bot Runner
+DEPRECATED — DO NOT RUN.
 
-Designed to run every 4 hours via GitHub Actions cron.
-Fetches latest data, runs all 3 strategies, aggregates signals,
-executes trades (paper or live), and logs results.
+This is the OLD legacy runner, superseded by scripts/paper_trader.py. It is
+kept only so old references don't break. It has its OWN separate state file,
+state format, equity basis, and Telegram summary — running it produces
+numbers that will NOT match the real bot's messages (this was the source of
+conflicting equity figures in Telegram).
 
-No persistent state needed — each run is independent.
+The scheduled bot is scripts/paper_trader.py (.github/workflows/bot.yml).
 """
+
+import sys
+
+if __name__ == "__main__":
+    sys.stderr.write(
+        "ERROR: scripts/run_github_bot.py is DEPRECATED and disabled.\n"
+        "It keeps its own state and sends Telegram numbers that do not match "
+        "the real bot. Use scripts/paper_trader.py (the scheduled runner).\n"
+    )
+    sys.exit(2)
+
+# Unreachable below — legacy code intentionally left inert for reference.
+import os
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, ".")
 
 import os
 import sys
