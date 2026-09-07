@@ -18,6 +18,36 @@ accounting fix (entry fees + funding booked into P&L the moment they hit
 cash) landed 2026-09-06 — everything before that date predates the honest
 cost model.
 
+## 1b. Day zero: the 90-day forward proof (2026-09-08)
+
+The paper record restarts from zero on this date — deliberately.
+
+- **Start:** 2026-09-08, capital **$97.00**, no open positions, empty
+  trade log. The first Actions run on/after this date is day zero.
+- **Why reset:** the old ledger carried pre-fix accounting gaps, and the
+  Actions state cache had a bug that silently discarded every run's
+  trades (immutable cache entries + a stable key — see the comment in
+  `bot.yml`). A clean start means every number in the 90-day window
+  comes from the complete, repaired ledger, and
+  `python scripts/audit_equity.py --strict` can verify the whole window
+  exactly.
+- **Archived records** (local, gitignored):
+  `paper_trades_archived_2026-09-08.jsonl`,
+  `run_history_archived_2026-09-08.jsonl`,
+  `paper_state_archived_2026-09-08.json`,
+  `paper_summary_archived_2026-09-08.json` — plus the earlier archives
+  `paper_trades_archived_2026-09-04.jsonl` and the
+  `paper_trades_test_pollution_2026-09-05.jsonl` quarantine.
+- **The production ledger now lives on GitHub Actions** (cache entry
+  `paper-state-v4-<run_number>` + 90-day artifacts). Local copies are
+  archives only — do not run the trader from this machine (one
+  filesystem rule).
+- **Success criteria (window ends ~2026-12-07):** equity net of all
+  costs (fees + slippage + funding) above $97, drawdown within the risk
+  manager's limits, and consistency across both halves of the window.
+  A negative or rule-breaking window means the portfolio does not
+  graduate to real capital.
+
 ## 2. Message catalog
 
 ### Cycle messages (every ~2 hours)

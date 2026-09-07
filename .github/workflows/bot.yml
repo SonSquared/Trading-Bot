@@ -92,10 +92,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/results/paper_state.json
-          # Stable key: a per-run key (v2) could miss and reset the bot to a
-          # fresh $97 state, causing the same positions to be re-opened and
-          # fees to be burned. A stable key always restores and updates.
-          key: paper-state-v3
+          # Cache entries are IMMUTABLE: when the exact key already exists,
+          # the post-save is skipped. The old stable key (v3) therefore
+          # restored the same frozen state on every run and silently
+          # discarded each run's trades — the fingerprint of the Sep 3
+          # duplicate opens (two runs 75s apart, both restoring the same
+          # cached state and both opening). Correct pattern: per-run key +
+          # restore-keys. The restore-keys prefix matches the LATEST
+          # previous entry so state always restores; the post-save then
+          # writes a NEW entry under this run's key, so every run's trades
+          # persist. Old entries age out via normal eviction (the file is
+          # tiny; the 10 GB repo cache limit is moot). v4 deliberately
+          # orphans every pre-day-zero cache entry so the 2026-09-08
+          # restart starts clean at $97.
+          key: paper-state-v4-${{ github.run_number }}
+          restore-keys: |
+            paper-state-v4-
       # Clear stale state from previous code versions (e.g. $10,000 accounts)
       - name: Validate state file
         run: |
