@@ -15,6 +15,60 @@ import pandas as pd
 
 
 
+def pulse_to_state(
+    long_entry: pd.Series,
+    short_entry: pd.Series,
+    exit_bars: int,
+) -> pd.Series:
+    """Convert entry pulses into a held-state signal series.
+
+    Implements Kevin Davey's time-exit convention: enter on a pulse, hold
+    the position for ``exit_bars`` candles, exit to flat unless an opposite
+    pulse flips the position first. Returns +1 (long), -1 (short), 0 flat —
+    the state encoding shared by the next-open backtester and the live bot.
+
+    Args:
+        long_entry: Boolean series of fresh long-entry pulses (true only on
+            the first bar of a new long condition, not while it persists).
+        short_entry: Boolean series of fresh short-entry pulses.
+        exit_bars: Candles to hold before releasing to flat (>= 1).
+    """
+    exit_bars = max(1, int(exit_bars))
+    long_arr = long_entry.to_numpy(dtype=bool)
+    short_arr = short_entry.to_numpy(dtype=bool)
+
+    state = 0
+    bars_held = 0
+    out = pd.Series(0, index=long_entry.index, dtype=int)
+    for i in range(len(out)):
+        if state == 1:
+            if short_arr[i]:
+                state = -1
+                bars_held = 0
+            elif bars_held >= exit_bars:
+                state = 0
+                bars_held = 0
+        elif state == -1:
+            if long_arr[i]:
+                state = 1
+                bars_held = 0
+            elif bars_held >= exit_bars:
+                state = 0
+                bars_held = 0
+        else:
+            if long_arr[i]:
+                state = 1
+                bars_held = 0
+            elif short_arr[i]:
+                state = -1
+                bars_held = 0
+
+        if state != 0:
+            bars_held += 1
+        out.iloc[i] = state
+    return out
+
+
 @dataclass
 class StrategyMeta:
     """Metadata about a strategy."""

@@ -82,6 +82,32 @@ CANDIDATES: dict[str, dict] = {
             "exit_multiplier": [0.5, 1.0],
         },
     },
+    "Davey_Momentum_Pullback": {
+        "family": "davey_pullback",
+        "grid": {
+            "bar_count": [1, 2, 3],
+            "pullback": [1, 2, 3],
+            "exit_bars": [3, 5, 8],
+            "count_higher_highs": [False, True],
+        },
+    },
+    "Davey_Countertrend_Reversal": {
+        "family": "davey_streak",
+        "grid": {
+            "bar_count": [2, 3, 4, 5],
+            "momentum_period": [1, 3, 5],
+            "with_trend": [False, True],
+            "exit_bars": [3, 5, 8],
+        },
+    },
+    "Davey_RSI_Trigger": {
+        "family": "davey_rsi",
+        "grid": {
+            "rsi_period": [2, 3, 4],
+            "entry_threshold": [60, 65, 70, 75],
+            "exit_bars": [3, 5, 8],
+        },
+    },
     "BB_Squeeze": {
         "family": "vol_compression_mr",
         "grid": {

@@ -23,8 +23,17 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rs = avg_gain / avg_loss
+    rsi_val = 100 - (100 / (1 + rs))
+
+    # Degenerate denominators (Wilder conventions):
+    #   avg_loss == 0 with gains  -> RSI 100 (pure strength; rs = inf)
+    #   avg_loss == 0, no gains   -> RSI 50 (no movement = neutral, NOT 0)
+    #   avg_gain == 0 with losses -> RSI 0 via the formula (rs = 0)
+    # Warm-up rows (NaN) must stay NaN.
+    rsi_val = rsi_val.where(avg_loss > 0, 100.0)
+    rsi_val = rsi_val.where(~((avg_loss == 0) & (avg_gain == 0)), 50.0)
+    return rsi_val.where(avg_loss.notna())
 
 
 def roc(series: pd.Series, period: int = 10) -> pd.Series:
