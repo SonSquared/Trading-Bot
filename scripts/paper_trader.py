@@ -867,6 +867,7 @@ def close_position(state: dict, pair: str, price: float, reason: str) -> dict | 
         "action": "CLOSE",
         "entry_price": entry_price,
         "exit_price": fill_price,
+        "size_usd": size_usd,
         "side": "LONG" if side == 1 else "SHORT",
         "pnl_pct": pnl_pct * 100,
         "pnl_usd": pnl_usd,
@@ -1118,6 +1119,18 @@ def main():
         print(f"  Funding charged: ${funding_total:.4f}")
         for pair, amt in funding_per_pair.items():
             print(f"    {format_pair(pair)}: ${amt:.4f}")
+        # Every cash change must hit the ledger, or flat-moment reconciliation
+        # shows an unexplained gap (observed 2026-09-07: funding debits were
+        # invisible to the audit tool). Funding is a portfolio-level event,
+        # so the entry carries the "*" sentinel pair — every ledger entry
+        # must have a pair key so log scans never hit KeyError.
+        log_trade({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": "FUND",
+            "pair": "*",
+            "funding": funding_total,
+            "cash_after": state["cash"],
+        })
 
     # Fetch ALL live prices ONCE — single source of truth for entire run
     print("Fetching live prices...")
@@ -1542,4 +1555,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # argparse so `--help` prints usage instead of silently running a live
+    # trading cycle (observed 2026-09-07: bare script ignored unknown flags).
+    import argparse
+    _ap = argparse.ArgumentParser(
+        description="Paper trading bot — one scheduled cycle. Takes no flags;"
+                    " configuration comes from the environment and data files.")
+    _ap.parse_args()
     main()

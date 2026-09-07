@@ -369,7 +369,7 @@ class TestDuplicateOpenGuard:
             final_state["cash"], abs=1e-6)
         # And the flat-ETH cycle itself reconciles: realized == the ETH close
         # P&L minus the ETH entry fee minus funding charged this run.
-        eth_close = next(t for t in all_trades if t["pair"] == PAIR
+        eth_close = next(t for t in all_trades if t.get("pair") == PAIR
                          and t["action"] == "CLOSE")
         eth_entry_fee = 30.0 * FEE_RATE
         funding_paid = -(final_state["total_pnl"] - eth_close["pnl_usd"]

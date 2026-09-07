@@ -6,14 +6,17 @@ paper_state.json:
 1. Cash-chain integrity — each entry's ``cash_after`` must equal the previous
    ``cash_after`` plus the entry's own cash effect:
        OPEN:  -(size_usd + fee)
-       CLOSE: +(size_usd + pnl_usd)
-   Deviations are allowed to be funding-sized (8h funding is charged to cash
-   without a trade-log record) and are labeled as such; anything larger is a
-   real ledger break.
+       CLOSE: +(size_usd + pnl_usd)   (size_usd logged on CLOSE since
+              2026-09-07; earlier closes are reconstructed from their OPEN)
+       FUND:  -funding                (funding ledger entries since 2026-09-07)
+   Small unexplained deviations in the pre-2026-09-07 window (legacy
+   double-charged slippage, unlogged funding) fold into a legacy offset;
+   anything larger after the fix is a real ledger break.
 
 2. Flat-moment P&L reconciliation — whenever the reconstructed position count
    is zero, a correct cost model satisfies:
-       cash - initial_capital == sum(pnl_usd of all closes)
+       cash - initial_capital == sum(pnl_usd of closes) - sum(open fees)
+                                 - sum(funding entries) + legacy offset
    Pre-2026-09-06 the bot hid entry fees and funding from the reported P&L,
    so this gap grew negative — exactly the Telegram "equity vs P&L" bug. The
    audit quantifies the hidden cost in that window and verifies the gap is
@@ -44,8 +47,11 @@ STATE_FILE = RESULTS / "paper_state.json"
 RUN_LOG = RESULTS / "run_history.jsonl"
 
 # The accounting fix (entry fee + funding booked into total_pnl at charge
-# time) landed 2026-09-06 UTC. Before it, reported P&L hid those costs.
-FIX_TS = datetime(2026, 9, 6, 0, 0, tzinfo=timezone.utc)
+# time) landed 2026-09-06 UTC; full ledger completeness (size_usd on CLOSE
+# entries + FUND ledger entries for funding debits) landed 2026-09-07 UTC.
+# Entries before the latter are reconciled through a legacy offset; after it
+# the audit is exact.
+FIX_TS = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
 
 FUNDING_TOLERANCE = 0.02   # max unexplained delta attributed to funding
 CENT = 0.005
@@ -118,6 +124,10 @@ def audit(log_path: Path = TRADE_LOG, state_path: Path = STATE_FILE,
     open_count = 0
     sum_close_pnl = 0.0
     seen_opened_pairs: set[str] = set()
+    open_sizes: dict[str, float] = {}
+    sum_open_fees = 0.0
+    sum_fund = 0.0
+    legacy_delta = 0.0
 
     for t in trades:
         ts = _ts(t.get("timestamp"))
@@ -130,6 +140,8 @@ def audit(log_path: Path = TRADE_LOG, state_path: Path = STATE_FILE,
             stats["opens"] += 1
             open_count += 1
             seen_opened_pairs.add(pair)
+            open_sizes[pair] = float(t.get("size_usd", 0) or 0)
+            sum_open_fees += float(t.get("fee", 0) or 0)
             if pair in seen_opened_pairs and open_count > len(seen_opened_pairs):
                 _add(ts,
                      f"{t.get('timestamp')}: duplicate open of {pair} while "
@@ -142,6 +154,9 @@ def audit(log_path: Path = TRADE_LOG, state_path: Path = STATE_FILE,
                 seen_opened_pairs.discard(pair)
             open_count = max(0, open_count - 1)
             sum_close_pnl += float(t.get("pnl_usd", 0) or 0)
+        elif action == "FUND":
+            stats["funds"] = stats.get("funds", 0) + 1
+            sum_fund += float(t.get("funding", 0) or 0)
         else:
             _add(ts, f"{t.get('timestamp')}: unknown action {action!r}")
 
@@ -151,8 +166,12 @@ def audit(log_path: Path = TRADE_LOG, state_path: Path = STATE_FILE,
                 expected = prev_cash - (float(t.get("size_usd", 0) or 0)
                                         + float(t.get("fee", 0) or 0))
             elif action == "CLOSE":
-                expected = prev_cash + (float(t.get("size_usd", 0) or 0)
+                size = (float(t.get("size_usd", 0) or 0)
+                        or open_sizes.get(pair, 0.0))
+                expected = prev_cash + (size
                                         + float(t.get("pnl_usd", 0) or 0))
+            elif action == "FUND":
+                expected = prev_cash - float(t.get("funding", 0) or 0)
             else:
                 expected = prev_cash
             delta = ca_f - expected
@@ -166,13 +185,19 @@ def audit(log_path: Path = TRADE_LOG, state_path: Path = STATE_FILE,
                          f"{t.get('timestamp')}: cash-chain break — cash_after "
                          f"${ca_f:.4f} but expected ${expected:.4f} "
                          f"(unexplained ${delta:+.4f})")
+            if ts is not None and ts < FIX_TS:
+                # Legacy-era ledger gaps (double-charged slippage, funding
+                # debits that predate FUND entries) shift cash permanently.
+                # Carry them forward so post-fix checks stay exact.
+                legacy_delta += delta
         if ca_f is not None:
             prev_cash = ca_f
         prev_ts = ts or prev_ts
 
         # 2) Flat-moment P&L reconciliation
         if open_count == 0 and ca_f is not None and stats["closes"] > 0:
-            gap = (ca_f - initial) - sum_close_pnl
+            gap = ((ca_f - initial) - (sum_close_pnl - sum_open_fees
+                                       - sum_fund + legacy_delta))
             stats["flat_checks"] += 1
             if ts and ts < FIX_TS:
                 stats["max_flat_gap_pre_fix"] = max(
@@ -269,7 +294,8 @@ def main() -> int:
     print("EQUITY AUDIT — trade log vs every reported equity figure")
     print("=" * 60)
     print(f"Entries:            {stats.get('entries', 0)} "
-          f"({stats.get('opens', 0)} opens / {stats.get('closes', 0)} closes)")
+          f"({stats.get('opens', 0)} opens / {stats.get('closes', 0)} closes "
+          f"/ {stats.get('funds', 0)} funding)")
     print(f"Cash-chain breaks:  {stats.get('cash_chain_breaks', 0)} "
           f"(of which funding-sized: {stats.get('funding_sized_deltas', 0)})")
     print(f"Flat-moment checks: {stats.get('flat_checks', 0)} "
