@@ -13,7 +13,6 @@ from typing import Any
 
 import pandas as pd
 
-from trading_system.strategies.signal import Signal
 
 
 @dataclass

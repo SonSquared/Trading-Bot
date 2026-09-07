@@ -15,10 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from trading_system.config import SystemConfig, FeeConfig, BacktestConfig
+from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
-from trading_system.backtester.engine import BacktestEngine
-from trading_system.strategies import get_strategy
 from trading_system.validation.robustness import RobustnessAnalyzer
 
 
@@ -131,7 +129,7 @@ def main():
         base_ret = result["results"][0]["total_return"] if result["results"] else 0
         worst_ret = result["results"][-1]["total_return"] if result["results"] else 0
 
-        print(f"\n  Summary:")
+        print("\n  Summary:")
         print(f"    Cost robustness score:    {result['cost_robustness_score']:.0%}")
         print(f"    Profitable at all levels: {'YES' if result['profitable_at_all_levels'] else 'NO'}")
         print(f"    Profitable at 1.5x fees:  {'YES' if result['profitable_at_1_5x'] else 'NO'}")

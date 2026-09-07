@@ -6,9 +6,7 @@ import sys
 sys.path.insert(0, ".")
 
 import pandas as pd
-import numpy as np
 import ccxt
-import time
 
 from trading_system.strategies import STRATEGY_REGISTRY
 
@@ -89,7 +87,7 @@ def backtest(name, df, strat_name, params):
     transitions = sum(1 for i in range(1, len(sig_arr)) if sig_arr[i] != sig_arr[i - 1])
 
     print(f"  {name}")
-    print(f"    Trades: {len(closes)} | Wins: {wins}/{len(closes)} ({wins / len(closes) * 100:.0f}%)" if closes else f"    Trades: 0")
+    print(f"    Trades: {len(closes)} | Wins: {wins}/{len(closes)} ({wins / len(closes) * 100:.0f}%)" if closes else "    Trades: 0")
     print(f"    Return: {ret:+.2f}% (${final - INITIAL_CAPITAL:+.2f})")
     print(f"    Max DD: {max_dd * 100:.2f}%")
     print(f"    Active candles: {non_flat}/{len(sig_arr)} ({non_flat / len(sig_arr) * 100:.0f}%)")

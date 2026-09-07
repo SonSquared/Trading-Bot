@@ -8,7 +8,6 @@ rolling metrics, trade distributions, parameter sensitivity.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend

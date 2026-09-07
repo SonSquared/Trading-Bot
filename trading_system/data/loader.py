@@ -7,7 +7,6 @@ Provides a single entry point for loading, cleaning, and splitting data.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import structlog

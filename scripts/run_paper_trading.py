@@ -36,7 +36,7 @@ def run_single_cycle(bot: PortfolioTradingBot) -> dict:
         print(f"    Weighted Score: {agg['weighted_score']:+.3f}")
         print(f"    Direction:      {'LONG' if agg['direction'] > 0 else 'SHORT' if agg['direction'] < 0 else 'FLAT'}")
         print(f"    Confidence:     {agg['confidence']:.1%}")
-        print(f"    Strategy Signals:")
+        print("    Strategy Signals:")
         for label, signal in agg["signals"].items():
             direction = "LONG" if signal > 0 else "SHORT" if signal < 0 else "FLAT"
             print(f"      {label:<25s} => {direction}")
@@ -50,7 +50,7 @@ def run_continuous(bot: PortfolioTradingBot):
     print("  PORTFOLIO BOT - Continuous Paper Trading")
     print("=" * 70)
     print(f"  Checking every {bot.bot_config.check_interval_seconds}s")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     cycle = 0
     try:
@@ -83,14 +83,14 @@ def show_status(bot: PortfolioTradingBot):
     print(f"  Running:    {status['running']}")
     print(f"  Strategies: {status['n_strategies']}")
 
-    print(f"\n  Strategy Allocation:")
+    print("\n  Strategy Allocation:")
     for s in status["strategies"]:
         last = s.get("last_signal", "N/A")
         if isinstance(last, int):
             last = "LONG" if last > 0 else "SHORT" if last < 0 else "FLAT"
         print(f"    {s['label']:<30s} weight={s['weight']:.1%}  TF={s['timeframe']}  last={last}")
 
-    print(f"\n  Risk Status:")
+    print("\n  Risk Status:")
     risk = status["risk"]
     print(f"    Emergency Stop:     {risk['emergency_stop']}")
     print(f"    Daily P&L:          ${risk['daily_pnl']:.2f}")
@@ -99,7 +99,7 @@ def show_status(bot: PortfolioTradingBot):
     print(f"    Total Positions:    {risk['total_positions']}")
     print(f"    Daily Trades:       {risk['daily_trades']}")
 
-    print(f"\n  Last Signals:")
+    print("\n  Last Signals:")
     for pair, sig in status["last_signals"].items():
         direction = "LONG" if sig["direction"] > 0 else "SHORT" if sig["direction"] < 0 else "FLAT"
         print(f"    {pair}: {direction} (score={sig['score']:+.3f}) at {sig['timestamp']}")

@@ -131,8 +131,6 @@ def generate_equity_chart(trades: list, output_path: str) -> str:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
-    from matplotlib.patches import FancyBboxPatch
-    import numpy as np
 
     plt.style.use("dark_background")
 
@@ -232,7 +230,6 @@ def generate_summary_card(trades: list, output_path: str) -> str:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import numpy as np
 
     state = load_state()
     equity = state.get("cash", INITIAL_CAPITAL)

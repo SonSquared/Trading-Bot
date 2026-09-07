@@ -16,12 +16,10 @@ Usage:
 from __future__ import annotations
 
 import sys
-import os
 import time
 import hashlib
 import sqlite3
 import json
-import hashlib as _hashlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -32,8 +30,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(line_buffering=True)
 
-import numpy as np
-import pandas as pd
 
 from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
@@ -198,7 +194,7 @@ def main():
     log(f"  Strategies: {len(ALL_STRATEGIES)}")
     log(f"  Pairs: {pair_list}")
     log(f"  Timeframes: {tf_list}")
-    log(f"  Mode: Sequential (vectorized engine)")
+    log("  Mode: Sequential (vectorized engine)")
     log(f"  Checkpoint every: {args.checkpoint_every}")
 
     # Show combo counts

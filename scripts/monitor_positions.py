@@ -7,7 +7,6 @@ import sys
 sys.path.insert(0, ".")
 
 import json
-import time
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,8 +116,8 @@ def main():
     # Send Telegram update
     if token and chat_id:
         msg = (
-            f"📍 <b>POSITION UPDATE</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📍 <b>POSITION UPDATE</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
             + "\n\n".join(lines)
             + f"\n\n💰 <b>Total unrealized: {total_emoji}${total_unrealized:.2f}</b>"
             + f"\n⏰ {now[:19]} UTC"

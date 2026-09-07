@@ -10,7 +10,6 @@ import sys
 sys.path.insert(0, ".")
 
 import json
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -132,7 +131,7 @@ def portfolio_backtest(strategies, eth_data, btc_data, label):
     print(f"  Trades:          {len(trades)}")
     print(f"  Win rate:        {wins}/{len(trades)} ({wins / len(trades) * 100:.1f}%)" if trades else "  Win rate: 0%")
     print(f"  Max drawdown:    {max_dd:.2f}%")
-    print(f"\n  Yearly performance:")
+    print("\n  Yearly performance:")
     for year in sorted(yearly.keys()):
         y = yearly[year]
         yr_ret = (y["end"] - y["start"]) / y["start"] * 100
@@ -182,7 +181,6 @@ if __name__ == "__main__":
     results = []
     for label, strats in portfolios:
         if "Conservative" in label:
-            import scripts.best_portfolio as bp
             old_max = MAX_POS_PCT
             # Can't easily override, so let's note it
         r = portfolio_backtest(strats, eth, btc, label)
@@ -207,4 +205,4 @@ if __name__ == "__main__":
     }
     with open("data/results/best_portfolio.json", "w") as f:
         json.dump(output, f, indent=2)
-    print(f"\nSaved to data/results/best_portfolio.json")
+    print("\nSaved to data/results/best_portfolio.json")

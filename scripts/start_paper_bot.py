@@ -26,11 +26,11 @@ def main(config: str, strategies: str, params: str):
     strategy_names = [s.strip() for s in strategies.split(",")]
     strategy_params = json.loads(params) if params else {name: {} for name in strategy_names}
 
-    console.print(f"[bold blue]Starting Paper Trading Bot[/bold blue]")
+    console.print("[bold blue]Starting Paper Trading Bot[/bold blue]")
     console.print(f"  Strategies: {strategy_names}")
     console.print(f"  Pairs: {cfg.exchange.pairs}")
-    console.print(f"  Mode: paper")
-    console.print(f"  Press Ctrl+C to stop\n")
+    console.print("  Mode: paper")
+    console.print("  Press Ctrl+C to stop\n")
 
     bot = TradingBot(cfg, strategy_names, strategy_params)
     bot.start()

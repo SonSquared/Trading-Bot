@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from trading_system.indicators import roc, ema, atr
+from trading_system.indicators import roc, ema
 from trading_system.strategies.base import BaseStrategy, StrategyMeta
 
 

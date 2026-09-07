@@ -26,7 +26,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
-import numpy as np
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
@@ -38,15 +37,12 @@ from trading_system.strategies import ALL_STRATEGIES, get_strategy
 from trading_system.optimization.runner import ExperimentRunner
 from trading_system.optimization.param_space import count_combinations
 from trading_system.optimization.scoring import calculate_composite_score
-from trading_system.validation.walk_forward import WalkForwardAnalyzer
 from trading_system.validation.monte_carlo import MonteCarloAnalyzer
 from trading_system.validation.robustness import RobustnessAnalyzer
 from trading_system.validation.overfitting import OverfittingDetector
 from trading_system.ranking.scorer import StrategyScorer
-from trading_system.ranking.correlation import StrategyCorrelationAnalyzer
 from trading_system.dashboard.charts import ChartGenerator
 from trading_system.reports.generator import ReportGenerator
-from trading_system.data.storage import DataStorage
 from trading_system.utils.logging import setup_logging
 
 console = Console()
@@ -309,7 +305,7 @@ def main(config: str, pair: str, fast: bool, skip_validation: bool):
     validated_strategies.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
     final_3 = validated_strategies[:3]
 
-    console.print(f"\n[bold green]Selected 3 Final Strategies:[/bold green]")
+    console.print("\n[bold green]Selected 3 Final Strategies:[/bold green]")
     for i, s in enumerate(final_3):
         res = s.get("results", {})
         rob = s.get("robustness", {})
@@ -385,7 +381,7 @@ def main(config: str, pair: str, fast: bool, skip_validation: bool):
     total_elapsed = time.time() - total_start
     console.print(f"\n[bold green]Research complete in {total_elapsed:.1f}s[/bold green]")
     console.print(f"Report: {report_path}")
-    console.print(f"Charts: data/charts/")
+    console.print("Charts: data/charts/")
     console.print(f"Results: {cfg.data.results_dir}/metadata.db")
 
 

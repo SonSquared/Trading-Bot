@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import sys
 import json
-import time
 import sqlite3
 from pathlib import Path
 
@@ -35,8 +34,6 @@ from trading_system.strategies import get_strategy
 from validation.walk_forward import WalkForwardAnalyzer
 from validation.monte_carlo import MonteCarloAnalyzer
 from validation.robustness import RobustnessAnalyzer
-from portfolio.allocator import create_allocator, equal_weight
-from ranking.correlation import StrategyCorrelationAnalyzer
 
 DB_PATH = Path("data/results/experiments.db")
 RESULTS_DIR = Path("data/results")
@@ -165,7 +162,7 @@ def run_validation_pipeline(
     results = {}
 
     # 1. Walk-forward analysis
-    print(f"    Walk-forward analysis...")
+    print("    Walk-forward analysis...")
     try:
         wf_analyzer = WalkForwardAnalyzer(cfg.backtest)
         grid = strategy.param_grid()
@@ -182,7 +179,7 @@ def run_validation_pipeline(
         results["walk_forward"] = {"error": str(e)}
 
     # 2. Monte Carlo analysis
-    print(f"    Monte Carlo analysis...")
+    print("    Monte Carlo analysis...")
     try:
         signals = strategy.generate_signals(val_data, params)
         bt_result = engine.run(val_data, signals, strategy_name, params, pair, timeframe, full_funding)
@@ -207,7 +204,7 @@ def run_validation_pipeline(
         results["monte_carlo"] = {"error": str(e)}
 
     # 3. Robustness testing
-    print(f"    Robustness testing...")
+    print("    Robustness testing...")
     try:
         rob_analyzer = RobustnessAnalyzer(cfg.backtest)
         rob_result = rob_analyzer.run_full_robustness(
@@ -351,7 +348,7 @@ def main():
         )
 
     # Step 5: Portfolio analysis
-    print(f"\n[5/8] Portfolio allocation analysis...")
+    print("\n[5/8] Portfolio allocation analysis...")
     if len(selected) >= 2:
         print("  Would build portfolio with equal-weight, risk-parity, and drawdown-adjusted allocation")
         print("  (Requires equity curves from backtester - using Sharpe-based weights as proxy)")
@@ -365,7 +362,7 @@ def main():
         print("  Not enough strategies for portfolio analysis")
 
     # Step 6: Correlation analysis
-    print(f"\n[6/8] Strategy correlation analysis...")
+    print("\n[6/8] Strategy correlation analysis...")
     if len(selected) >= 2:
         print("  Selected strategies span different families:")
         families = set()
@@ -377,7 +374,7 @@ def main():
         print(f"  {len(families)} unique families represented")
 
     # Step 7: Save results
-    print(f"\n[7/8] Saving analysis results...")
+    print("\n[7/8] Saving analysis results...")
 
     results_dir = RESULTS_DIR
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -421,7 +418,7 @@ def main():
     print(f"  Saved to {results_dir / 'validation_results.json'}")
 
     # Step 8: Summary report
-    print(f"\n[8/8] Generating summary...")
+    print("\n[8/8] Generating summary...")
     print()
     print("=" * 70)
     print("  ANALYSIS COMPLETE")

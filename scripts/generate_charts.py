@@ -21,7 +21,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -71,7 +70,7 @@ CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, ".")
 
 from trading_system.backtester.engine import BacktestEngine
-from trading_system.config import SystemConfig, BacktestConfig, ExecutionConfig, FeeConfig, SlippageConfig
+from trading_system.config import BacktestConfig, ExecutionConfig, FeeConfig, SlippageConfig
 from trading_system.strategies import get_strategy
 
 

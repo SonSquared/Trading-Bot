@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from trading_system.indicators import (
-    atr, bollinger_bands, rsi, volatility_regime, ema, historical_volatility,
+    bollinger_bands, rsi, volatility_regime, ema,
 )
 from trading_system.strategies.base import BaseStrategy, StrategyMeta
 

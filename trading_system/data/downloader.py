@@ -10,7 +10,6 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import ccxt
 import pandas as pd

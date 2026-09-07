@@ -8,7 +8,6 @@ sys.path.insert(0, ".")
 import pandas as pd
 import numpy as np
 import ccxt
-import time
 from itertools import product
 
 from trading_system.strategies import STRATEGY_REGISTRY

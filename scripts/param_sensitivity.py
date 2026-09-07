@@ -5,8 +5,6 @@ Tests multiple parameter sets to avoid overfitting.
 import sys
 sys.path.insert(0, ".")
 
-import json
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -156,7 +154,6 @@ if __name__ == "__main__":
     print("PORTFOLIO BACKTESTS WITH BEST PARAMS")
     print(f"{'='*75}")
 
-    from itertools import combinations
 
     # Best per-pair combos from above
     best_eth_params = {"fast_period": 12, "slow_period": 26, "signal_period": 9, "use_ema": True}  # MACD 12/26/9

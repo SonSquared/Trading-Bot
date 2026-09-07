@@ -17,8 +17,7 @@ import pandas as pd
 import structlog
 
 from trading_system.backtester.engine import BacktestEngine
-from trading_system.backtester.results import BacktestResults
-from trading_system.config import BacktestConfig, FeeConfig, SystemConfig
+from trading_system.config import BacktestConfig, FeeConfig
 from trading_system.optimization.param_space import perturb_params
 from trading_system.strategies import get_strategy
 

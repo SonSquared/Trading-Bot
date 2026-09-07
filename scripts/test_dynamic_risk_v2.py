@@ -22,7 +22,6 @@ from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine
 from trading_system.strategies import get_strategy
-from trading_system.bot.dynamic_risk import DynamicRiskManager, RegimeRiskConfig
 from trading_system.indicators import adx, atr, bollinger_bands
 
 

@@ -37,7 +37,6 @@ from pathlib import Path
 sys.path.insert(0, ".")
 
 import pandas as pd
-import numpy as np
 
 from trading_system.strategies import STRATEGY_REGISTRY
 
@@ -327,7 +326,7 @@ def send_trade_alert(notifier, pair: str, action: str, state: dict, sig_data: di
 
 
 def main():
-    print(f"=== GitHub Bot Runner ===")
+    print("=== GitHub Bot Runner ===")
     print(f"Time: {datetime.utcnow().isoformat()}")
     print(f"Mode: {BOT_MODE}")
     print()

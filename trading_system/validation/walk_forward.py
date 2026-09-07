@@ -13,7 +13,6 @@ import pandas as pd
 import structlog
 
 from trading_system.backtester.engine import BacktestEngine
-from trading_system.backtester.results import BacktestResults
 from trading_system.config import BacktestConfig
 from trading_system.optimization.param_space import generate_grid
 from trading_system.strategies import get_strategy

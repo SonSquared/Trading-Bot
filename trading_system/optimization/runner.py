@@ -7,19 +7,13 @@ Supports multiprocessing for running thousands of backtests efficiently.
 from __future__ import annotations
 
 import hashlib
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any
 
-import numpy as np
 import pandas as pd
 import structlog
 
 from trading_system.backtester.engine import BacktestEngine
-from trading_system.backtester.results import BacktestResults
 from trading_system.config import BacktestConfig, SystemConfig
-from trading_system.data.loader import DataLoader
-from trading_system.optimization.scoring import calculate_composite_score
 from trading_system.strategies import get_strategy
 
 logger = structlog.get_logger(__name__)

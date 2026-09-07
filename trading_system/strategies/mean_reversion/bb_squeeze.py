@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from trading_system.indicators import bollinger_bands, keltner_channel, atr
+from trading_system.indicators import bollinger_bands, keltner_channel
 from trading_system.strategies.base import BaseStrategy, StrategyMeta
 
 

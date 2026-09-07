@@ -12,11 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import structlog
 
 from trading_system.optimization.scoring import calculate_composite_score, ScoringWeights
-from trading_system.backtester.results import BacktestResults
 
 logger = structlog.get_logger(__name__)
 

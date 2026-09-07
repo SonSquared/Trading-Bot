@@ -6,7 +6,6 @@ Handles maker fees, taker fees, spread costs, and funding rate accrual.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import structlog
 

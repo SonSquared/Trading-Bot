@@ -7,9 +7,7 @@ compares against the rule-based detector, and saves the trained model.
 
 import sys
 import time
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, ".")
@@ -161,14 +159,14 @@ def main():
 
     # Rule-based distribution
     rule_dist = rule_series.value_counts(normalize=True) * 100
-    print(f"\n  Rule-Based:")
+    print("\n  Rule-Based:")
     for regime in ["trending", "choppy", "transitional"]:
         pct = rule_dist.get(regime, 0)
         print(f"    {regime:15s} {pct:>6.1f}%")
 
     # ML distribution
     ml_dist = ml_detector.get_regime_distribution(df)
-    print(f"\n  ML Model:")
+    print("\n  ML Model:")
     for regime in ["trending", "choppy", "transitional"]:
         pct = ml_dist[regime]["pct"]
         conf = ml_dist[regime]["avg_confidence"]
@@ -218,12 +216,12 @@ def main():
     print(f"  Walk-forward F1:       {metrics['overall_f1']:.3f}")
     print(f"  Rule-based accuracy:   {rule_metrics['accuracy']:.3f}")
     print(f"  Improvement:           {ml_acc - rule_metrics['accuracy']:+.3f}")
-    print(f"  Model saved to:        data/models/ml_regime_model.pkl")
+    print("  Model saved to:        data/models/ml_regime_model.pkl")
     print(f"  Training time:         {train_time:.1f}s")
 
     # Also train on BTC to check cross-pair stability
     if "BTC/USDT:USDT_4h" in datasets and "BTC/USDT:USDT_4h" != primary_key:
-        print(f"\n[BONUS] Cross-pair validation on BTC...")
+        print("\n[BONUS] Cross-pair validation on BTC...")
         btc_df = datasets["BTC/USDT:USDT_4h"]
         btc_ml = MLRegimeDetector(config)
         btc_metrics = btc_ml.train(btc_df, verbose=False)

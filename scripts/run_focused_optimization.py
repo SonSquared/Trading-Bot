@@ -226,7 +226,7 @@ def main():
 
     # ── Summary ────────────────────────────────────────────────────
     print(f"\n{'=' * 70}")
-    print(f"FOCUSED RE-OPTIMIZATION COMPLETE")
+    print("FOCUSED RE-OPTIMIZATION COMPLETE")
     print(f"{'=' * 70}")
     print(f"  Total: {total_ok} OK, {total_fail} fail")
     print(f"  Time: {elapsed_total:.0f}s ({elapsed_total/60:.1f} min)")
@@ -243,7 +243,7 @@ def main():
     """)
     rows = cur.fetchall()
 
-    print(f"\n  Top 20 by composite score:")
+    print("\n  Top 20 by composite score:")
     print(f"  {'#':>3s} {'Strategy':<16s} {'Pair':<5s} {'TF':<4s} {'Score':>6s} {'Sharpe':>7s} {'Ret':>8s} {'MaxDD':>7s} {'Trades':>7s} {'PF':>5s}")
     print(f"  {'-' * 85}")
     for i, r in enumerate(rows):
@@ -262,7 +262,7 @@ def main():
     """)
     all_rows = cur.fetchall()
     seen = set()
-    print(f"\n  Best per strategy:")
+    print("\n  Best per strategy:")
     for r in all_rows:
         sn = r[0]
         if sn not in seen:

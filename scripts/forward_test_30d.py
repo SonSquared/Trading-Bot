@@ -19,10 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-import pandas as pd
 from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
-from trading_system.backtester.engine import BacktestEngine
 from trading_system.strategies import get_strategy
 
 INITIAL_CAPITAL = 10000.0
@@ -394,7 +392,7 @@ def main():
                   f"{t['pnl_pct']:>+7.2f}% {t['exit_reason']:<15}")
 
     # Signal analysis
-    print(f"\n\n  SIGNAL LOG (last 10 candles):")
+    print("\n\n  SIGNAL LOG (last 10 candles):")
     print(f"  {'Time':<22} {'Score':>8} {'Dir':>5} {'MACD ETH':>10} {'ROC ETH':>10} {'MACD BTC':>10}")
     print(f"  {'-'*70}")
     for s in signal_log[-10:]:
@@ -403,7 +401,7 @@ def main():
               f"{s['MACD BTC 4h']:>+10d}")
 
     # Compare with backtest expectations
-    print(f"\n\n  COMPARISON: Forward Test vs Backtest Expectations")
+    print("\n\n  COMPARISON: Forward Test vs Backtest Expectations")
     print(f"  {'-'*70}")
     print(f"  {'Metric':<25} {'Forward Test':>15} {'Backtest (30d)':>15} {'Status':>10}")
     print(f"  {'-'*70}")

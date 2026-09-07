@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from trading_system.indicators import atr, historical_volatility, ema
+from trading_system.indicators import atr, ema
 
 logger = structlog.get_logger(__name__)
 

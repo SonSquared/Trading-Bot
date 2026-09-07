@@ -12,8 +12,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -123,7 +121,7 @@ def step2_rank():
         GROUP BY strategy_name, pair, timeframe ORDER BY MAX(composite_score) DESC
     """)
     rows2 = cur.fetchall()
-    print(f"\n  Top 20 best configs:")
+    print("\n  Top 20 best configs:")
     for i, r in enumerate(rows2[:20]):
         n, p, tf, sc, sh, ret, dd, tr, wr, pf = r
         fam = FAMILY_MAP.get(n, "?")
@@ -202,7 +200,7 @@ def step3_validate():
         try:
             df = loader.load(pair, tf)
             if df is None or df.empty:
-                print(f"    WF: SKIP (no data)")
+                print("    WF: SKIP (no data)")
                 continue
 
             strat_obj = get_strategy(strat)
@@ -345,7 +343,7 @@ def step4_select(wf_results, mc_results):
     scored.sort(key=lambda x: x["final_score"], reverse=True)
 
     # Show top 15 with families
-    print(f"\n  Top 15 candidates:")
+    print("\n  Top 15 candidates:")
     print(f"  {'#':>3s} {'Strategy':<22s} {'Pair':<5s} {'TF':<4s} {'Final':>6s} {'Opt':>6s} {'Sharpe':>7s} {'OOS_S':>6s} {'Stab':>5s} {'Family':<15s} {'Validated':>9s}")
     print("  " + "-" * 105)
     for i, s in enumerate(scored[:15]):
@@ -376,7 +374,7 @@ def step4_select(wf_results, mc_results):
                 break
 
     print(f"\n  {'=' * 80}")
-    print(f"  FINAL SELECTION: Top 3 Strategies")
+    print("  FINAL SELECTION: Top 3 Strategies")
     print(f"  {'=' * 80}")
     for i, s in enumerate(selected):
         fam = FAMILY_MAP.get(s["strategy"], "?")

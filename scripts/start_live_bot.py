@@ -37,7 +37,7 @@ def main(config: str, strategies: str, mode: str, confirm: bool):
     console.print(f"  Mode: {mode}")
     if mode == "live":
         console.print("[bold red]WARNING: This will trade real money![/bold red]")
-    console.print(f"  Press Ctrl+C to stop\n")
+    console.print("  Press Ctrl+C to stop\n")
 
     bot = TradingBot(cfg, strategy_names, strategy_params)
     bot.start()

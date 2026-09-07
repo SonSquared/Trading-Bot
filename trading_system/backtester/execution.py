@@ -8,7 +8,6 @@ execution happens at open of candle N+1 or later.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import pandas as pd

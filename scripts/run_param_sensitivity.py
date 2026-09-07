@@ -19,7 +19,6 @@ from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine
 from trading_system.strategies import get_strategy
-from trading_system.optimization.param_space import perturb_params
 
 
 # The 3 selected strategies
@@ -195,7 +194,7 @@ def main():
                 param_results.append(result)
 
         # Print per-parameter sensitivity
-        print(f"\n  Parameter Sensitivity (per-param sweep, +/-30%):")
+        print("\n  Parameter Sensitivity (per-param sweep, +/-30%):")
         print(f"  {'Param':<20s} {'Base':>8s} {'Sharpe Avg':>10s} {'Sharpe Std':>10s} {'Range':>8s} {'Ret Avg':>8s} {'Ret Min':>8s} {'Prof%':>6s}  Sensitivity")
         print(f"  {'-' * 105}")
 
@@ -229,7 +228,7 @@ def main():
             worst_param = max(param_results, key=lambda x: x["sharpe_std"])
             best_param = min(param_results, key=lambda x: x["sharpe_std"])
 
-            print(f"\n  Overall Parameter Stability:")
+            print("\n  Overall Parameter Stability:")
             print(f"    Avg Sharpe std across params: {avg_std:.3f}")
             print(f"    Avg profitable rate: {avg_profitable:.0%}")
             print(f"    Most sensitive param: {worst_param['param_name']} (std={worst_param['sharpe_std']:.3f})")

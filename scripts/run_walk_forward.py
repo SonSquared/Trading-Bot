@@ -40,7 +40,7 @@ def main(strategy: str, pair: str, timeframe: str, windows: int, config: str):
     )
 
     agg = result.get("aggregate", {})
-    console.print(f"\n[bold green]Results:[/bold green]")
+    console.print("\n[bold green]Results:[/bold green]")
     console.print(f"  Windows: {result.get('n_windows', 0)}")
     console.print(f"  Avg Sharpe: {agg.get('avg_sharpe', 0):.2f}")
     console.print(f"  Median Sharpe: {agg.get('median_sharpe', 0):.2f}")

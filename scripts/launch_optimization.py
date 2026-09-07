@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Launch the optimization as a fully detached process on Windows."""
 import subprocess
-import sys
-import os
 from pathlib import Path
 
 project_root = Path(__file__).parent.parent

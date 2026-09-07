@@ -146,7 +146,7 @@ def main():
     corr_matrix = corr_analyzer.calculate_returns_matrix(equity_curves)
     corr_summary = corr_analyzer.get_correlation_summary(equity_curves)
 
-    print(f"\n  Correlation Matrix:")
+    print("\n  Correlation Matrix:")
     labels = list(equity_curves.keys())
     print(f"  {'':>18s}", end="")
     for lbl in labels:
@@ -165,11 +165,11 @@ def main():
         print(f"    {pair_info['strategy_a']} <-> {pair_info['strategy_b']}: {pair_info['correlation']:.3f}")
 
     if corr_summary['avg_correlation'] < 0.5:
-        print(f"  => LOW correlation — good diversification")
+        print("  => LOW correlation — good diversification")
     elif corr_summary['avg_correlation'] < 0.7:
-        print(f"  => MODERATE correlation — acceptable diversification")
+        print("  => MODERATE correlation — acceptable diversification")
     else:
-        print(f"  => HIGH correlation — limited diversification benefit")
+        print("  => HIGH correlation — limited diversification benefit")
 
     # ── Phase 3: Portfolio allocation ─────────────────────────────
     print(f"\n{'=' * 80}")
@@ -199,7 +199,7 @@ def main():
 
     for method_name, weights in allocation_methods.items():
         print(f"\n  --- {method_name} ---")
-        print(f"  Weights: ", end="")
+        print("  Weights: ", end="")
         for i, lbl in enumerate(labels):
             print(f"{lbl}={weights[i]:.1%}  ", end="")
         print()
@@ -283,14 +283,14 @@ def main():
     print(f"  MaxDD reduction:     {dd_benefit*100:+.2f}%")
 
     if sharpe_benefit > 0:
-        print(f"  => Portfolio ADDS value (higher Sharpe)")
+        print("  => Portfolio ADDS value (higher Sharpe)")
     else:
-        print(f"  => Portfolio REDUCES Sharpe (concentration wins)")
+        print("  => Portfolio REDUCES Sharpe (concentration wins)")
 
     if dd_benefit > 0:
-        print(f"  => Portfolio REDUCES drawdown (smoother equity)")
+        print("  => Portfolio REDUCES drawdown (smoother equity)")
     else:
-        print(f"  => Portfolio has HIGHER drawdown")
+        print("  => Portfolio has HIGHER drawdown")
 
     # ── Recommendation ────────────────────────────────────────────
     print(f"\n{'=' * 80}")
@@ -303,10 +303,10 @@ def main():
     best_weights = allocation_methods[best_method_name]
 
     print(f"\n  Recommended allocation method: {best_method_name}")
-    print(f"  Weights:")
+    print("  Weights:")
     for i, lbl in enumerate(labels):
         print(f"    {lbl}: {best_weights[i]:.1%}")
-    print(f"\n  Portfolio metrics:")
+    print("\n  Portfolio metrics:")
     print(f"    Total Return: {best_method_metrics['total_return']*100:.1f}%")
     print(f"    CAGR:         {best_method_metrics['cagr']*100:.1f}%")
     print(f"    Sharpe:       {best_method_metrics['sharpe']:.2f}")

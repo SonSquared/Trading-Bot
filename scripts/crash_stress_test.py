@@ -23,7 +23,6 @@ if sys.platform == "win32":
 
 import json
 from pathlib import Path
-from itertools import product
 
 import pandas as pd
 import numpy as np
@@ -308,7 +307,7 @@ def run_stress_test():
     for name, r in results.items():
         print(f"  {name:<20} {r['buy_hold']:>+7.1f}% {r['no_rm']['return_pct']:>+9.1f}% {r['with_rm']['return_pct']:>+11.1f}% {r['tight_rm']['return_pct']:>+11.1f}%")
 
-    print(f"\n  Risk Management Impact:")
+    print("\n  Risk Management Impact:")
     for name, r in results.items():
         dd_before = r["no_rm"]["max_dd"]
         dd_after = r["with_rm"]["max_dd"]

@@ -11,9 +11,7 @@ Usage:
   python scripts/setup_github_actions.py
 """
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 

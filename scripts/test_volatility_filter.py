@@ -12,8 +12,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
-import pandas as pd
 from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine

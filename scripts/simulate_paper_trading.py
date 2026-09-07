@@ -368,7 +368,7 @@ def run_simulation():
     signal_closes = [t for t in closes if t["reason"] in ("signal_exit", "signal_reverse")]
     sim_closes = [t for t in closes if t["reason"] == "simulation_end"]
 
-    print(f"\n  Exit Breakdown:")
+    print("\n  Exit Breakdown:")
     print(f"    Signal exits:   {len(signal_closes)}")
     print(f"    SL exits:       {len(sl_closes)}")
     print(f"    End-of-sim:     {len(sim_closes)}")
@@ -378,7 +378,7 @@ def run_simulation():
         print(f"    SL avg P&L:     ${np.mean(sl_pnls):.2f}")
 
     # Trade log
-    print(f"\n  Trade Log (last 20):")
+    print("\n  Trade Log (last 20):")
     print(f"  {'Timestamp':<28s} {'Pair':<18s} {'Action':<8s} {'Side':<6s} {'Price':>10s} {'P&L':>10s} {'Reason'}")
     print(f"  {'-' * 95}")
     for t in sim.trade_log[-20:]:
@@ -387,7 +387,7 @@ def run_simulation():
               f"{t['price']:>10.2f} {pnl:>10s} {t.get('reason', '')}")
 
     # Daily equity progression
-    print(f"\n  Daily Equity Progression:")
+    print("\n  Daily Equity Progression:")
     eq_df = pd.DataFrame(sim.equity_history)
     eq_df["timestamp"] = pd.to_datetime(eq_df["timestamp"])
     eq_df.set_index("timestamp", inplace=True)

@@ -29,7 +29,6 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 from matplotlib.ticker import FuncFormatter
 
 from trading_system.config import SystemConfig
@@ -232,7 +231,7 @@ def main():
     print(f"{'=' * 100}")
 
     # Use the longest strategy's index as the common timeline
-    common_idx = data_cache[f"ETH/USDT:USDT_4h"].index
+    common_idx = data_cache["ETH/USDT:USDT_4h"].index
     n_hours = (common_idx[-1] - common_idx[0]).total_seconds() / 3600
 
     # Align equities to common index
@@ -502,11 +501,11 @@ def main():
         ["Sortino Ratio"] + [f"{sr['metrics']['sortino']:.2f}" for sr in strategy_results] + [f"{port_metrics['sortino']:.2f}"],
         ["Max Drawdown"] + [f"{sr['metrics']['max_dd_pct']:.2f}%" for sr in strategy_results] + [f"{port_metrics['max_dd_pct']:.2f}%"],
         ["Calmar Ratio"] + [f"{sr['metrics']['calmar']:.2f}" for sr in strategy_results] + [f"{port_metrics['calmar']:.2f}"],
-        ["Total Trades"] + [f"{sr['total_trades']}" for sr in strategy_results] + [f"-"],
-        ["Win Rate"] + [f"{sr['win_rate']*100:.1f}%" for sr in strategy_results] + [f"-"],
-        ["Profit Factor"] + [f"{sr['profit_factor']:.2f}" for sr in strategy_results] + [f"-"],
-        ["SL Exits"] + [f"{sr['sl_exits']}" for sr in strategy_results] + [f"-"],
-        ["Total Fees"] + [f"${sr['total_fees']:.0f}" for sr in strategy_results] + [f"-"],
+        ["Total Trades"] + [f"{sr['total_trades']}" for sr in strategy_results] + ["-"],
+        ["Win Rate"] + [f"{sr['win_rate']*100:.1f}%" for sr in strategy_results] + ["-"],
+        ["Profit Factor"] + [f"{sr['profit_factor']:.2f}" for sr in strategy_results] + ["-"],
+        ["SL Exits"] + [f"{sr['sl_exits']}" for sr in strategy_results] + ["-"],
+        ["Total Fees"] + [f"${sr['total_fees']:.0f}" for sr in strategy_results] + ["-"],
         ["Final Equity"] + [f"${sr['metrics']['final_equity']:,.0f}" for sr in strategy_results] + [f"${port_metrics['final_equity']:,.0f}"],
     ]
 

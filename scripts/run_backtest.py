@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
-import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
@@ -122,7 +121,7 @@ def main(strategy: str, pair: str, timeframe: str, config: str, list_strategies:
         charts.drawdown_curve(result.equity_curve, f"{strategy} Drawdown")
         if result.trades:
             charts.trade_distribution(result.trades, f"{strategy} Trade Distribution")
-        console.print(f"\n[green]Charts saved to data/charts/[/green]")
+        console.print("\n[green]Charts saved to data/charts/[/green]")
 
 
 if __name__ == "__main__":

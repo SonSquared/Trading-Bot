@@ -14,8 +14,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
-import pandas as pd
 from trading_system.config import SystemConfig, BacktestConfig, FeeConfig, ExecutionConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine
@@ -114,7 +112,7 @@ def main():
 
     print(f"\n  Base fees: Taker={BASE_TAKER_FEE*100:.3f}%  Maker={BASE_MAKER_FEE*100:.3f}%")
     print(f"  Fee multipliers tested: {FEE_MULTS}")
-    print(f"  Stop loss: 3x ATR (active)")
+    print("  Stop loss: 3x ATR (active)")
 
     all_results = []
 

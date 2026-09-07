@@ -13,7 +13,6 @@ Auto-refreshes every 60 seconds when opened in browser.
 """
 
 import json
-import os
 import sys
 import io
 from datetime import datetime, timezone

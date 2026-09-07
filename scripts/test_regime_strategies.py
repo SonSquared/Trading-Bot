@@ -7,7 +7,6 @@ to identify which strategies work best in each regime.
 """
 
 import sys
-import json
 import time
 from pathlib import Path
 
@@ -19,8 +18,7 @@ from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
 from trading_system.backtester.engine import BacktestEngine
 from trading_system.strategies import get_strategy
-from trading_system.bot.regime_detector import RegimeDetector, MarketRegime
-from trading_system.indicators import atr
+from trading_system.bot.regime_detector import RegimeDetector
 
 RISK_FREE_RATE = 0.04
 TRADING_HOURS_PER_YEAR = 365 * 24

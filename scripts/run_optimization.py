@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
 from trading_system.config import SystemConfig
 from trading_system.data.loader import DataLoader
@@ -50,7 +49,7 @@ def main(strategy: str, pair: str, timeframe: str, config: str, method: str, n_s
     df = loader.load(pair, timeframe)
 
     if df is None or df.empty:
-        console.print(f"[red]No data found. Run download_data.py first.[/red]")
+        console.print("[red]No data found. Run download_data.py first.[/red]")
         return
 
     # Split data

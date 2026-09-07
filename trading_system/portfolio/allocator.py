@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import Any
 
 
 def equal_weight(n_strategies: int) -> np.ndarray:

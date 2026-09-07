@@ -6,11 +6,9 @@ Supports: fixed slippage, ATR-adaptive slippage, and none.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from trading_system.config import SlippageConfig
-from trading_system.indicators import atr
 
 
 class SlippageModel:

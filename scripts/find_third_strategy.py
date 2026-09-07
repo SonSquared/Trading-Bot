@@ -11,7 +11,6 @@ import sys
 import json
 import time
 import itertools
-import hashlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -239,7 +238,7 @@ def main():
     results.sort(key=lambda x: x[5], reverse=True)
 
     print(f"\n{'=' * 70}")
-    print(f"  GRID SEARCH RESULTS — Ranked by Composite Score")
+    print("  GRID SEARCH RESULTS — Ranked by Composite Score")
     print(f"{'=' * 70}")
     print(f"  {'#':>3s} {'Strategy':<20s} {'Pair':<5s} {'TF':<4s} {'Score':>6s} {'Sharpe':>7s} {'Ret':>8s} {'MaxDD':>7s} {'Trades':>7s} {'WR':>5s} {'PF':>5s}")
     print(f"  {'-' * 95}")
@@ -256,7 +255,7 @@ def main():
         if sn not in seen:
             seen[sn] = (sn, pair, tf, params, r, score)
 
-    print(f"\n  Best per strategy:")
+    print("\n  Best per strategy:")
     for sn in seen:
         s, p, tf, params, r, score = seen[sn]
         print(f"  {s:<20s} {p.split('/')[0]:<5s} {tf} Sharpe={r['sharpe']:.2f} "
@@ -265,7 +264,7 @@ def main():
 
     # Phase 2: Validate top 3 candidates with walk-forward + MC
     print(f"\n{'=' * 70}")
-    print(f"  PHASE 2: Walk-Forward + Monte Carlo Validation")
+    print("  PHASE 2: Walk-Forward + Monte Carlo Validation")
     print(f"{'=' * 70}")
 
     top3 = results[:3]
@@ -288,13 +287,13 @@ def main():
 
     # Phase 3: Comparison with BB_Squeeze
     print(f"\n{'=' * 70}")
-    print(f"  PHASE 3: Final Comparison (Including BB_Squeeze Baseline)")
+    print("  PHASE 3: Final Comparison (Including BB_Squeeze Baseline)")
     print(f"{'=' * 70}")
 
     # Add BB_Squeeze baseline
     bb_params = {'bb_period': 15, 'bb_std': 2.0, 'kc_period': 15,
                  'kc_atr_mult': 1.0, 'squeeze_lookback': 6, 'momentum_period': 8}
-    print(f"\n  BB_Squeeze baseline: WF Avg Sharpe=1.15, 40% profitable windows")
+    print("\n  BB_Squeeze baseline: WF Avg Sharpe=1.15, 40% profitable windows")
 
     print(f"\n  {'Strategy':<20s} {'IS Sharpe':>9s} {'WF OOS':>8s} {'WF Min':>8s} {'WF %Profit':>10s} {'MC P(Loss)':>10s} {'Verdict'}")
     print(f"  {'-' * 85}")
