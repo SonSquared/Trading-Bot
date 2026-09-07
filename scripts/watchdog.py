@@ -29,8 +29,9 @@ RUN_LOG = RESULTS / "run_history.jsonl"
 STATE_FILE = RESULTS / "paper_state.json"
 TRADE_LOG = RESULTS / "paper_trades.jsonl"
 
-# The scheduled cadence in bot.yml is every 15 minutes.
-EXPECTED_RUN_INTERVAL_MINUTES = float(os.getenv("WATCHDOG_RUN_INTERVAL_MINUTES", "15"))
+# The scheduled cadence in bot.yml is every 2 hours. Budget-aware: the old
+# 15-minute cadence exhausted the private-repo Actions quota within days.
+EXPECTED_RUN_INTERVAL_MINUTES = float(os.getenv("WATCHDOG_RUN_INTERVAL_MINUTES", "120"))
 # How late a heartbeat may run before alerting (GH runners queue; be lenient)
 MISSED_RUN_FACTOR = float(os.getenv("WATCHDOG_MISSED_RUN_FACTOR", "6"))
 DUPLICATE_WINDOW_MINUTES = 60

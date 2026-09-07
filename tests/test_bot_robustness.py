@@ -285,6 +285,102 @@ class TestDuplicateOpenGuard:
             for e in runs[-1]["errors"]), \
             "run log must surface the prevented duplicate"
 
+    def test_telegram_message_reconciles_exactly(self, isolated_paths, monkeypatch, capsys):
+        """THE Telegram contract: in a real main() run that opens funding and
+        closes a position, the message's own lines must add up exactly:
+
+            Equity - Start == P&L (realized) + P&L (unrealized)
+
+        and Realized must equal cash change (all costs booked at charge time).
+        """
+        import re
+
+        captured = []
+
+        class FakeNotifier:
+            def _send_message(self, msg):
+                captured.append(msg)
+                return True
+
+        BTC = "BTC_USDT_USDT"
+        monkeypatch.setattr(pt, "load_active_strategies", lambda: None)
+        monkeypatch.setattr(pt, "ACTIVE_STRATEGIES", {
+            "TestEth": {"strategy": "Bollinger_Reversion", "pair": PAIR,
+                        "timeframe": "4h", "weight": 1.0, "params": {}},
+            "TestBtc": {"strategy": "Bollinger_Reversion", "pair": BTC,
+                        "timeframe": "4h", "weight": 1.0, "params": {}},
+        })
+        monkeypatch.setattr(pt, "get_notifier", lambda: FakeNotifier())
+        monkeypatch.setattr(pt, "load_telegram_config", lambda: {})
+        # REAL charge_funding — the funding path is part of the contract.
+        monkeypatch.setattr(pt, "fetch_live_prices",
+                            lambda pairs=None: {PAIR: 104.0, BTC: 100.0})
+
+        # State: ETH LONG from 25h ago (guarantees >=3 funding boundaries)
+        # with a prior funding charge already booked (last_funding_time 17h
+        # ago). BTC flat.
+        state = fresh_state()
+        t_open = open_position(state, PAIR, 1, 100.0, "T", 30.0)
+        now = datetime.now(timezone.utc)
+        state["positions"][PAIR]["entry_time"] = (now - timedelta(hours=25)).isoformat()
+        state["positions"][PAIR]["last_funding_time"] = (now - timedelta(hours=17)).isoformat()
+        save_state(state)
+
+        # ETH: strong reversal (LONG held, score < -0.1) -> CLOSE (realized).
+        # BTC: strong fresh entry (flat, score > 0.4) -> OPEN (unrealized).
+        monkeypatch.setattr(pt, "run_strategies", lambda: ({
+            "TestEth": {"signal": -1, "weight": 1.0, "pair": PAIR,
+                        "strategy": "TestEth", "price": 104.0,
+                        "next_open": 104.0, "atr": 1.0, "candle_time": None},
+            "TestBtc": {"signal": 1, "weight": 1.0, "pair": BTC,
+                        "strategy": "TestBtc", "price": 100.0,
+                        "next_open": 100.0, "atr": 1.0, "candle_time": None},
+        }, []))
+
+        pt.main()
+
+        out = capsys.readouterr().out
+        assert "reconciliation gap" not in out, out
+        assert len(captured) == 1, "exactly one trade-alert message"
+        msg = captured[0]
+
+        def money(pattern):
+            m = re.search(pattern, msg)
+            assert m, f"pattern {pattern!r} not in message:\n{msg}"
+            return float(m.group(1).replace(",", ""))
+
+        equity = money(r"Equity: \$([\d,]+\.\d{2})")
+        realized = money(r"P&L \(realized\): \$([+-]?[\d,]+\.\d{2})")
+        unrealized = money(r"P&L \(unrealized\): \$([+-]?[\d,]+\.\d{2})")
+
+        # THE identity — exact to the cent.
+        # THE identity — exact to the cent (printed values).
+        assert equity - INITIAL_CAPITAL == pytest.approx(
+            realized + unrealized, abs=0.011)
+
+        # Realized must equal reported total_pnl exactly, and the ETH cycle
+        # closed while BTC stays open (the unrealized side of the identity).
+        final_state = json.loads(pt.STATE_FILE.read_text())
+        assert list(final_state["positions"].keys()) == [BTC]
+        assert realized == pytest.approx(final_state["total_pnl"], abs=0.005)
+        # Cash bookkeeping ground truth: final cash == last logged cash_after.
+        all_trades = log_lines(pt.TRADE_LOG)
+        assert all_trades[-1]["cash_after"] == pytest.approx(
+            final_state["cash"], abs=1e-6)
+        # And the flat-ETH cycle itself reconciles: realized == the ETH close
+        # P&L minus the ETH entry fee minus funding charged this run.
+        eth_close = next(t for t in all_trades if t["pair"] == PAIR
+                         and t["action"] == "CLOSE")
+        eth_entry_fee = 30.0 * FEE_RATE
+        funding_paid = -(final_state["total_pnl"] - eth_close["pnl_usd"]
+                         + eth_entry_fee)
+        assert funding_paid >= 0, "funding must have been charged this run"
+
+        # Per-position lines show GROSS marks with the cost label; the BTC
+        # line is the freshly-opened position whose mark is its own fill.
+        assert "before fees+funding" in msg
+        assert "BTC/USDT" in msg
+
 
 # ---------------------------------------------------------------------------
 # Portfolio heat re-check

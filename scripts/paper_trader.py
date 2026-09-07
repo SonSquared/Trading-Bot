@@ -382,9 +382,9 @@ def handle_telegram_commands(token: str, chat_id: str):
                     positions_text += f"{'+' if side_int == 1 else ''}{format_pair(pair)} {side} @ ${entry:,.2f}\n"
             if not positions_text:
                 positions_text = "No open positions\n"
-            # Calculate unrealized P&L (net of funding already charged —
-            # realized total_pnl includes funding, so unrealized must too
-            # or realized + unrealized would double-mismatch equity).
+            # Calculate unrealized P&L (GROSS marks — matches get_equity;
+            # realized total_pnl already carries all costs, so
+            # total_pnl + gross_unrealized == equity - start exactly).
             total_unrealized = 0.0
             for pair, pos in state.get("positions", {}).items():
                 current = cmd_prices.get(pair, pos.get('entry_price', 0))
@@ -397,8 +397,6 @@ def handle_telegram_commands(token: str, chat_id: str):
                         total_unrealized += qty * (current - entry)
                     else:
                         total_unrealized += qty * (entry - current)
-            total_unrealized -= sum(
-                p.get('funding_paid', 0.0) for p in state.get('positions', {}).values())
             total_pnl = state['total_pnl'] + total_unrealized
             tg_send_message(token, chat_id, (
                 f"STATUS\n"
@@ -460,9 +458,8 @@ def handle_telegram_commands(token: str, chat_id: str):
                             pnl_usd = qty * (current - entry)
                         else:  # SHORT
                             pnl_usd = qty * (entry - current)
-                        # Net of funding already charged — matches the daily
-                        # message's per-position numbers.
-                        pnl_usd -= pos.get("funding_paid", 0.0)
+                        # GROSS mark P&L — consistent with the daily message.
+                        # Funding is shown separately below, not netted here.
                         pnl_pct = pnl_usd / size * 100 if size > 0 else 0
                     else:
                         pnl_usd = 0
@@ -475,7 +472,11 @@ def handle_telegram_commands(token: str, chat_id: str):
                     msg_text += f"  P&L: {pnl_pct:+.1f}% (${pnl_usd:+.2f})\n"
                     msg_text += f"  Size: ${size:.2f} | {strategy}\n\n"
                 
-                msg_text += f"Total (net of funding): ${total_pnl:+.2f}\n"
+                msg_text += f"Total: ${total_pnl:+.2f}\n"
+                funding_note = sum(
+                    p.get("funding_paid", 0.0) for p in positions.values())
+                if funding_note > 0:
+                    msg_text += f"Funding paid to date: -${funding_note:.4f} (already in Realized)\n"
                 msg_text += f"{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')}"
                 tg_send_message(token, chat_id, msg_text)
 
@@ -509,7 +510,6 @@ def handle_telegram_commands(token: str, chat_id: str):
 
         elif text == "/dashboard":
             print("  -> /dashboard")
-            RUN_LOG = Path("data/results/run_history.jsonl")
             runs = []
             if RUN_LOG.exists():
                 with open(RUN_LOG) as f:
@@ -1457,10 +1457,10 @@ def main():
                             upnl = qty * (current - entry)
                         else:
                             upnl = qty * (entry - current)
-                        # Funding already charged for this position is a real
-                        # cost — net it out so per-position P&L reconciles
-                        # with equity (gross P&L overstated the account).
-                        upnl -= pos.get("funding_paid", 0.0)
+                        # GROSS mark P&L. Funding/fees are already inside the
+                        # Realized line (booked to cash when charged), so netting
+                        # them here too would double-count and break the
+                        # additive identity Equity - Start = Realized + Unrealized.
                         upnl_pct = upnl / size * 100
                         total_unrealized += upnl
                         side_str = "LONG" if side == 1 else "SHORT"
@@ -1468,7 +1468,7 @@ def main():
                         current_str = f"${current:,.2f}"
                         pos_lines.append(
                             f"  {side_str} {format_pair(pair)}\n"
-                            f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f} net)"
+                            f"    {entry_str} -> {current_str} ({upnl_pct:+.1f}% ${upnl:+.2f} before fees+funding)"
                         )
                 # POST-TRADE equity for the message: `equity` was computed
                 # before this run's trades/funding, so on a trade alert it
@@ -1477,22 +1477,31 @@ def main():
                 equity_now = get_equity(state, current_prices)
                 total_return_now = (equity_now - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
 
-                # ONE clean message format — always the same structure
+                # Reconciliation (exact by construction — see accounting):
+                #   Equity - Start = Realized + Unrealized
+                # Realized = total_pnl (all fees + funding booked at cost);
+                # Unrealized = gross mark P&L of open positions, the same
+                # quantity get_equity adds to cash.
+                recon = equity_now - INITIAL_CAPITAL \
+                    - (state["total_pnl"] + total_unrealized)
+                if abs(recon) > 0.005:
+                    # Should never happen; if it does, show it loudly rather
+                    # than silently publishing inconsistent numbers.
+                    print(f"  WARNING: message reconciliation gap ${recon:+.4f}")
+
+                # ONE clean message format — always the same structure.
+                # Every line is additive: head + body == Equity - Start.
                 if notify_reason == "trade":
                     msg = "TRADE ALERT"
                 else:
                     msg = "PORTFOLIO"
                 msg += f"\n{'='*28}\n"
                 msg += f"Equity: ${equity_now:,.2f} ({total_return_now:+.1f}%)\n"
-                # total_pnl includes entry fees + funding (booked at cost), so
-                # equity - start == total_pnl + open-position mark-to-market.
-                # Show realized (cash) and unrealized (mark) separately.
                 msg += f"P&L (realized): ${state['total_pnl']:+.2f}"
                 if state['total_trades'] > 0:
                     msg += f" | {wr:.0f}% win ({state['total_trades']} trades)"
                 msg += "\n"
                 if state["positions"]:
-                    # Full reconciliation: equity = start + realized + unrealized
                     msg += f"P&L (unrealized): ${total_unrealized:+.2f}\n"
                 msg += "\n"
                 
@@ -1508,7 +1517,7 @@ def main():
                             msg += f" P&L: ${t['pnl_usd']:+.2f} ({t['pnl_pct']:+.1f}%)\n"
                     msg += "\n"
                 
-                # Open positions (net P&L: includes funding already charged)
+                # Open positions (gross marks; costs live in Realized)
                 if pos_lines:
                     msg += "Positions:\n"
                     for line in pos_lines:

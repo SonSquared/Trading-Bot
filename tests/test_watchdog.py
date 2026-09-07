@@ -42,11 +42,11 @@ class TestMissedRuns:
 
     def test_old_run_alerts(self, tmp_path):
         rl = tmp_path / "run_history.jsonl"
-        # 15min interval * factor 6 = 90min allowed; 10h is way past.
-        write_jsonl(rl, [{"timestamp": _iso(NOW - timedelta(hours=10)),
+        # 120min interval * factor 6 = 720min (12h) allowed; 24h is way past.
+        write_jsonl(rl, [{"timestamp": _iso(NOW - timedelta(hours=24)),
                           "status": "success"}])
         msg = wd.check_missed_runs(NOW, run_log=rl)
-        assert msg and "Missed runs" in msg and "10.0h" in msg
+        assert msg and "Missed runs" in msg and "24.0h" in msg
 
     def test_unparseable_timestamp_alerts(self, tmp_path):
         rl = tmp_path / "run_history.jsonl"

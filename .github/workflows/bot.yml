@@ -3,8 +3,16 @@ on:
   push:
     branches: [main]
   schedule:
-    # Run every 15 minutes for faster command responses
-    - cron: '*/15 * * * *'
+    # Run every 2 hours. The 15-minute cadence structurally exhausted the
+    # free private-repo Actions allowance (~2,000 min/month) in ~8 days —
+    # twice (outages Aug 26-27 and Sep 3+). At ~2 min/run, 2-hourly costs
+    # ~540 min/month, leaving 50%+ headroom for health checks and the
+    # monthly optimize/league jobs. 4h candles close at 00/04/08/12/16/20
+    # UTC, so a 2-hourly sample never misses a trading boundary; funding
+    # is booked per 8h boundary crossed, so gaps never lose accounting.
+    # Trade-off: Telegram commands (/status) answer within <=2h. Switch
+    # back to hourly or 15-min only on a paid tier or public repo.
+    - cron: '0 */2 * * *'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
@@ -129,7 +137,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ENABLED: 'true'
-          WATCHDOG_RUN_INTERVAL_MINUTES: '15'
+          WATCHDOG_RUN_INTERVAL_MINUTES: '120'
         run: python -u scripts/watchdog.py
 
       - name: Upload trade log & state

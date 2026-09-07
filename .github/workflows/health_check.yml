@@ -1,8 +1,12 @@
 name: Bot Health Check
 on:
   schedule:
-    # Run every 2 hours (reduced from hourly to save actions minutes)
-    - cron: '0 */2 * * *'
+    # Every 4 hours (~360 min/month) — independent of the bot's own
+    # watchdog, which dies with the bot and cannot self-report. With the
+    # bot now on a 2-hourly cadence, "no successful run in 10h" means
+    # ~5 consecutive misses. NOTE: scheduled workflows on the free tier
+    # are DISABLED after 60 days of repo inactivity; keep commits flowing.
+    - cron: '15 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +24,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const now = new Date();
-            const twelveHoursAgo = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+            const tenHoursAgo = new Date(now.getTime() - 10 * 60 * 60 * 1000);
             const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
             // Get recent workflow runs for the bot
@@ -33,17 +37,17 @@ jobs:
             });
 
             const allRuns = runs.data.workflow_runs;
-            const recentRuns = allRuns.filter(r => new Date(r.created_at) >= twelveHoursAgo);
+            const recentRuns = allRuns.filter(r => new Date(r.created_at) >= tenHoursAgo);
             const successfulRuns = recentRuns.filter(r => r.conclusion === 'success');
             const failedRuns = recentRuns.filter(r => r.conclusion === 'failure');
             const recentSuccessful = allRuns.filter(r => r.conclusion === 'success');
 
             if (successfulRuns.length > 0) {
-              console.log(`Bot is healthy. ${successfulRuns.length} successful runs in last 12h.`);
+              console.log(`Bot is healthy. ${successfulRuns.length} successful runs in last 10h.`);
               console.log(`Last successful: ${successfulRuns[0].created_at}`);
             } else if (failedRuns.length > 0) {
               // Bot ran but FAILED — this is a real issue
-              console.log(`Bot ran but FAILED ${failedRuns.length} times in last 12h.`);
+              console.log(`Bot ran but FAILED ${failedRuns.length} times in last 10h.`);
 
               const token = '${{ secrets.TELEGRAM_BOT_TOKEN }}';
               const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
@@ -65,14 +69,14 @@ jobs:
                 console.log('Health alert sent to Telegram');
               }
 
-              core.setFailed(`Bot failed: ${failedRuns.length} failed runs in 12h`);
+              core.setFailed(`Bot failed: ${failedRuns.length} failed runs in 10h`);
             } else {
               // No runs at all — likely cron throttling, not a bot failure
               // Only alert if the LAST successful run was >24 hours ago
               if (recentSuccessful.length > 0) {
                 const lastSuccess = new Date(recentSuccessful[0].created_at);
                 const hoursSince = (now - lastSuccess) / (60 * 60 * 1000);
-                console.log(`No runs in last 12h, but last success was ${hoursSince.toFixed(1)}h ago. Likely cron throttling.`);
+                console.log(`No runs in last 10h, but last success was ${hoursSince.toFixed(1)}h ago. Likely cron throttling.`);
 
                 // Only alert if it's been more than 24 hours since last success
                 if (hoursSince > 24) {
@@ -80,7 +84,7 @@ jobs:
                   const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
 
                   if (token && chatId) {
-                    let msg = 'HEALTH ALERT: No bot runs for 24+ hours\n\n';
+                    let msg = 'HEALTH ALERT: No bot runs for 24+ hours (checked every 4h)\n\n';
                     msg += `Last successful run: ${recentSuccessful[0].created_at}\n`;
                     msg += `That was ${hoursSince.toFixed(0)} hours ago.\n\n`;
                     msg += 'This could be GitHub Actions cron throttling.\n';
