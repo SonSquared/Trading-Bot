@@ -91,7 +91,18 @@ jobs:
       - name: Restore state from previous run
         uses: actions/cache@v4
         with:
-          path: data/results/paper_state.json
+          # Every file that must survive across runs. paper_state.json alone
+          # is not enough: the trade log (/trades), run history (/dashboard
+          # stats), position-tracker memory (price alerts), and the watchdog
+          # heartbeat stamp all reset to empty on every run otherwise —
+          # which silently neutered the watchdog's missed-run, duplicate-open,
+          # and ledger-desync checks (they read history files).
+          path: |
+            data/results/paper_state.json
+            data/results/paper_trades.jsonl
+            data/results/run_history.jsonl
+            data/results/position_tracker.json
+            data/results/watchdog_last_ok.json
           # Cache entries are IMMUTABLE: when the exact key already exists,
           # the post-save is skipped. The old stable key (v3) therefore
           # restored the same frozen state on every run and silently
@@ -104,7 +115,8 @@ jobs:
           # persist. Old entries age out via normal eviction (the file is
           # tiny; the 10 GB repo cache limit is moot). v4 deliberately
           # orphans every pre-day-zero cache entry so the 2026-09-08
-          # restart starts clean at $97.
+          # restart starts clean at $97. Missing files on first restore are
+          # fine: actions/cache only restores what exists in the entry.
           key: paper-state-v4-${{ github.run_number }}
           restore-keys: |
             paper-state-v4-

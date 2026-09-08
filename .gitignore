@@ -10,11 +10,18 @@ dist/
 # Data
 data/raw/
 data/processed/
-data/results/
+# Exclude the RESULTS DIRECTORY's CONTENTS (not the directory itself — git
+# cannot re-include a file inside an excluded directory, so the negation
+# below would silently not work with a plain "data/results/" rule).
+data/results/*
 data/reports/
 data/charts/
 data/bot_state.json
 data/bot.log
+# EXCEPT the deployed portfolio: the Actions runner must trade exactly what
+# the walk-forward league promoted. Gitignored = every cloud run silently
+# falls back to the stale hardcoded defaults (the pre-tournament BB_RSI set).
+!data/results/bot_strategy_params.json
 *.db
 *.parquet
 

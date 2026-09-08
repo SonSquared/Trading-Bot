@@ -2,13 +2,11 @@
 Position Tracker
 
 Monitors open paper trading positions by fetching current prices.
-Sends updates only when:
-  - Position just opened (first check)
-  - P&L changes by more than 1%
-  - 4 hours since last update
-  - Position was closed
+Sends PRICE ALERTS when a pair moves more than 2% between runs (~2h apart
+on the GitHub Actions schedule).
 
-Does NOT spam Telegram on every 15-minute check.
+Does NOT send regular status updates — the bot itself handles those
+(trade alerts + one daily status), so messages never duplicate.
 """
 
 import os
@@ -21,11 +19,18 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
-# Fix Windows console encoding for emoji
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+def _fix_windows_console() -> None:
+    """Fix Windows console encoding for emoji — only when run as a script.
+
+    Kept out of import time: rewrapping sys.stdout/stderr breaks pytest's
+    capture machinery (closed-file errors) in any test module that imports
+    this one.
+    """
+    if sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 STATE_FILE = Path("data/results/paper_state.json")
 TRACKER_FILE = Path("data/results/position_tracker.json")
@@ -38,10 +43,8 @@ TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # Alert thresholds
-PNL_CHANGE_THRESHOLD = 1.0  # Alert if P&L changes by 1%
-UPDATE_INTERVAL_HOURS = 4   # Send update at most every 4 hours
-FEE_RATE = 0.0005           # Trading fee rate
-PRICE_ALERT_THRESHOLD = 2.0 # Alert if price moves >2% in 1 hour
+UPDATE_INTERVAL_HOURS = 4   # legacy; updates are suppressed — alerts only
+PRICE_ALERT_THRESHOLD = 2.0 # Alert if price moves >2% between runs
 PRICE_ALERT_COOLDOWN_HOURS = 1  # Don't spam — 1 alert per symbol per hour
 
 
@@ -142,75 +145,79 @@ def save_tracker_state(state: dict):
 
 
 def should_update(tracker: dict, symbol: str, current_pnl_pct: float) -> tuple[bool, str]:
-    """Determine if we should send an update for this position.
-    
-    Returns (should_send, reason).
+    """Determine if a regular status update should be sent for this position.
+
+    Regular updates are suppressed by design — the bot itself sends trade
+    alerts and one daily status, and duplicating them from the tracker just
+    confuses. This exists only for the console log's [reason] annotation and
+    any future re-enable of updates. Returns (False, reason) always.
     """
     now = datetime.now(timezone.utc)
     pos_data = tracker.get("position_data", {}).get(symbol, {})
-    
+
     if not pos_data:
-        return True, "new_position"
-    
+        return False, "new_position"
+
     last_update_str = pos_data.get("last_update")
     if not last_update_str:
-        return True, "first_check"
-    
+        return False, "first_check"
+
     try:
         last_update = datetime.fromisoformat(last_update_str)
         hours_since = (now - last_update).total_seconds() / 3600
-    except:
-        return True, "parse_error"
-    
-    # Check time interval
+    except (ValueError, TypeError):
+        return False, "parse_error"
+
     if hours_since >= UPDATE_INTERVAL_HOURS:
-        return True, f"interval_{hours_since:.0f}h"
-    
-    # Check P&L change
+        return False, f"interval_{hours_since:.0f}h"
+
     last_pnl = pos_data.get("last_pnl_pct", 0)
     pnl_change = abs(current_pnl_pct - last_pnl)
-    if pnl_change >= PNL_CHANGE_THRESHOLD:
-        return True, f"pnl_change_{pnl_change:.1f}%"
-    
+    if pnl_change >= 1.0:
+        return False, f"pnl_change_{pnl_change:.1f}%"
+
     return False, "no_change"
 
 
 def check_price_alerts(tracker: dict, symbol: str, pair_label: str, current_price: float) -> list[str]:
-    """Check if price moved more than 2% in the last hour.
-    
+    """Check if price moved more than 2% since the previous sample.
+
     Returns list of alert messages to send.
     """
     now = datetime.now(timezone.utc)
     alerts = []
-    
-    # Maintain price history (last 4 hours, sampled every 15 min = 16 entries max)
+
+    # Maintain price history (bounded window; samples arrive every ~2h on
+    # the Actions schedule). The comparison anchor is the PREVIOUS sample:
+    # the old code looked for a price "closest to 1h ago within ±30min",
+    # which no sample can ever satisfy at 2h cadence — the feature silently
+    # never fired. Now we measure the real elapsed window between runs.
     price_history = tracker.setdefault("price_history", {}).setdefault(symbol, [])
     price_history.append({"time": now.isoformat(), "price": current_price})
-    
-    # Keep only last 4 hours of data
-    cutoff = now - timedelta(hours=4)
-    price_history[:] = [p for p in price_history
-                        if datetime.fromisoformat(p["time"]) > cutoff]
-    
-    # Find the price closest to 1 hour ago (dead first loop removed)
-    target_time = now - timedelta(hours=1)
-    best_match = None
-    best_diff = timedelta(hours=99)
+
+    # Keep only the last 24 hours of data (~12 samples at 2h cadence)
+    cutoff = now - timedelta(hours=24)
+    kept = []
     for p in price_history:
         try:
-            t = datetime.fromisoformat(p["time"])
-            diff = abs(t - target_time)
-            if diff < best_diff:
-                best_diff = diff
-                best_match = p
+            if datetime.fromisoformat(p["time"]) > cutoff:
+                kept.append(p)
         except Exception:
             continue
-    
-    if best_match and best_diff < timedelta(minutes=30):
-        old_price = best_match["price"]
-        if old_price > 0:
+    price_history[:] = kept
+
+    if len(price_history) >= 2:
+        prev = price_history[-2]
+        try:
+            elapsed_hours = (now - datetime.fromisoformat(prev["time"])).total_seconds() / 3600.0
+        except Exception:
+            elapsed_hours = 0.0
+        old_price = prev.get("price", 0.0)
+        # Only alert on meaningful windows (>=1h) so a quick restart storm
+        # of the runner can't fabricate a "2h move" from minutes of data.
+        if old_price > 0 and elapsed_hours >= 1.0:
             pct_change = (current_price - old_price) / old_price * 100
-            
+
             if abs(pct_change) >= PRICE_ALERT_THRESHOLD:
                 # Check cooldown
                 last_alert_key = f"last_price_alert_{symbol}"
@@ -223,22 +230,25 @@ def check_price_alerts(tracker: dict, symbol: str, pair_label: str, current_pric
                             can_alert = False
                     except Exception:
                         pass
-                
+
                 if can_alert:
                     direction = "UP" if pct_change > 0 else "DOWN"
-                    emoji = "+" if pct_change > 0 else ""
+                    emoji = "📈" if pct_change > 0 else "📉"
                     alerts.append(
-                        f"PRICE ALERT: {pair_label} {direction} {emoji}{pct_change:+.1f}%\n"
+                        f"PRICE ALERT: {pair_label} {direction} {emoji} {pct_change:+.1f}%\n"
                         f"${old_price:,.2f} -> ${current_price:,.2f}\n"
-                        f"(1h change)"
+                        f"({elapsed_hours:.1f}h change)"
                     )
                     tracker[last_alert_key] = now.isoformat()
-    
+
     return alerts
 
 
 def check_positions():
-    """Main tracker function — called every 15 minutes."""
+    """Main tracker function — called every 2 hours on the Actions schedule.
+
+    Returns the per-position gross-mark summaries (for tests and callers).
+    """
     now = datetime.now(timezone.utc)
     print(f"\n{'='*50}")
     print(f"POSITION TRACKER — {now.strftime('%Y-%m-%d %H:%M UTC')}")
@@ -292,16 +302,15 @@ def check_positions():
             pnl_pct = (entry_price - current_price) / entry_price * 100
             pnl_usd = qty * (entry_price - current_price)
 
-        # Deduct fees for net P&L
-        total_fees = size_usd * FEE_RATE * 2  # Entry + exit fees
-        net_pnl_usd = pnl_usd - total_fees
-        net_pnl_pct = net_pnl_usd / size_usd * 100
-
-        total_unrealized += net_pnl_usd
+        # GROSS mark P&L — matches the bot's convention. Fees and funding
+        # are booked into the realized P&L (total_pnl) at open/close/funding
+        # time, never subtracted from the live mark, so netting them here
+        # would diverge from every number the bot reports.
+        total_unrealized += pnl_usd
 
         # Build position summary
         side_str = "LONG" if side == 1 else "SHORT"
-        emoji = "+" if net_pnl_pct > 0 else "-" if net_pnl_pct < 0 else "="
+        emoji = "+" if pnl_pct > 0 else "-" if pnl_pct < 0 else "="
         
         position_summaries.append({
             "symbol": symbol,
@@ -311,22 +320,22 @@ def check_positions():
             "entry": entry_price,
             "current": current_price,
             "size": size_usd,
-            "pnl_pct": net_pnl_pct,
-            "pnl_usd": net_pnl_usd,
+            "pnl_pct": pnl_pct,
+            "pnl_usd": pnl_usd,
             "strategy": strategy,
         })
 
         # Check if we should send an update
-        should_send, reason = should_update(tracker, symbol, net_pnl_pct)
+        should_send, reason = should_update(tracker, symbol, pnl_pct)
         print(f"  {pair_label} {side_str}: ${entry_price:,.0f} -> ${current_price:,.0f} "
-              f"({net_pnl_pct:+.1f}%, ${net_pnl_usd:+.2f}) [{reason}]")
+              f"({pnl_pct:+.1f}%, ${pnl_usd:+.2f}) [{reason}]")
         
         if should_send:
             updates_to_send.append((symbol, reason))
             # Update tracker data
             tracker.setdefault("position_data", {})[symbol] = {
                 "last_update": now.isoformat(),
-                "last_pnl_pct": net_pnl_pct,
+                "last_pnl_pct": pnl_pct,
                 "last_price": current_price,
             }
 
@@ -358,6 +367,9 @@ def check_positions():
     save_tracker_state(tracker)
     print("\n  Check saved.")
 
+    return position_summaries
+
 
 if __name__ == "__main__":
+    _fix_windows_console()
     check_positions()

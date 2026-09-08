@@ -277,9 +277,10 @@ def run_all_checks(now: datetime | None = None) -> list[str]:
 # Telegram + CLI
 # --------------------------------------------------------------------------
 
-def send_telegram(token: str, chat_id: str, text: str) -> bool:
+def send_telegram(token: str, chat_id: str, text: str,
+                  parse_mode: str | None = None) -> bool:
     from scripts.paper_trader import tg_send_message
-    return tg_send_message(token, chat_id, text)
+    return tg_send_message(token, chat_id, text, parse_mode=parse_mode)
 
 
 def should_send_heartbeat(now: datetime,
@@ -323,7 +324,10 @@ def main() -> int:
         _safe_print(msg)
         if token and chat_id and enabled:
             try:
-                send_telegram(token, chat_id, msg)
+                # The alert uses <b> tags — HTML parse mode. Plain text would
+                # render the tags literally; no parse mode at all would be
+                # fine too, but the bold header is intentional.
+                send_telegram(token, chat_id, msg, parse_mode="HTML")
             except Exception as e:
                 _safe_print(f"Telegram send failed: {e}")
         return 1

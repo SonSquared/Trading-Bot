@@ -31,32 +31,34 @@ from trading_system.bot.candles import closed_candles
 from trading_system.bot.accounting import charge_funding, FEE_RATE, SLIPPAGE_RATE
 
 
-# --- Strategy Configs (from FULL 2022-2026 backtest optimization) ---
-# MACD and ROC Momentum LOSE money on all parameters (overtrades, whipsawed)
-# Bollinger+RSI and RSI_Reversion are the only profitable strategies
+# --- Strategy Configs ---
+# These hardcoded defaults are ONLY a fallback when bot_strategy_params.json
+# (the walk-forward league's promoted portfolio, now committed to the repo)
+# is missing or invalid. They mirror the deployed portfolio exactly so a
+# fallback can never silently resurrect a strategy the league rejected.
 STRATEGIES = {
-    # Walk-forward optimized params (from 2022-2026 rolling window optimization)
-    "BB_RSI ETH": {
-        "strategy": "Bollinger_Reversion",
+    "Donchian_Breakout_ETH_USDT_USDT": {
+        "strategy": "Donchian_Breakout",
         "pair": "ETH_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.40,
-        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": False, "exit_at_middle": False},
+        "params": {"channel_period": 40, "exit_period": 10, "atr_filter": False, "atr_period": 14},
     },
-    "BB_RSI BTC": {
-        "strategy": "Bollinger_Reversion",
+    "Davey_Momentum_Pullback_BTC_USDT_USDT": {
+        "strategy": "Davey_Momentum_Pullback",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.35,
-        "params": {"bb_period": 20, "bb_std": 2.0, "rsi_filter": False, "exit_at_middle": False},
+        "params": {"bar_count": 2, "pullback": 3, "exit_bars": 8, "count_higher_highs": True},
     },
-    "RSI_Reversion BTC": {
+    "RSI_Reversion_BTC_USDT_USDT": {
         "strategy": "RSI_Reversion",
         "pair": "BTC_USDT_USDT",
         "timeframe": "4h",
         "weight": 0.25,
-        "params": {"rsi_period": 14, "entry_oversold": 30, "entry_overbought": 65,
-                   "exit_neutral_low": 45, "exit_neutral_high": 50, "use_bb_filter": False},
+        "params": {"rsi_period": 14, "entry_oversold": 25, "entry_overbought": 65,
+                   "exit_neutral_low": 45, "exit_neutral_high": 55, "use_bb_filter": True,
+                   "bb_period": 25, "bb_std": 2.0},
     },
 }
 
@@ -263,13 +265,25 @@ def tg_api_call(token: str, method: str, params: dict = None) -> dict:
     return {"ok": False, "description": "No response"}
 
 
-def tg_send_message(token: str, chat_id: str, text: str) -> bool:
-    resp = tg_api_call(token, "sendMessage", {
+def tg_send_message(token: str, chat_id: str, text: str,
+                    parse_mode: str | None = None) -> bool:
+    """Send a Telegram message.
+
+    parse_mode defaults to plain text: most bot messages contain dynamic
+    content (strategy names, error strings, prices) that can include
+    characters Telegram's HTML parser rejects (e.g. "<50 candles"), and a
+    rejected parse makes Telegram return 400 — the whole message silently
+    vanishes. Callers that genuinely use HTML tags (the watchdog alert)
+    pass parse_mode="HTML" explicitly.
+    """
+    payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "HTML",
         "disable_web_page_preview": True,
-    })
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    resp = tg_api_call(token, "sendMessage", payload)
     return resp.get("ok", False)
 
 
@@ -322,8 +336,8 @@ def handle_telegram_commands(token: str, chat_id: str):
                 "/help - This message\n\n"
                 f"Mode: PAPER\n"
                 f"Capital: ${INITIAL_CAPITAL:,.0f}\n"
-                f"Strategies: BB_RSI + RSI_Reversion\n"
-                f"Run: every ~15 min"
+                f"Strategies: " + ", ".join(sorted(ACTIVE_STRATEGIES.keys())) + "\n"
+                "Run: every ~2h (GitHub Actions)"
             ))
 
         elif text == "/trades":
@@ -503,9 +517,15 @@ def handle_telegram_commands(token: str, chat_id: str):
 
         elif text == "/restart":
             print("  -> /restart")
+            # Honesty first: this runner cannot trigger a cycle on demand
+            # (GitHub Actions fires on its own schedule). Saying "running
+            # now... results in ~1 minute" would be a lie the user plans
+            # around. Point them at /signals for an immediate read.
             tg_send_message(token, chat_id, (
-                "Strategies running now...\n"
-                "Results in ~1 minute."
+                "Command acknowledged.\n"
+                "This runner (GitHub Actions) cycles every ~2h on its own "
+                "schedule — the next run is at most ~2h away.\n"
+                "For an immediate signal read, use /signals."
             ))
 
         elif text == "/dashboard":
@@ -1449,7 +1469,9 @@ def main():
                     state["last_daily_alert_date"] = today
                     save_state(state)  # Persist the daily flag
             
-            # Always update the daily flag so we don't re-send today's daily status
+            # Persist the daily flag in one place: if today's flag wasn't
+            # already set, set it and save once. (The old code had two
+            # branches doing this — the second was dead by construction.)
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if state.get("last_daily_alert_date") != today:
                 state["last_daily_alert_date"] = today

@@ -1,0 +1,42 @@
+{
+  "RSI_Reversion_BTC_USDT_USDT": {
+    "strategy": "RSI_Reversion",
+    "pair": "BTC_USDT_USDT",
+    "timeframe": "4h",
+    "weight": 0.25,
+    "params": {
+      "rsi_period": 14,
+      "entry_oversold": 25,
+      "entry_overbought": 65,
+      "exit_neutral_low": 45,
+      "exit_neutral_high": 55,
+      "use_bb_filter": true,
+      "bb_period": 25,
+      "bb_std": 2.0
+    }
+  },
+  "Donchian_Breakout_ETH_USDT_USDT": {
+    "strategy": "Donchian_Breakout",
+    "pair": "ETH_USDT_USDT",
+    "timeframe": "4h",
+    "weight": 0.4,
+    "params": {
+      "channel_period": 40,
+      "exit_period": 10,
+      "atr_filter": false,
+      "atr_period": 14
+    }
+  },
+  "Davey_Momentum_Pullback_BTC_USDT_USDT": {
+    "strategy": "Davey_Momentum_Pullback",
+    "pair": "BTC_USDT_USDT",
+    "timeframe": "4h",
+    "weight": 0.35,
+    "params": {
+      "bar_count": 2,
+      "pullback": 3,
+      "exit_bars": 8,
+      "count_higher_highs": true
+    }
+  }
+}
