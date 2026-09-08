@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-09-08T12:47:51.565394+00:00",
+  "equity": 97.13737029447219,
+  "cash": 63.029630000000004,
+  "total_return_pct": 0.14161886028060958,
+  "total_trades": 0,
+  "wins": 0,
+  "losses": 0,
+  "win_rate": 0,
+  "realized_pnl": -0.020369999999999996,
+  "funding_charged": 0.0033949999999999996,
+  "max_drawdown_pct": 0.0,
+  "open_positions": {
+    "ETH_USDT_USDT": {
+      "side": -1,
+      "entry": 2484.3730259999998,
+      "size": 33.949999999999996,
+      "strategy": "Donchian_Breakout"
+    }
+  },
+  "trades_this_run": 0,
+  "portfolio_signals": {
+    "BTC_USDT_USDT": {
+      "direction": "FLAT",
+      "score": 0.0,
+      "price": 78445.9
+    },
+    "ETH_USDT_USDT": {
+      "direction": "SHORT",
+      "score": -1.0,
+      "price": 2474.76
+    }
+  }
+}

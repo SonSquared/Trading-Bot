@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-08T07:09:13.639848+00:00", "pair": "ETH_USDT_USDT", "action": "OPEN_SHORT", "price": 2484.3730259999998, "size_usd": 33.949999999999996, "fee": 0.016974999999999997, "slippage": 0.006789999999999999, "strategy": "Donchian_Breakout", "cash_after": 63.033025}
+{"timestamp": "2026-09-08T12:47:39.759301+00:00", "action": "FUND", "pair": "*", "funding": 0.0033949999999999996, "cash_after": 63.029630000000004}
