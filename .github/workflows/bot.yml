@@ -3,39 +3,46 @@ on:
   push:
     branches: [main]
   schedule:
-    # Run every 2 hours. The 15-minute cadence structurally exhausted the
-    # free private-repo Actions allowance (~2,000 min/month) in ~8 days —
-    # twice (outages Aug 26-27 and Sep 3+). At ~2 min/run, 2-hourly costs
-    # ~540 min/month, leaving 50%+ headroom for health checks and the
-    # monthly optimize/league jobs. 4h candles close at 00/04/08/12/16/20
-    # UTC, so a 2-hourly sample never misses a trading boundary; funding
-    # is booked per 8h boundary crossed, so gaps never lose accounting.
-    # Trade-off: Telegram commands (/status) answer within <=2h. Switch
-    # back to hourly or 15-min only on a paid tier or public repo.
-    - cron: '0 */2 * * *'
+    # GitHub cron is NOT a clock on free-tier private repos: slots get
+    # dropped wholesale (observed 2026-09-07/08 — a 2-hourly schedule
+    # produced 5-7h gaps; the 02/04/08/10 UTC slots never fired). Instead
+    # of trusting one slot per boundary, fire TWICE per even hour (:23 and
+    # :47) and let scripts/schedule_gate.py skip a firing that lands within
+    # 100 minutes of the last successful run. A dropped slot now costs at
+    # most ~24 minutes of delay, not half a trading day. Redundant firings
+    # cost ~15s each (checkout + gate), and the gate sits before pip setup
+    # so skipped runs burn almost no quota.
+    # 4h candles close at 00/04/08/12/16/20 UTC — an even-hour schedule
+    # never misses a trading boundary; funding books per 8h boundary
+    # crossed, so gaps never lose accounting.
+    - cron: '23 */2 * * *'
+    - cron: '47 */2 * * *'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
-  contents: write  # For pushing trade logs
+  contents: write  # Pushing state to the bot-state branch
 
-# CRITICAL: serialize bot runs. Scheduled runs fire every 15 min and each
-# GitHub Actions runner is a SEPARATE machine, so the bot's file lock cannot
-# prevent two runners from trading simultaneously (this caused the observed
-# duplicate opens on Sep 3: two runs 75s apart, both restoring the same
-# cached state and both opening positions). A concurrency group makes
-# GitHub queue instead of parallel-run; cancel-in-progress=false because a
-# trading cycle must never be killed mid-trade.
+# CRITICAL: serialize bot runs. Scheduled runs each get a SEPARATE machine,
+# so the bot's file lock cannot prevent two runners from trading
+# simultaneously (the observed duplicate opens on Sep 3: two runs 75s
+# apart, both restoring the same cached state and both opening positions).
+# A concurrency group makes GitHub queue instead of parallel-run;
+# cancel-in-progress=false because a trading cycle must never be killed
+# mid-trade. The in-job schedule gate then dedupes queued redundant
+# firings: by the time a queued job starts, the previous job has already
+# persisted its run history, so the gate sees a fresh success and skips.
 concurrency:
   group: trading-bot
   cancel-in-progress: false
 
 jobs:
-  # Lint + smoke tests run on EVERY push (and on schedule) so regressions
+  # Lint + smoke tests run on EVERY push (and on dispatch) so regressions
   # like the _open_position NameError or the dead stop-loss close path are
   # caught the moment they land, before real money is involved.
   quality:
     # Skip on schedule: the concurrency group serializes the whole workflow,
-    # so a 2-minute lint job every 15 min would push real bot runs back.
+    # so a 2-minute lint job on every scheduled firing would push real bot
+    # runs back.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -61,10 +68,10 @@ jobs:
         # imports, placeholder-less f-strings). Scoped deliberately — the
         # research scripts carry a large pre-existing style backlog that is
         # out of scope for this gate.
-        run: ruff check --select F821,F401,F811,F822,F823,F541 trading_system/bot/ scripts/paper_trader.py scripts/watchdog.py scripts/strategy_league.py scripts/position_tracker.py scripts/monthly_reoptimize.py scripts/walk_forward_optimize.py scripts/walk_forward_report.py tests/test_bot_guardrails.py tests/test_bot_portfolio.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py tests/conftest.py
+        run: ruff check --select F821,F401,F811,F822,F823,F541 trading_system/bot/ scripts/paper_trader.py scripts/watchdog.py scripts/schedule_gate.py scripts/strategy_league.py scripts/position_tracker.py scripts/monthly_reoptimize.py scripts/walk_forward_optimize.py scripts/walk_forward_report.py tests/test_bot_guardrails.py tests/test_bot_portfolio.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py tests/test_schedule_gate.py tests/test_state_persistence.py tests/conftest.py
 
       - name: Bot smoke tests (paper / dry_run / live modes)
-        run: pytest tests/test_bot_portfolio.py tests/test_bot_guardrails.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py -q
+        run: pytest tests/test_bot_portfolio.py tests/test_bot_guardrails.py tests/test_bot_robustness.py tests/test_live_mode_hardening.py tests/test_watchdog.py tests/test_strategy_league.py tests/test_schedule_gate.py tests/test_state_persistence.py -q
 
   run-bot:
     # Only schedule/dispatch runs trade; push runs just run quality checks.
@@ -76,52 +83,65 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Restore state from bot-state branch
+        # WHY GIT, NOT actions/cache: the Actions cache is not a reliable
+        # state carrier. Entries are immutable, restore-keys scoping is
+        # best-effort, and the post-save only runs when the whole job
+        # succeeds — so run #114's watchdog finding silently DISCARDED that
+        # run's state, and run #116's restore-keys miss restarted the bot
+        # from a fresh $97 while trading was under way (both verified from
+        # run logs 2026-09-08). A git branch is: always restorable, pushable
+        # even when a later step fails, immutable-history, and inspectable
+        # from anywhere. The branch carries ALL history files (state, trade
+        # log, run history, tracker memory, watchdog stamp).
+        run: |
+          mkdir -p data/results
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin bot-state
+            git checkout FETCH_HEAD -- data/results/ \
+              && echo "State restored from bot-state branch" \
+              || echo "WARNING: bot-state branch has no data/results yet"
+          else
+            echo "No bot-state branch yet — first run starts fresh"
+          fi
+
+      - name: Schedule gate (dedupe redundant firings)
+        id: gate
+        # Authoritative gate, AFTER state restore: two redundant firings may
+        # both pass a pre-flight check while the first is still running (the
+        # concurrency group queues the second JOB — it cannot consult the
+        # first run's history until the whole job finishes). Queued here,
+        # the second job's gate runs AFTER the first job persisted, so it
+        # sees the fresh success and exits skip. Exit 3 = skip (green);
+        # any other nonzero exit = real gate failure (red).
+        run: |
+          set +e
+          python scripts/schedule_gate.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 0 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Gate failed with exit $code"
+            exit "$code"
+          fi
+
       - name: Set up Python
+        if: steps.gate.outputs.run != 'false'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.gate.outputs.run != 'false'
         run: pip install -r requirements.txt
 
-      - name: Create results directory
-        run: mkdir -p data/results
-
-      - name: Restore state from previous run
-        uses: actions/cache@v4
-        with:
-          # Every file that must survive across runs. paper_state.json alone
-          # is not enough: the trade log (/trades), run history (/dashboard
-          # stats), position-tracker memory (price alerts), and the watchdog
-          # heartbeat stamp all reset to empty on every run otherwise —
-          # which silently neutered the watchdog's missed-run, duplicate-open,
-          # and ledger-desync checks (they read history files).
-          path: |
-            data/results/paper_state.json
-            data/results/paper_trades.jsonl
-            data/results/run_history.jsonl
-            data/results/position_tracker.json
-            data/results/watchdog_last_ok.json
-          # Cache entries are IMMUTABLE: when the exact key already exists,
-          # the post-save is skipped. The old stable key (v3) therefore
-          # restored the same frozen state on every run and silently
-          # discarded each run's trades — the fingerprint of the Sep 3
-          # duplicate opens (two runs 75s apart, both restoring the same
-          # cached state and both opening). Correct pattern: per-run key +
-          # restore-keys. The restore-keys prefix matches the LATEST
-          # previous entry so state always restores; the post-save then
-          # writes a NEW entry under this run's key, so every run's trades
-          # persist. Old entries age out via normal eviction (the file is
-          # tiny; the 10 GB repo cache limit is moot). v4 deliberately
-          # orphans every pre-day-zero cache entry so the 2026-09-08
-          # restart starts clean at $97. Missing files on first restore are
-          # fine: actions/cache only restores what exists in the entry.
-          key: paper-state-v4-${{ github.run_number }}
-          restore-keys: |
-            paper-state-v4-
-      # Clear stale state from previous code versions (e.g. $10,000 accounts)
       - name: Validate state file
+        if: steps.gate.outputs.run != 'false'
+        # Clear stale state from previous code versions (e.g. $10,000 accounts)
         run: |
           python -c "
           import json, sys
@@ -138,6 +158,7 @@ jobs:
           "
 
       - name: Run paper trading bot
+        if: steps.gate.outputs.run != 'false'
         env:
           BOT_MODE: paper
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -146,17 +167,21 @@ jobs:
         run: python -u scripts/paper_trader.py
 
       - name: Monitor open positions
-        if: always()
+        if: always() && steps.gate.outputs.run != 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -u scripts/position_tracker.py
 
       - name: Watchdog (production anomalies)
-        # Missed runs, stale state, ledger desync, desync storms, duplicate
-        # opens. A finding exits 1 -> red run + Telegram alert. Runs on
-        # every scheduled bot cycle so anomalies surface within ~15 minutes.
-        if: always()
+        # Missed runs, stale state, fresh-start tripwire, ledger desync,
+        # desync storms, duplicate opens. A finding exits 1 -> red run +
+        # Telegram alert. NOTE: a watchdog failure no longer loses state —
+        # the persist step below runs with always() and places the state on
+        # the branch even when the job is failing (this exact bug lost run
+        # #114's funding charge: the cache post-save was skipped because
+        # the watchdog failed the job).
+        if: always() && steps.gate.outputs.run != 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -164,8 +189,48 @@ jobs:
           WATCHDOG_RUN_INTERVAL_MINUTES: '120'
         run: python -u scripts/watchdog.py
 
+      - name: Persist state to bot-state branch
+        # ALWAYS runs once the bot has traded (even on watchdog/bot
+        # failure): state changes must never be discarded. Uses a scratch
+        # worktree so the checked-out main worktree is untouched; pushes
+        # with the checkout's persisted GITHUB_TOKEN credentials. One
+        # commit per trading run; identical state short-circuits.
+        if: always() && steps.gate.outputs.run != 'false'
+        env:
+          STATE_BRANCH: bot-state
+        run: |
+          set -e
+          FILES="data/results/paper_state.json data/results/paper_trades.jsonl data/results/run_history.jsonl data/results/position_tracker.json data/results/watchdog_last_ok.json"
+          HAVE=""
+          for f in $FILES; do [ -f "$f" ] && HAVE="$HAVE $f"; done
+          if [ -z "$HAVE" ]; then
+            echo "No state files produced — nothing to persist"
+            exit 0
+          fi
+          rm -rf /tmp/botstate
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            git worktree add /tmp/botstate "origin/$STATE_BRANCH"
+          else
+            git worktree add --orphan /tmp/botstate
+          fi
+          mkdir -p /tmp/botstate/data/results
+          for f in $HAVE; do cp "$f" "/tmp/botstate/$f"; done
+          cd /tmp/botstate
+          git add $FILES
+          if git diff --cached --quiet; then
+            echo "State unchanged since last persist"
+            exit 0
+          fi
+          git -c user.name="bot-state-persister" \
+              -c user.email="actions@users.noreply.github.com" \
+              commit -m "state: run ${{ github.run_number }} (${{ github.event_name }})"
+          git push origin "HEAD:$STATE_BRANCH"
+          echo "Persisted: $HAVE"
+
       - name: Upload trade log & state
-        if: always()
+        # 90-day artifact copies of everything, independent of the branch.
+        if: always() && steps.gate.outputs.run != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: paper-results-${{ github.run_number }}

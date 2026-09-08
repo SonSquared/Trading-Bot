@@ -8,15 +8,29 @@ development.
 
 ## 1. The deployment, in one paragraph
 
-The bot runs **only on GitHub Actions** (`.github/workflows/bot.yml`, every
-2 hours). Each run: fetch closed candles → run strategies → open/close paper
-positions → save state atomically → send the cycle message to Telegram → run
-the watchdog. All state lives in `data/results/paper_state.json` (persisted
-across runs via the workflow cache). Fly/Railway/Docker deployments are
-disabled (`deploy/disabled/`) so only one filesystem ever trades. The
-accounting fix (entry fees + funding booked into P&L the moment they hit
-cash) landed 2026-09-06 — everything before that date predates the honest
-cost model.
+The bot runs **only on GitHub Actions** (`.github/workflows/bot.yml`).
+Each run: restore state from the `bot-state` git branch → schedule gate →
+fetch closed candles → run strategies → open/close paper positions → save
+state atomically → send the cycle message to Telegram → run the watchdog →
+**persist all history files back to the `bot-state` branch** (runs even if
+the watchdog fails). All state lives in `data/results/` on that branch:
+`paper_state.json`, `paper_trades.jsonl`, `run_history.jsonl`,
+`position_tracker.json`, `watchdog_last_ok.json` — one commit per trading
+run, full history preserved. Fly/Railway/Docker deployments are disabled
+(`deploy/disabled/`) so only one filesystem ever trades.
+
+### Schedule: two firings per even hour, gated
+
+GitHub cron on the free tier **drops slots wholesale** — verified
+2026-09-07/08: a single 2-hourly cron produced 5–7h gaps (the 02/04/08/10
+UTC slots never fired). The workflow now fires twice per even hour (`:23`
+and `:47`) and `scripts/schedule_gate.py` skips any firing within 100
+minutes of the last successful run. A dropped slot now costs ≤24 minutes
+of delay instead of half a trading day. Redundant firings cost ~15s each
+(they exit before pip install). 4h candles close at 00/04/08/12/16/20 UTC,
+so the even-hour schedule never misses a trading boundary. The accounting
+fix (entry fees + funding booked into P&L the moment they hit cash) landed
+2026-09-06 — everything before that date predates the honest cost model.
 
 ## 1b. Day zero: the 90-day forward proof (2026-09-08)
 
@@ -38,10 +52,13 @@ The paper record restarts from zero on this date — deliberately.
   `paper_summary_archived_2026-09-08.json` — plus the earlier archives
   `paper_trades_archived_2026-09-04.jsonl` and the
   `paper_trades_test_pollution_2026-09-05.jsonl` quarantine.
-- **The production ledger now lives on GitHub Actions** (cache entry
-  `paper-state-v4-<run_number>` + 90-day artifacts). Local copies are
-  archives only — do not run the trader from this machine (one
-  filesystem rule).
+- **The production ledger now lives on the `bot-state` git branch**
+  (seeded 2026-09-08 from the last cloud artifact, $63.03 cash + ETH
+  SHORT; one commit per trading run, plus 90-day artifacts). Local copies
+  are archives only — do not run the trader from this machine (one
+  filesystem rule). If a run ever reports `FRESH-START REFUSED`, the state
+  files were lost — restore them from the latest `bot-state` commit; never
+  let the bot silently re-fabricate a day zero.
 - **Success criteria (window ends ~2026-12-07):** equity net of all
   costs (fees + slippage + funding) above $97, drawdown within the risk
   manager's limits, and consistency across both halves of the window.
@@ -141,12 +158,23 @@ The bot can't phone home if the scheduler is dead. Diagnosis order:
 | `python scripts/watchdog.py` | Run the production watchdog checks locally. |
 | `python -m pytest tests/ -q` | Full test suite. The conftest sandboxes all data paths, so running tests never touches production data (a session tripwire fails loudly if it ever does). |
 
-## 6. Current status (2026-09-07)
+## 6. Current status (2026-09-08)
 
-- Real trade log: 2 opens (Sep 3), both still open, cash $29.06, state
-  reconciled to the cent.
+- Live cloud state: cash **$63.03**, one ETH SHORT (Donchian_Breakout,
+  $33.95 notional), equity ~$97.14. Ledger reconciles exactly
+  (`python scripts/audit_equity.py --strict`).
+- **State carrier migrated cache → `bot-state` git branch** after the
+  Sep 8 incident chain: run #114's watchdog failure discarded its state
+  save, and run #116's cache miss silently restarted the bot from $97
+  while trading was under way. The branch is seeded from run #117's
+  artifact; one commit per trading run.
+- Scheduler: two gated firings per even hour (`:23`/`:47`) after cron was
+  proven to drop whole slots.
 - Pre-fix history archived: `paper_trades_archived_2026-09-04.jsonl` and
   `paper_trades_test_pollution_2026-09-05.jsonl` (test-suite pollution —
   since prevented by the conftest sandbox).
-- Scheduler: repaired to 2-hour cadence after the September Actions-minutes
-  exhaustion; needs one push to re-arm.
+- NOTE: run #116's fresh-$97 restart means the cloud ledger (cash $63.03
+  + a fresh ETH SHORT) carries one stranded position from the lost #114
+  era (the original ETH LONG opened by the rejected Bollinger config).
+  Its cost basis is preserved in the archived local files and the #112
+  artifacts; the promoted portfolio now controls all trading.

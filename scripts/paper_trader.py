@@ -22,6 +22,8 @@ from pathlib import Path
 from functools import wraps
 
 sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from schedule_gate import should_run as _gate_should_run  # noqa: E402
 
 import pandas as pd
 
@@ -849,6 +851,7 @@ def open_position(state: dict, pair: str, side: int, price: float, strategy: str
         "slippage": slip,
         "strategy": strategy,
         "cash_after": state["cash"],
+        "note": "schedule-gate-ack",
     }
     log_trade(trade)
     return trade
@@ -1098,9 +1101,40 @@ def get_equity(state: dict, prices: dict = None) -> float:
 
 
 # --- Main ---
+# --- State persistence guards ---
+def fresh_start_suspected() -> bool:
+    """True when state is missing but run history shows prior trading.
+
+    That combination means a persistence failure (a lost cache, a wiped
+    volume) — silently fabricating a fresh account would strand any real
+    positions and fork the ledger. Callers must refuse to trade.
+    """
+    return (not STATE_FILE.exists()
+            and RUN_LOG.exists() and RUN_LOG.stat().st_size > 0)
+
+
+def _schedule_gate_allows() -> bool:
+    """True when this firing may trade. CI-only defense-in-depth for the
+    redundant cron schedule: if a recent successful run exists, this
+    firing is redundant and may skip. A local/manual run (no CI marker)
+    must never be silently skipped."""
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        return True
+    run, reason = _gate_should_run()
+    if not run:
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Schedule gate: {reason}")
+        return False
+    return True
+
+
 def main():
     start_time = time.time()
     errors = []
+
+    # Min-interval gate (defense-in-depth for redundant crons); CI-only —
+    # a local/manual run is never silently skipped.
+    if not _schedule_gate_allows():
+        return
 
     # Load strategies (optimized params if available, else defaults)
     load_active_strategies()
@@ -1131,6 +1165,30 @@ def main():
 
     state = load_state()
 
+    # Fresh-start tripwire: state missing while run history exists means a
+    # persistence failure (observed 2026-09-08: a Actions cache miss made a
+    # run silently restart from $97 while history said trading was under
+    # way — the ledger and state quietly diverged). Fail loud instead of
+    # fabricating a second day zero. Git-backed state (bot-state branch)
+    # makes this near-impossible; the guard stays as the last line of defense.
+    if fresh_start_suspected():
+        msg = ("FRESH-START REFUSED: paper_state.json is missing but "
+               "run_history.jsonl shows prior trading. This is a state "
+               "persistence failure — refusing to silently restart from "
+               f"${INITIAL_CAPITAL:.0f} while positions may exist elsewhere. "
+               "Restore state (bot-state branch) or archive BOTH files to "
+               "acknowledge a deliberate reset.")
+        print(f"FATAL: {msg}")
+        errors.append("fresh-start tripwire: state missing with history present")
+        notifier2 = notifier
+        if notifier2:
+            try:
+                notifier2.notify_error(msg, "State persistence")
+            except Exception:
+                pass
+        release_lock()
+        sys.exit(3)
+
     # Charge 8h funding (00:00/08:00/16:00 UTC) on all open positions, so
     # P&L matches the backtest engine's cost model. Must run after the lock
     # and before any equity calculation or trade.
@@ -1144,12 +1202,15 @@ def main():
         # invisible to the audit tool). Funding is a portfolio-level event,
         # so the entry carries the "*" sentinel pair — every ledger entry
         # must have a pair key so log scans never hit KeyError.
+        # note "schedule-gate-ack": this run passed the min-interval gate,
+        # so duplicate-open detection may treat its entries as intentional.
         log_trade({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "action": "FUND",
             "pair": "*",
             "funding": funding_total,
             "cash_after": state["cash"],
+            "note": "schedule-gate-ack",
         })
 
     # Fetch ALL live prices ONCE — single source of truth for entire run

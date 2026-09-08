@@ -5,6 +5,9 @@ on:
     - cron: '0 12 * * 0'
   workflow_dispatch:
 
+permissions:
+  contents: read  # Reads state from the bot-state branch
+
 jobs:
   weekly-chart:
     runs-on: ubuntu-latest
@@ -24,18 +27,18 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore paper trading state
-        uses: actions/cache@v4
-        with:
-          path: data/results/paper_state.json
-          key: paper-state-
-          restore-keys: paper-state-
-
-      - name: Restore paper trading trades
-        uses: actions/cache@v4
-        with:
-          path: data/results/paper_trades.jsonl
-          key: paper-trades-
-          restore-keys: paper-trades-
+        # State lives on the bot-state branch (same source the bot itself
+        # restores from) — the Actions cache is no longer the carrier.
+        run: |
+          mkdir -p data/results
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin bot-state
+            git checkout FETCH_HEAD -- data/results/ \
+              && echo "State restored from bot-state branch" \
+              || echo "WARNING: bot-state branch has no data/results yet"
+          else
+            echo "No bot-state branch yet — charts will show a fresh account"
+          fi
 
       - name: Generate and send weekly charts
         env:

@@ -30,41 +30,40 @@ import scripts.paper_trader as pt
 
 
 # ---------------------------------------------------------------------------
-# 1. Workflow cache persists every history file
+# 1. Workflow state persistence covers every history file
+#    (git bot-state branch — the cache era ended 2026-09-08 after a
+#    restore-keys miss silently restarted the bot from $97 mid-trading;
+#    detailed pins live in tests/test_state_persistence.py)
 # ---------------------------------------------------------------------------
 
 class TestWorkflowCachePaths:
-    def test_cache_covers_all_history_files(self):
+    def test_persist_covers_all_history_files(self):
         d = yaml.safe_load(Path(".github/workflows/bot.yml").read_text())
         steps = d["jobs"]["run-bot"]["steps"]
-        cache_steps = [s for s in steps
-                       if str(s.get("uses", "")).startswith("actions/cache")]
-        assert len(cache_steps) == 1, "expected exactly one cache step"
-        paths = cache_steps[0]["with"]["path"].split()
+        persist = [s for s in steps
+                   if str(s.get("name", "")).startswith("Persist state")]
+        assert len(persist) == 1, "expected exactly one persist step"
+        body = persist[0]["run"]
         for required in (
-            "data/results/paper_state.json",
-            "data/results/paper_trades.jsonl",
-            "data/results/run_history.jsonl",
-            "data/results/position_tracker.json",
-            "data/results/watchdog_last_ok.json",
+            "paper_state.json",
+            "paper_trades.jsonl",
+            "run_history.jsonl",
+            "position_tracker.json",
+            "watchdog_last_ok.json",
         ):
-            assert required in paths, (
-                f"{required} missing from cache path — it would reset to "
+            assert required in body, (
+                f"{required} missing from persist step — it would reset to "
                 f"empty every run, breaking /trades, /dashboard, or the "
                 f"watchdog's history-dependent checks"
             )
 
-    def test_cache_key_is_per_run_with_restore_prefix(self):
+    def test_state_carries_the_bot_state_branch_marker(self):
         d = yaml.safe_load(Path(".github/workflows/bot.yml").read_text())
         steps = d["jobs"]["run-bot"]["steps"]
-        cache = [s for s in steps
-                 if str(s.get("uses", "")).startswith("actions/cache")][0]
-        key = cache["with"]["key"]
-        assert "github.run_number" in key, (
-            "stable cache keys are immutable-in-practice: the post-save is "
-            "skipped and every run's trades are silently discarded"
-        )
-        assert cache["with"].get("restore-keys", "").strip()
+        restore = [s for s in steps
+                   if str(s.get("name", "")).startswith("Restore state")]
+        assert restore, "run-bot must restore state from the bot-state branch"
+        assert "bot-state" in restore[0]["run"]
 
 
 # ---------------------------------------------------------------------------
