@@ -104,13 +104,32 @@ replay the ledger to the last pre-promotion sequence and restore the
 previous paper config; the hash chain proves exactly which records
 post-date the decision being rolled back.
 
-## 8. Lock conflicts
+## 8. Testnet smoke (hand-held only)
+
+The signed Binance transport (`execution/binance_live.py`) is testnet-only
+by construction; production endpoints require `allow_production=True`, and
+no repository code path ever sets it. The one and only way the transport is
+constructed is the smoke command:
+
+```bash
+CS_SMOKE_TESTNET_CONFIRM=yes CS_BINANCE_API_KEY=... CS_BINANCE_API_SECRET=... \
+  python scripts/cs_smoke_testnet.py
+```
+
+It exercises signing, a client-ID'd market order, ack handling, and
+reconciliation, ledgering every step. On a lost ack it returns exit 3 with
+an `order_ambiguous`-style refusal to retry. Nothing schedules it; no
+workflow invokes it; credentials never leave the environment. Graduate to
+production keys only after repeated clean testnet smokes — and never give
+those keys withdrawal/transfer permissions.
+
+## 9. Lock conflicts
 
 The improvement runner holds a TTL lease (`improve.lock`). A second runner
 fails closed with `LockHeld`; an expired lease (dead runner) can be taken
 over. Never run two improvement jobs against the same state directory.
 
-## 9. Known limitations (honest list)
+## 10. Known limitations (honest list)
 
 - Execution realism is modeled (spread, impact, latency, partials, funding,
   margin), but real venue micro-structure can still surprise; the live

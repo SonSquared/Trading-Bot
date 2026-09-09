@@ -1,5 +1,6 @@
-"""Execution layer: paper simulator (live transport lands with Task 8)."""
+"""Execution layer: paper simulator, signed live transport, reconciliation."""
 
+from crypto_system.execution.binance_live import BinanceUsdmTransport
 from crypto_system.execution.paper import (
     CloseResult,
     Fill,
@@ -16,4 +17,5 @@ __all__ = [
     "PaperAccount",
     "PaperAccountConfig",
     "Quote",
+    "BinanceUsdmTransport",
 ]

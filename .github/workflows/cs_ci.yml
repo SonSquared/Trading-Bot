@@ -44,13 +44,13 @@ jobs:
           python -m pip install -q pydantic httpx typer hypothesis pandas numpy pytest ruff mypy pyyaml
 
       - name: Lint (ruff)
-        run: python -m ruff check src/crypto_system scripts/improve.py tests/test_cs_config.py tests/test_cs_ledger.py tests/test_cs_data.py tests/test_cs_execution.py tests/test_cs_risk.py tests/test_cs_research.py tests/test_cs_improve.py tests/test_cs_live.py tests/test_cs_workflows.py
+        run: python -m ruff check src/crypto_system scripts/improve.py scripts/cs_smoke_testnet.py tests/test_cs_*.py
 
       - name: Type check (mypy)
         run: python -m mypy src/crypto_system --ignore-missing-imports
 
       - name: Tests (cs suite)
-        run: python -m pytest tests/test_cs_config.py tests/test_cs_ledger.py tests/test_cs_data.py tests/test_cs_execution.py tests/test_cs_risk.py tests/test_cs_research.py tests/test_cs_improve.py tests/test_cs_live.py tests/test_cs_workflows.py -q
+        run: python -m pytest tests/test_cs_config.py tests/test_cs_ledger.py tests/test_cs_data.py tests/test_cs_execution.py tests/test_cs_risk.py tests/test_cs_research.py tests/test_cs_improve.py tests/test_cs_live.py tests/test_cs_binance_transport.py tests/test_cs_workflows.py -q
 
       - name: Deterministic quick run (no network, no promotion)
         run: python scripts/improve.py --quick --report-only
