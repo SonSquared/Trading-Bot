@@ -1,0 +1,42 @@
+# crypto_system weekly report: REPORT-ONLY by plan constraint.
+# Renders the weekly report from committed state. Never promotes, never
+# sends, never touches live mode. Promotion happens ONLY in the monthly
+# workflow.
+name: cs-weekly-report
+
+on:
+  schedule:
+    - cron: "13 6 * * 1" # Mondays 06:13 UTC (off-peak, unaligned with bot crons)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cs-weekly-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -q pydantic httpx typer pandas numpy
+
+      - name: Render weekly report (report-only)
+        run: python scripts/improve.py --report-only
+
+      # Deliberately NO --send, NO Telegram credentials, NO promotion in
+      # this workflow. It reads committed state and prints. That is all.

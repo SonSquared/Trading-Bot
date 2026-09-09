@@ -1,0 +1,54 @@
+# crypto_system monthly optimize: the SOLE auto-promotion cadence.
+# Paper-only by plan constraint: runs the improvement pipeline, promotes a
+# challenger ONLY if every conservative gate passes, and records the
+# decision in the audit ledger. Live mode is never enabled here.
+name: cs-monthly-optimize
+
+on:
+  schedule:
+    - cron: "37 5 1 * *" # 1st of month 05:37 UTC (unaligned with bot crons)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cs-monthly-optimize
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -q pydantic httpx typer hypothesis pandas numpy pyyaml pytest ruff mypy
+
+      - name: Pre-flight tests (cs suite)
+        run: python -m pytest tests/test_cs_config.py tests/test_cs_ledger.py tests/test_cs_data.py tests/test_cs_execution.py tests/test_cs_risk.py tests/test_cs_research.py tests/test_cs_improve.py tests/test_cs_live.py -q
+
+      # Full improve mode: ledger verify, league evaluation under the state
+      # lease, promotion only when gates pass. Paper-only; no live flags.
+      - name: Monthly improvement run (paper promotion only)
+        run: python scripts/improve.py
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs-audit-${{ github.run_id }}
+          path: |
+            data/cs_state/paper/
+          if-no-files-found: ignore
+          retention-days: 90
