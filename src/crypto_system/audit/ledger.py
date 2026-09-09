@@ -151,6 +151,8 @@ class Ledger:
         return last_seq
 
     def verify(self) -> VerifyResult:
+        if not self.path.exists():
+            return VerifyResult(True, 0)
         prev = _GENESIS
         count = 0
         with self.path.open("r", encoding="utf-8") as fh:
