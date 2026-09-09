@@ -1,5 +1,14 @@
 # Trading Strategy Backtesting & Automated Trading System
 
+> ## crypto_system platform (`src/crypto_system`) — NO PROFIT GUARANTEE
+>
+> A second, strictly-audited platform for Binance USDⓈ-M Futures research,
+> paper trading, and human-approved live execution lives in `src/crypto_system`
+> (runbook: `docs/CS_RUNBOOK.md`). Nothing in this repository promises or can
+> guarantee trading profit. Markets can and do produce losses, including total
+> loss of capital deployed. All automation targets paper trading; live
+> execution is disabled by default and gated behind per-order human approval.
+
 A professional-grade quantitative trading research and backtesting system for crypto perpetual futures on Binance.
 
 ## Overview
