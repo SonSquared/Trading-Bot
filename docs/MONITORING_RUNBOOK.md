@@ -97,7 +97,7 @@ Key reading rules:
 
 | Message | Meaning | Action |
 |---|---|---|
-| `HEALTH ALERT: No bot runs for 8+ hours` (from the health-check workflow) | The scheduler hasn't produced a run. | See §4.1 |
+| `HEALTH ALERT: No successful bot run in 3h` (from the health-check workflow) | Both cron slots of a window dropped — the scheduler is silent. | See §4.1 |
 | Watchdog anomaly report | One of: missed scheduled run, stale state file, ledger desync, desync storm, duplicate-open signature, equity/P&L inconsistency. | See §4.2 |
 
 ## 3. What is normal

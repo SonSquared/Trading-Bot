@@ -122,6 +122,52 @@ class TestWorkflowStatePersistence:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Independent health sentinel: catches what the in-bot watchdog cannot
+# ---------------------------------------------------------------------------
+
+
+class TestHealthSentinel:
+    """The watchdog runs inside the bot workflow, so it can never report
+    'both cron slots died' — when the scheduler is silent, nothing in-process
+    executes. health_check.yml is the independent sentinel. The 2026-09-08
+    22:22+22:46 double-drop left a 3.1h gap that NO component reported; the
+    old sentinel tolerated 24h of silence as 'likely cron throttling'.
+    """
+
+    @pytest.fixture(scope="class")
+    def hc(self):
+        return yaml.safe_load(
+            Path(".github/workflows/health_check.yml").read_text())
+
+    def test_hourly_cron(self, hc):
+        crons = hc[True]["schedule"] if True in hc else hc["on"]["schedule"]
+        exprs = [c["cron"] for c in crons]
+        assert exprs == ["15 * * * *"], (
+            "sentinel must check hourly; detection latency = "
+            "threshold + check interval"
+        )
+
+    def test_threshold_is_3h(self, hc):
+        script = hc["jobs"]["health-check"]["steps"][0]["with"]["script"]
+        assert "const HOURS = 3;" in script, (
+            "3h = one fully-dropped cron window (healthy max gap ~2h); "
+            "a larger threshold re-opens the silent-gap hole"
+        )
+
+    def test_alerts_to_telegram_and_fails_run(self, hc):
+        script = hc["jobs"]["health-check"]["steps"][0]["with"]["script"]
+        assert "sendMessage" in script
+        assert "core.setFailed" in script
+
+    def test_alert_distinguishes_failure_from_silence(self, hc):
+        # A failed run inside the window is a different emergency than a
+        # fully silent window — the alert must say which happened.
+        script = hc["jobs"]["health-check"]["steps"][0]["with"]["script"]
+        assert "recentFailed" in script
+        assert "did NOT run at all" in script
+
+
+# ---------------------------------------------------------------------------
 # 2. The fresh-start tripwire
 # ---------------------------------------------------------------------------
 
