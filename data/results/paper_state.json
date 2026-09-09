@@ -10,7 +10,7 @@
       "fees_paid": 0.023764999999999994,
       "funding_paid": 0.016974999999999997,
       "last_funding_time": "2026-09-09T16:46:52.723200+00:00",
-      "high_pnl": 0.46462531508743843
+      "high_pnl": 0.611946186860575
     }
   },
   "total_trades": 0,
@@ -18,18 +18,18 @@
   "losses": 0,
   "total_pnl": -0.033949999999999994,
   "realized_pnl": 0.0,
-  "peak_equity": 97.13737029447219,
+  "peak_equity": 97.17380573043917,
   "max_drawdown": 0.005329977943958498,
   "signal_history": {},
   "last_daily_alert_date": "2026-09-09",
   "last_candle_seen": {
-    "BTC_USDT_USDT": "2026-09-09 12:00:00+00:00",
-    "ETH_USDT_USDT": "2026-09-09 12:00:00+00:00"
+    "BTC_USDT_USDT": "2026-09-09 16:00:00+00:00",
+    "ETH_USDT_USDT": "2026-09-09 16:00:00+00:00"
   },
-  "last_equity_marked": 96.78816758754621,
+  "last_equity_marked": 97.17380573043917,
   "last_prices": {
-    "ETH_USDT_USDT": 2497.39,
-    "BTC_USDT_USDT": 78764.5
+    "BTC_USDT_USDT": 78309.8,
+    "ETH_USDT_USDT": 2469.17
   },
-  "last_run_at": "2026-09-09T16:47:09.552241+00:00"
+  "last_run_at": "2026-09-09T21:01:53.458289+00:00"
 }
