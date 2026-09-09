@@ -33,7 +33,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -q pydantic httpx typer hypothesis pandas numpy pyyaml pytest ruff mypy
+          # requirements.txt includes the legacy bot's deps because the shared
+          # tests/conftest.py imports scripts.paper_trader at collection time.
+          python -m pip install -q -r requirements.txt pytest ruff mypy
 
       - name: Pre-flight tests (cs suite)
         run: python -m pytest tests/test_cs_config.py tests/test_cs_ledger.py tests/test_cs_data.py tests/test_cs_execution.py tests/test_cs_risk.py tests/test_cs_research.py tests/test_cs_improve.py tests/test_cs_live.py -q
