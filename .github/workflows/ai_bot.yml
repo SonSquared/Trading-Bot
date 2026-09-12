@@ -1,0 +1,156 @@
+name: AI Trading Bot
+on:
+  push:
+    branches: [main]
+    paths:
+      - "trading_system/bot/ai_*.py"
+      - "trading_system/bot/scheduler.py"
+      - "trading_system/bot/exchange.py"
+      - "scripts/start_ai_bot.py"
+      - "scripts/ai_bot_gate.py"
+      - "tests/test_ai_agent.py"
+      - ".github/workflows/ai_bot.yml"
+  # 6 wakeups/day (00/06/08/14/20/23 UTC), each fired TWICE (:02 and :32)
+  # because GitHub free-tier cron drops slots wholesale (verified on the
+  # main bot workflow). scripts/ai_bot_gate.py skips a firing that lands
+  # within 45 minutes of the last journaled wakeup, so the redundant slot
+  # costs ~15s of quota instead of a duplicate trade decision.
+  schedule:
+    - cron: '2 0,6,8,14,20,23 * * *'
+    - cron: '32 0,6,8,14,20,23 * * *'
+  workflow_dispatch:  # manual trigger from the Actions tab
+
+permissions:
+  contents: write  # pushing continuity files to the ai-bot-state branch
+
+concurrency:
+  group: ai-trading-bot
+  cancel-in-progress: false  # never kill a wakeup mid-decision
+
+jobs:
+  quality:
+    # Tests run on every push/dispatch touching the AI bot — never on
+    # schedule (the concurrency group would serialize them ahead of trades).
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: AI bot tests
+        run: pytest tests/test_ai_agent.py -q
+
+  run-bot:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore AI bot state from ai-bot-state branch
+        # Git branch, not actions/cache: the cache is immutable, best-effort,
+        # and skipped when a job fails — a lost cache silently resets the
+        # paper account to its starting equity. A branch is always
+        # restorable and inspectable.
+        run: |
+          mkdir -p data/ai_bot
+          if git ls-remote --exit-code --heads origin ai-bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin ai-bot-state
+            git checkout FETCH_HEAD -- data/ai_bot/ \
+              && echo "State restored from ai-bot-state branch" \
+              || echo "WARNING: ai-bot-state branch has no data/ai_bot yet"
+          else
+            echo "No ai-bot-state branch yet — first run starts fresh"
+          fi
+
+      - name: Schedule gate (dedupe redundant firings)
+        id: gate
+        # Runs BEFORE pip setup so skipped firings burn almost no quota.
+        # Exit 3 = skip (green); other nonzero = real failure (red).
+        run: |
+          set +e
+          python scripts/ai_bot_gate.py
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 0 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Gate failed with exit $code"
+            exit "$code"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.run != 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run != 'false'
+        run: pip install -r requirements.txt
+
+      - name: Run one AI wakeup
+        if: steps.gate.outputs.run != 'false'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scripts/start_ai_bot.py once
+
+      - name: Persist state to ai-bot-state branch
+        # ALWAYS runs — even when the wakeup failed — because the journal
+        # entry for a failure is exactly what the next wakeup's handoff
+        # needs. Losing it would erase the audit trail.
+        if: always()
+        env:
+          STATE_BRANCH: ai-bot-state
+        run: |
+          set -e
+          FILES="data/ai_bot/strategy.json data/ai_bot/progress.json data/ai_bot/journal.jsonl data/ai_bot/decisions.json data/ai_bot/paper_ledger.json data/ai_bot/trades.jsonl"
+          HAVE=""
+          for f in $FILES; do [ -f "$f" ] && HAVE="$HAVE $f"; done
+          if [ -z "$HAVE" ]; then
+            echo "No state files produced — nothing to persist"
+            exit 0
+          fi
+          rm -rf /tmp/aibotstate
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            git worktree add /tmp/aibotstate "origin/$STATE_BRANCH"
+          else
+            git worktree add --orphan /tmp/aibotstate
+          fi
+          mkdir -p /tmp/aibotstate/data/ai_bot
+          for f in $HAVE; do cp "$f" "/tmp/aibotstate/$f"; done
+          cd /tmp/aibotstate
+          git add $FILES
+          if git diff --cached --quiet; then
+            echo "State unchanged since last persist"
+            exit 0
+          fi
+          git -c user.name="ai-bot-state-persister" \
+              -c user.email="actions@users.noreply.github.com" \
+              commit -m "ai-bot state: run ${{ github.run_number }} (${{ github.event_name }})"
+          git push origin "HEAD:$STATE_BRANCH"
+          echo "Persisted: $HAVE"
+
+      - name: Upload AI bot logs
+        if: always() && steps.gate.outputs.run != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-bot-state-${{ github.run_number }}
+          path: |
+            data/ai_bot/journal.jsonl
+            data/ai_bot/trades.jsonl
+            data/ai_bot/decisions.json
+          retention-days: 90

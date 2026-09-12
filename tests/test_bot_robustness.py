@@ -542,12 +542,15 @@ class TestFunding:
     def test_charge_funding_is_idempotent_per_interval(self):
         # Charging twice within the same 8h window must not double-charge:
         # the second call sees last_funding_time >= the first call's now.
+        # Times are pinned away from the 00/08/16 UTC funding boundaries:
+        # this test was wall-clock flaky — whenever "now" sat within an
+        # hour of a boundary, now1+1h legitimately crossed it and charged.
         state = fresh_state()
         open_position(state, PAIR, 1, 100.0, "T", 30.0)
-        entry_time = datetime.now(timezone.utc) - timedelta(hours=9)
+        now1 = datetime(2026, 9, 10, 1, 30, tzinfo=timezone.utc)
+        entry_time = now1 - timedelta(hours=9)
         state["positions"][PAIR]["entry_time"] = entry_time.isoformat()
 
-        now1 = datetime.now(timezone.utc)
         total1, _ = charge_funding(state, now=now1)
         state["positions"][PAIR]["last_funding_time"] = now1.isoformat()
         total2, _ = charge_funding(state, now=now1 + timedelta(hours=1))

@@ -83,15 +83,23 @@ class ExchangeInterface:
             logger.error("positions_fetch_failed", error=str(e))
             return []
 
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        """Coerce possibly-None/str ccxt values to float safely."""
+        try:
+            return float(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+
     def get_ticker(self, pair: str) -> dict[str, float]:
-        """Get current ticker."""
+        """Get current ticker (tolerates None fields ccxt omits)."""
         try:
             ticker = self.exchange.fetch_ticker(pair)
             return {
-                "bid": float(ticker.get("bid", 0)),
-                "ask": float(ticker.get("ask", 0)),
-                "last": float(ticker.get("last", 0)),
-                "volume": float(ticker.get("quoteVolume", 0)),
+                "bid": self._to_float(ticker.get("bid")),
+                "ask": self._to_float(ticker.get("ask")),
+                "last": self._to_float(ticker.get("last")),
+                "volume": self._to_float(ticker.get("quoteVolume")),
             }
         except Exception as e:
             logger.error("ticker_fetch_failed", pair=pair, error=str(e))
@@ -208,6 +216,75 @@ class ExchangeInterface:
             return True
         except Exception as e:
             logger.error("cancel_failed", order_id=order_id, error=str(e))
+            return False
+
+    def place_stop_market_order(
+        self,
+        pair: str,
+        entry_side: str,
+        amount: float,
+        stop_price: float,
+    ) -> dict | None:
+        """Place a reduce-only STOP_MARKET order (protective stop-loss).
+
+        entry_side is the side that OPENED the position ("buy" for a long,
+        "sell" for a short); the stop fires on the opposite side.
+        """
+        return self._trigger_order(
+            pair, entry_side, amount, stop_price, "STOP_MARKET"
+        )
+
+    def place_take_profit_market_order(
+        self,
+        pair: str,
+        entry_side: str,
+        amount: float,
+        stop_price: float,
+    ) -> dict | None:
+        """Place a reduce-only TAKE_PROFIT_MARKET order."""
+        return self._trigger_order(
+            pair, entry_side, amount, stop_price, "TAKE_PROFIT_MARKET"
+        )
+
+    def _trigger_order(
+        self,
+        pair: str,
+        entry_side: str,
+        amount: float,
+        stop_price: float,
+        order_type: str,
+    ) -> dict | None:
+        close_side = "sell" if entry_side == "buy" else "buy"
+        try:
+            order = self.exchange.create_order(
+                symbol=pair,
+                type=order_type,
+                side=close_side,
+                amount=amount,
+                params={
+                    "stopPrice": stop_price,
+                    "reduceOnly": True,
+                    "workingType": "MARK_PRICE",
+                    "priceProtect": True,
+                  },
+            )
+            logger.info(
+                "trigger_order_placed", pair=pair, type=order_type,
+                trigger_price=stop_price, order_id=order.get("id"),
+            )
+            return {"order_id": order.get("id"), "status": order.get("status")}
+        except Exception as e:
+            logger.error("trigger_order_failed", pair=pair, type=order_type,
+                         error=str(e))
+            return None
+
+    def cancel_all_orders(self, pair: str) -> bool:
+        """Cancel all open orders for a pair (used after manual/AI closes)."""
+        try:
+            self.exchange.cancel_all_orders(pair)
+            return True
+        except Exception as e:
+            logger.warning("cancel_all_orders_failed", pair=pair, error=str(e))
             return False
 
     def get_funding_rate(self, pair: str) -> float:

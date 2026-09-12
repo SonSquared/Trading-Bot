@@ -1,0 +1,178 @@
+# AI Trading Bot — User Guide
+
+An LLM-driven crypto trading bot (the Nate Herk "6 daily wakeups" plan, adapted to run on **gpt-4o** instead of GPT-6 Astra) for Binance USDⓈ-M perpetual futures, with hard risk rules enforced in code that the AI cannot override.
+
+---
+
+## How it works
+
+```
+   every 4 hours (6x daily)          each wakeup is STATELESS
+  ┌────────────────────────┐        ┌──────────────────────────────────┐
+  │ Scheduler              │───────▶│ 1. Read strategy.json (rules)    │
+  │ 00:00  Asia open       │        │ 2. Read progress.json (handoff)  │
+  │ 06:00  Asia/London     │        │ 3. Check paper SL/TP triggers    │
+  │ 08:00  London open     │        │ 4. Fetch live Binance data       │
+  │ 14:00  US open         │        │ 5. Compute indicators            │
+  │ 20:00  US midday       │        │ 6. Ask gpt-4o for a decision     │
+  │ 23:00  Daily close     │        │ 7. Validate vs hard risk rules   │
+  └────────────────────────┘        │ 8. Execute (closes, then opens)  │
+                                    │ 9. Write handoff + journal       │
+                                    └──────────────────────────────────┘
+```
+
+The AI never has memory between wakeups. Continuity lives entirely in shared files in `data/ai_bot/` — so a crash, restart, or new machine changes nothing.
+
+### Hard risk rules (code-enforced, AI-proof)
+
+| Rule | Default | Behavior |
+|---|---|---|
+| Tradable pairs | BTC, ETH perps | Anything outside the list is **rejected**, even if the AI asks |
+| Max open positions | 3 | 4th entry rejected |
+| Max position size | 10% of equity | Oversized entry rejected |
+| Stop-loss | ≤ 5% away, always | Entries without valid SL rejected |
+| Risk/reward | ≥ 1.5 | 3% SL needs ≥ 4.5% TP |
+| Min confidence | 60 | Low-confidence trades dropped |
+| Max drawdown | 10% from peak | **Trading halts** — closes only |
+| Portfolio heat | ≤ 30% of equity | Total exposure cap |
+
+---
+
+## Quick start (5 minutes)
+
+```bash
+# 1. Install (already done if you followed the build):
+pip install -r requirements.txt
+
+# 2. Add your OpenAI key — copy .env.example to .env and set:
+#    OPENAI_API_KEY=sk-...
+# Paper mode needs NO Binance keys (public market data only).
+
+# 3. Run one wakeup right now:
+python scripts/start_ai_bot.py once
+
+# 4. Watch it think:
+python scripts/start_ai_bot.py journal
+```
+
+The first wakeup creates `data/ai_bot/strategy.json` (the AI's rulebook), starts a **$10,000 paper account**, fetches real BTC/ETH data from Binance, and asks gpt-4o for a decision. Every action and rejection is journaled.
+
+---
+
+## Commands
+
+```
+python scripts/start_ai_bot.py once [NAME]   Run one wakeup now (NAME = schedule entry)
+python scripts/start_ai_bot.py run           Continuous schedule (Ctrl+C to stop)
+python scripts/start_ai_bot.py next          Wait for & run the next scheduled wakeup
+python scripts/start_ai_bot.py status        Equity, positions, win rate, last handoff
+python scripts/start_ai_bot.py journal [N]   Show the last N wakeup decisions
+```
+
+Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yaml`).
+
+---
+
+## Configuration (`configs/ai_bot.yaml`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `bot.mode` | `paper` | `paper` (simulated) or `live` (real money) |
+| `bot.pairs` | BTC, ETH | The ONLY pairs the AI may trade |
+| `bot.timeframe` | `1h` | Candle timeframe for analysis |
+| `bot.data_dir` | `data/ai_bot` | Continuity files directory |
+| `bot.paper_starting_equity` | `10000` | Paper account start |
+| `bot.sandbox` | `false` | `true` = Binance **testnet** rehearsal (keys: `BINANCE_TESTNET_*`) |
+| `bot.tz_offset_hours` | `0` | Local offset from UTC for schedule times |
+| `ai.model` | `gpt-4o` | Any OpenAI chat model (`gpt-4o-mini` is cheaper) |
+| `risk.*` | see table above | Hard limits — edit freely, they're enforced either way |
+| `telegram.enabled` | `true` | Report-only notifications (env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — fails safe, sends nothing if secrets are absent |
+
+---
+
+## The shared files (`data/ai_bot/`)
+
+| File | What it is |
+|---|---|
+| `strategy.json` | The AI's rulebook — edit rules here to change behavior |
+| `progress.json` | Handoff notes the next wakeup reads first |
+| `journal.jsonl` | **The audit trail** — one entry per wakeup, success or failure |
+| `decisions.json` | The latest raw AI decision (what it wanted to do) |
+| `trades.jsonl` | Every executed trade |
+| `paper_ledger.json` | Paper account: cash, positions, closed-trade history |
+
+Reading a journal entry:
+
+```json
+{
+  "status": "success",
+  "market_outlook": "bullish",
+  "actions_requested": 2,
+  "actions_approved": 1,
+  "rejections": ["SOL/USDT:USDT long: pair not in tradable list ..."],
+  "ai_reasoning": "BTC reclaiming EMA21 with rising volume...",
+  "equity": 10012.40
+}
+```
+
+`status: "error"` entries always name the exact problem. A wakeup is never silent.
+
+---
+
+## Paper vs live
+
+**Paper mode** (default): simulated fills with 0.05% taker fees, SL/TP triggers checked against real prices on every wakeup, real equity tracking. The AI sees honest P&L.
+
+**Live mode** requires three things, deliberately:
+1. `bot.mode: live` in the config
+2. `--live` flag on the CLI command
+3. `AI_BOT_LIVE_CONFIRMED=1` in `.env`
+
+...and real Binance keys with **trading permission only — never withdrawal**. Every live entry automatically gets a `STOP_MARKET` stop-loss and `TAKE_PROFIT_MARKET` order attached (reduce-only, mark-price protected). An AI position never sits naked.
+
+**Recommended progression**: paper for at least 2–4 weeks → Binance testnet → live with money you can afford to lose. Testnet rehearsal is built in: set `bot.sandbox: true` in the config and put free testnet keys (`BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`, from [testnet.binancefuture.com](https://testnet.binancefuture.com)) in `.env` — same order flow as live, fake money.
+
+---
+
+## Running 24/7 in the cloud (GitHub Actions, free)
+
+The repo ships `.github/workflows/ai_bot.yml`, following the same battle-tested pattern as the main bot:
+
+- **6 wakeup slots/day**, each fired **twice** (`:02` and `:32`) because GitHub's free-tier cron drops slots wholesale — `scripts/ai_bot_gate.py` turns the redundant firing into a ~15-second no-op
+- **Continuity files persist to the `ai-bot-state` branch** (git, not the unreliable Actions cache), restored on every run — including failure journals
+- `workflow_dispatch` lets you trigger a wakeup manually from the Actions tab
+- A `quality` job runs the AI bot test suite on every push that touches bot code
+
+Setup:
+
+1. Push this repo to GitHub
+2. Add repo secret: `OPENAI_API_KEY` (Settings → Secrets and variables → Actions)
+3. Actions tab → **AI Trading Bot** → enable scheduled workflows
+4. Optionally add `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for phone alerts
+
+⚠️ GitHub disables scheduled workflows after 60 days of repo inactivity — an occasional commit keeps it alive. (For zero-maintenance 24/7, any $5 VPS running `python scripts/start_ai_bot.py run` under systemd works too.)
+
+---
+
+## Troubleshooting
+
+| Symptom | Meaning / fix |
+|---|---|
+| `OPENAI_API_KEY environment variable is required` | No key in `.env` — the bot refuses to guess |
+| `market data unavailable for all pairs` | Binance down or blocked in your region; check `status` |
+| `AI engine failed: ...` in journal, status ERROR | Model call failed twice; read the error, it names the cause |
+| Gate exit 3 in Actions | Normal — redundant cron firing was skipped as designed |
+| Equity looks reset to $10,000 | The `data/ai_bot/` dir was deleted; paper state lives there |
+| Want to start over | `rm -rf data/ai_bot` and run again |
+
+---
+
+## FAQ
+
+**Why not GPT-6 Astra?** You don't have it — and don't need it. The engine works with any OpenAI chat model; `gpt-4o` gives the best reasoning-per-dollar for this task. Change one line in `configs/ai_bot.yaml`.
+
+**Can the AI "escape" the rules?** No. Validation happens in code after the model responds — bad pairs, oversized positions, missing stop-losses, and low confidence are rejected and journaled with reasons.
+
+**Does it always trade?** No. Most wakeups correctly decide to do nothing — empty `actions` is a valid, journaled outcome.
+
+**What does it cost?** One gpt-4o call per wakeup ≈ 6 calls/day; a typical decision is ~2–3k tokens ≈ under $0.05/day at default settings.

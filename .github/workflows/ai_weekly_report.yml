@@ -1,0 +1,47 @@
+name: AI Bot Weekly Report
+on:
+  schedule:
+    # Sundays 17:00 UTC — after the 14:00 wakeup, before the 23:00 one.
+    # The report's lookback window covers the trailing 7 days regardless.
+    - cron: '0 17 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  weekly-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore AI bot state from ai-bot-state branch
+        # Same restore as the trading workflow — the report reads
+        # paper_ledger.json / journal.jsonl / progress.json from data/ai_bot.
+        run: |
+          mkdir -p data/ai_bot
+          if git ls-remote --exit-code --heads origin ai-bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin ai-bot-state
+            git checkout FETCH_HEAD -- data/ai_bot/ \
+              && echo "State restored from ai-bot-state branch" \
+              || echo "WARNING: ai-bot-state branch has no data/ai_bot yet"
+          else
+            echo "No ai-bot-state branch yet — report will say so"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send weekly Telegram report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scripts/ai_weekly_report.py

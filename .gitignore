@@ -18,6 +18,9 @@ data/reports/
 data/charts/
 data/bot_state.json
 data/bot.log
+# AI bot runtime state lives only on the ai-bot-state git branch (the
+# workflow persists it); local copies are smoke-test leftovers, never main.
+data/ai_bot/
 # EXCEPT the deployed portfolio: the Actions runner must trade exactly what
 # the walk-forward league promoted. Gitignored = every cloud run silently
 # falls back to the stale hardcoded defaults (the pre-tournament BB_RSI set).

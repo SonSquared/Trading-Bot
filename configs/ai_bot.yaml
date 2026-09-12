@@ -1,0 +1,89 @@
+# AI Trading Bot configuration (Nate Herk plan adapted to gpt-4o)
+#
+# Usage:
+#   python scripts/start_ai_bot.py once          # single wakeup now (paper)
+#   python scripts/start_ai_bot.py run           # continuous 6x/day schedule
+#   python scripts/start_ai_bot.py status        # show state summary
+#
+# Required environment (.env): OPENAI_API_KEY=sk-...
+# Optional: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+bot:
+  # paper | live — live additionally requires explicit CLI --live confirmation
+  mode: paper
+
+  # Binance USDⓈ-M perpetual pairs the AI may trade. NOTHING outside this
+  # list will ever be traded, even if the AI asks.
+  pairs:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+
+  timeframe: "1h"
+
+  # Directory for shared continuity files (strategy/progress/journal/ledger)
+  data_dir: data/ai_bot
+
+  # Paper trading starting equity (USD) — used only on first run
+  paper_starting_equity: 10000
+
+  # Binance TESTNET rehearsal (recommended between paper and live):
+  # true = hit testnet.binancefuture.com using BINANCE_TESTNET_API_KEY /
+  # BINANCE_TESTNET_API_SECRET from .env. Get free testnet keys at
+  # https://testnet.binancefuture.com — same order flow as live, fake money.
+  sandbox: false
+
+  # Local timezone offset from UTC in hours (e.g. -5 = EST, 1 = CET).
+  # Schedule times below are interpreted in this zone.
+  tz_offset_hours: 0
+
+# AI engine settings
+ai:
+  # Any OpenAI chat model. gpt-4o recommended; gpt-4o-mini is cheaper.
+  model: gpt-4o
+  temperature: 0.3
+  max_tokens: 2000
+
+# Hard risk rules — enforced in code; the AI cannot override them.
+risk:
+  max_risk_per_trade_pct: 2.0
+  max_position_size_pct: 10.0     # max notional per position, % of equity
+  max_portfolio_heat_pct: 30.0
+  max_open_positions: 3
+  max_drawdown_pct: 10.0          # trading halts (closes only) at this level
+  stop_loss_max_pct: 5.0
+  min_risk_reward_ratio: 1.5
+  min_confidence_to_trade: 60
+
+# Daily wakeup schedule (times in local offset zone above)
+schedule:
+  - name: asia_session_open
+    hour: 0
+    minute: 0
+    description: "Pre-market research, check news"
+  - name: asia_london_overlap
+    hour: 6
+    minute: 0
+    description: "First trade check, scan for setups"
+  - name: london_open
+    hour: 8
+    minute: 0
+    description: "Mid-morning review, manage positions"
+  - name: us_open
+    hour: 14
+    minute: 0
+    description: "US session start, new opportunities"
+  - name: us_midday
+    hour: 20
+    minute: 0
+    description: "Position management, adjust stops"
+  - name: daily_close
+    hour: 23
+    minute: 0
+    description: "End-of-day review, record results"
+
+# Telegram notifications (report-only; never places orders). Enabled here so
+# cloud runs send alerts as soon as TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are
+# set as repo secrets. Without them the notifier fails safe (sends nothing).
+telegram:
+  enabled: true
+  # Token/chat id come from TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars

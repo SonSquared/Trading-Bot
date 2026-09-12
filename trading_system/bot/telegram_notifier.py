@@ -221,6 +221,73 @@ class TelegramNotifier:
         msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Paper Trading"
         return self._send_message(msg)
 
+    # ── Weekly Summary ──────────────────────────────────────────
+
+    def notify_weekly_summary(
+        self,
+        equity: float,
+        start_equity: float,
+        week_pnl: float,
+        week_pnl_pct: float,
+        week_trades: int,
+        week_wins: int,
+        best_trade: str,
+        worst_trade: str,
+        total_trades: int,
+        total_win_rate: float,
+        wakeups: int,
+        failed_wakeups: int,
+        ai_notes: list[str],
+        open_positions: list[dict],
+    ) -> bool:
+        """Send the Sunday report: week P&L, win rate, and the AI's own notes."""
+        total_ret = ((equity - start_equity) / start_equity * 100) if start_equity else 0.0
+        msg = f"AI BOT WEEKLY REPORT\n{'='*30}\n"
+        msg += f"Equity: ${equity:,.2f} ({total_ret:+.1f}% all-time)\n"
+        msg += f"Week P&L: ${week_pnl:+,.2f} ({week_pnl_pct:+.2f}%)\n"
+        if week_trades:
+            wr = week_wins / week_trades * 100
+            msg += f"Closed: {week_trades} | Wins: {week_wins} ({wr:.0f}%)\n"
+            msg += f"Best: {best_trade}\n"
+            msg += f"Worst: {worst_trade}\n"
+        else:
+            msg += "No trades closed this week\n"
+        msg += f"All-time: {total_trades} trades | {total_win_rate:.0f}% win rate\n"
+        msg += f"Wakeups: {wakeups} run, {failed_wakeups} failed\n"
+
+        if open_positions:
+            msg += f"\nOPEN ({len(open_positions)}):\n"
+            for pos in open_positions[:5]:
+                side = "LONG" if pos.get("side") in ("long", "LONG", "buy") else "SHORT"
+                pnl = pos.get("unrealized_pnl", 0)
+                msg += f"  {pos.get('pair', '?')} {side} ${pnl:+,.2f}\n"
+
+        if ai_notes:
+            msg += "\nAI NOTES:\n"
+            seen: set[str] = set()
+            for note in ai_notes[:6]:
+                text = (note or "").strip().replace("\n", " ")[:180]
+                if text and text not in seen:
+                    seen.add(text)
+                    msg += f"  - {text}\n"
+                if len(seen) >= 3:
+                    break
+
+        msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Weekly"
+        return self._send_message(msg)
+
+    def send_test_message(self) -> bool:
+        """Send a verification message so the user can confirm alerts arrive."""
+        msg = (
+            "AI Trading Bot: Telegram alerts are working.\n"
+            "You will receive here:\n"
+            "  - Trade opens / closes (with P&L)\n"
+            "  - Stop-loss / take-profit triggers\n"
+            "  - Error alerts\n"
+            "  - Sunday weekly report"
+        )
+        return self._send_message(msg)
+
     # ── Portfolio Status ────────────────────────────────────────
 
     def notify_portfolio_status(self, status: dict) -> bool:
