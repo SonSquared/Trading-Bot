@@ -1,0 +1,11 @@
+{
+  "wakeup_id": "20260912_181654",
+  "decision": {
+    "actions": [],
+    "market_outlook": "neutral",
+    "risk_assessment": "Market experiencing extreme compression with ADX under 20 on both pairs (BTC at 8.5, ETH at 19.8) and significantly below-average volume. Low volatility environment prone to false breakouts.",
+    "reasoning": "BTC shows a weak bearish EMA alignment but with an ADX of 8.5 and Bollinger width of 0.38%, indicating flat consolidation without directional follow-through. ETH is hovering at its 20-period middle Bollinger Band with a declining MACD histogram and neutral RSI (50.3). Given the lack of trend strength and volume confirmation, neither asset offers a high-probability trend-following entry."
+  },
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-12T18:17:05.367697+00:00"
+}

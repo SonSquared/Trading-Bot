@@ -1,0 +1,29 @@
+{
+  "name": "AI Crypto Trader",
+  "version": "1.1",
+  "description": "LLM-driven crypto perpetual futures trading on Binance",
+  "pairs": [
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT"
+  ],
+  "timeframe": "1h",
+  "rules": {
+    "max_risk_per_trade_pct": 2.0,
+    "max_position_size_pct": 10.0,
+    "max_portfolio_heat_pct": 30.0,
+    "max_open_positions": 3,
+    "max_drawdown_pct": 10.0,
+    "stop_loss_max_pct": 5.0,
+    "min_risk_reward_ratio": 1.5,
+    "min_confidence_to_trade": 60
+  },
+  "preferences": {
+    "preferred_pairs": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT"
+    ],
+    "avoid_high_funding": true,
+    "funding_threshold_pct": 0.05,
+    "prefer_trend_following": true
+  }
+}
