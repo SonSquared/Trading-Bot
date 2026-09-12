@@ -90,8 +90,19 @@ def _build_agent(config_path: str, mode_override: str | None = None,
 
     exchange = ExchangeInterface(ex_cfg)
     if not exchange.connect():
-        raise click.ClickException(
-            "Could not connect to Binance. Check your internet connection."
+        if mode == "live":
+            raise click.ClickException(
+                "Could not connect to Binance after 3 attempts — refusing to "
+                "start in LIVE mode. Check internet/proxy and try again."
+            )
+        # Paper mode continues WITHOUT live connectivity: the wakeup's own
+        # data fetch will then fail loudly (journal + Telegram error alert)
+        # instead of dying silently as an unjournaled red run.
+        click.echo(
+            "WARNING: could not reach Binance after 3 attempts — starting in "
+            "degraded paper mode; the wakeup will fail loudly if data stays "
+            "unreachable.",
+            err=True,
         )
 
     agent = AIAgent(

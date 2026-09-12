@@ -53,6 +53,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Network check (Binance + Gemini reachability)
+        # Never fails the job — pure diagnostics so a red run's log tells us
+        # WHICH endpoint was unreachable (runner egress blips happen).
+        run: |
+          curl -sS -o /dev/null -w "Binance: HTTP %{http_code} in %{time_total}s\n" --max-time 15 https://api.binance.com/api/v3/ping || echo "Binance: UNREACHABLE"
+          curl -sS -o /dev/null -w "Gemini: HTTP %{http_code} in %{time_total}s\n" --max-time 15 https://generativelanguage.googleapis.com/ || echo "Gemini: UNREACHABLE"
+
       - name: Restore AI bot state from ai-bot-state branch
         # Git branch, not actions/cache: the cache is immutable, best-effort,
         # and skipped when a job fails — a lost cache silently resets the

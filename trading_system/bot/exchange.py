@@ -7,6 +7,8 @@ Handles order placement, position queries, and account info.
 
 from __future__ import annotations
 
+import time
+
 import ccxt
 import pandas as pd
 import structlog
@@ -33,15 +35,30 @@ class ExchangeInterface:
         self._connected = False
 
     def connect(self) -> bool:
-        """Initialize exchange connection."""
-        try:
-            self.exchange.load_markets()
-            self._connected = True
-            logger.info("exchange_connected", exchange=self.config.name)
-            return True
-        except Exception as e:
-            logger.error("exchange_connection_failed", error=str(e))
-            return False
+        """Initialize exchange connection (3 attempts, escalating backoff).
+
+        GitHub-hosted runners occasionally hit transient failures/timeouts
+        against Binance; a single attempt turned those into instant dead
+        runs with no audit trail.
+        """
+        last_error = ""
+        for attempt in (1, 2, 3):
+            try:
+                self.exchange.load_markets()
+                self._connected = True
+                logger.info(
+                    "exchange_connected", exchange=self.config.name, attempt=attempt
+                )
+                return True
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(
+                    "exchange_connect_retry", attempt=attempt, error=last_error[:200]
+                )
+                if attempt < 3:
+                    time.sleep(3 * attempt)
+        logger.error("exchange_connection_failed", error=last_error)
+        return False
 
     @property
     def is_connected(self) -> bool:
@@ -113,7 +130,10 @@ class ExchangeInterface:
         """Fetch recent OHLCV data."""
         try:
             candles = self.exchange.fetch_ohlcv(pair, timeframe, limit=limit)
-            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df = pd.DataFrame(
+                candles,
+                columns=["timestamp", "open", "high", "low", "close", "volume"],
+            )
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
             df = df.set_index("timestamp")
             return df
