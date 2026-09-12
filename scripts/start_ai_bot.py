@@ -293,14 +293,26 @@ def telegram_test(ctx):
 
     cfg = _load_config(ctx.obj["config"])
     tg_cfg = cfg.get("telegram", {})
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    # AI_-prefixed names take precedence so the AI bot and the main bot can
+    # use different Telegram bots without clashing.
+    token = (
+        os.environ.get("AI_TELEGRAM_BOT_TOKEN")
+        or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    )
+    chat_id = (
+        os.environ.get("AI_TELEGRAM_CHAT_ID")
+        or os.environ.get("TELEGRAM_CHAT_ID", "")
+    )
 
     problems = []
     if not token:
-        problems.append("TELEGRAM_BOT_TOKEN is not set (env or .env)")
+        problems.append(
+            "AI_TELEGRAM_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) is not set (env or .env)"
+        )
     if not chat_id:
-        problems.append("TELEGRAM_CHAT_ID is not set (env or .env)")
+        problems.append(
+            "AI_TELEGRAM_CHAT_ID (or TELEGRAM_CHAT_ID) is not set (env or .env)"
+        )
     if not tg_cfg.get("enabled", False):
         problems.append(
             f"telegram.enabled is false in {ctx.obj['config']}"
@@ -315,7 +327,7 @@ def telegram_test(ctx):
     if not notifier.test_connection():
         raise click.ClickException(
             "Bot token rejected by Telegram (getMe failed). Double-check "
-            "TELEGRAM_BOT_TOKEN — it looks like 123456:ABC-DEF..."
+            "AI_TELEGRAM_BOT_TOKEN — it looks like 123456:ABC-DEF..."
         )
 
     console.print(f"Bot token OK. Sending test message to chat {chat_id}...")

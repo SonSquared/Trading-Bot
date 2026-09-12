@@ -87,8 +87,9 @@ schedule:
     description: "End-of-day review, record results"
 
 # Telegram notifications (report-only; never places orders). Enabled here so
-# cloud runs send alerts as soon as TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are
-# set as repo secrets. Without them the notifier fails safe (sends nothing).
+# cloud runs send alerts as soon as AI_TELEGRAM_BOT_TOKEN / AI_TELEGRAM_CHAT_ID
+# are set as repo secrets. Without them the notifier fails safe (sends nothing).
 telegram:
   enabled: true
-  # Token/chat id come from TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars
+  # Token/chat id come from AI_TELEGRAM_BOT_TOKEN / AI_TELEGRAM_CHAT_ID
+  # (or the unprefixed TELEGRAM_* names) env vars

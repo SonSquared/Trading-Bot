@@ -42,6 +42,7 @@ jobs:
 
       - name: Send weekly Telegram report
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # AI_ prefix so the main bot's TELEGRAM_* secrets stay untouched.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
         run: python -u scripts/ai_weekly_report.py

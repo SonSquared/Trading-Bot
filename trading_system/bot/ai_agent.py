@@ -337,9 +337,18 @@ class AIAgent:
             self.notifier = notifier
         else:
             tg = self.config.get("telegram", {})
+            # AI_-prefixed names take precedence so the AI bot and the main
+            # bot can use DIFFERENT Telegram bots without clashing; the
+            # unprefixed names still work when no clash exists.
             self.notifier = TelegramNotifier(
-                bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-                chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+                bot_token=(
+                    os.environ.get("AI_TELEGRAM_BOT_TOKEN")
+                    or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                ),
+                chat_id=(
+                    os.environ.get("AI_TELEGRAM_CHAT_ID")
+                    or os.environ.get("TELEGRAM_CHAT_ID", "")
+                ),
                 enabled=bool(tg.get("enabled", False)),
             )
 

@@ -86,7 +86,7 @@ Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yam
 | `bot.tz_offset_hours` | `0` | Local offset from UTC for schedule times |
 | `ai.model` | `gemini-flash-latest` | FREE tier. The alias tracks the newest Gemini flash, so pinning never goes stale. Any Gemini or OpenAI model works |
 | `risk.*` | see table above | Hard limits — edit freely, they're enforced either way |
-| `telegram.enabled` | `true` | Report-only notifications (env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — fails safe, sends nothing if secrets are absent |
+| `telegram.enabled` | `true` | Report-only notifications (env: `AI_TELEGRAM_BOT_TOKEN`, `AI_TELEGRAM_CHAT_ID`; the unprefixed `TELEGRAM_*` names work too) — fails safe, sends nothing if secrets are absent |
 
 ---
 
@@ -148,7 +148,7 @@ Setup:
 1. Push this repo to GitHub
 2. Add repo secret: `GEMINI_API_KEY` (Settings → Secrets and variables → Actions) — free from https://aistudio.google.com/apikey
 3. Actions tab → **AI Trading Bot** → enable scheduled workflows
-4. Optionally add `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for phone alerts
+4. Optionally add `AI_TELEGRAM_BOT_TOKEN` / `AI_TELEGRAM_CHAT_ID` for phone alerts (the `AI_` prefix keeps them separate from the main bot's `TELEGRAM_*` secrets)
 
 ⚠️ GitHub disables scheduled workflows after 60 days of repo inactivity — an occasional commit keeps it alive. (For zero-maintenance 24/7, any $5 VPS running `python scripts/start_ai_bot.py run` under systemd works too.)
 

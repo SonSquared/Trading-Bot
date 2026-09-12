@@ -77,8 +77,9 @@ jobs:
               journalNote += ' — fell back to workflow runs';
             }
 
-            const token = '${{ secrets.TELEGRAM_BOT_TOKEN }}';
-            const chatId = '${{ secrets.TELEGRAM_CHAT_ID }}';
+            // AI_ prefix so the main bot's TELEGRAM_* secrets stay untouched.
+            const token = '${{ secrets.AI_TELEGRAM_BOT_TOKEN }}';
+            const chatId = '${{ secrets.AI_TELEGRAM_CHAT_ID }}';
 
             async function alert(title, body) {
               if (!token || !chatId) {

@@ -187,8 +187,16 @@ def main(config: str, dry_run: bool, days: int) -> None:
 
     tg_cfg = cfg.get("telegram", {})
     notifier = TelegramNotifier(
-        bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+        # AI_-prefixed names take precedence (cloud secrets) so the AI bot
+        # and the main bot can use different Telegram bots without clashing.
+        bot_token=(
+            os.environ.get("AI_TELEGRAM_BOT_TOKEN")
+            or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        ),
+        chat_id=(
+            os.environ.get("AI_TELEGRAM_CHAT_ID")
+            or os.environ.get("TELEGRAM_CHAT_ID", "")
+        ),
         enabled=bool(tg_cfg.get("enabled", False)),
     )
 
@@ -212,7 +220,8 @@ def main(config: str, dry_run: bool, days: int) -> None:
     if not sent:
         click.echo(
             "Telegram not configured or send failed — report NOT delivered. "
-            "Set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID and telegram.enabled: true.",
+            "Set AI_TELEGRAM_BOT_TOKEN / AI_TELEGRAM_CHAT_ID (or the "
+            "unprefixed TELEGRAM_* names) and telegram.enabled: true.",
             err=True,
         )
         sys.exit(1)
