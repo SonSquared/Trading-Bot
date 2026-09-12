@@ -119,6 +119,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
         run: python -u scripts/start_ai_bot.py once
 
+      - name: Answer Telegram commands (/status /positions /last)
+        # ALWAYS: a failed wakeup must still answer pending commands —
+        # its /status reply is exactly what the user needs then. Exits 0
+        # even when Telegram is unreachable: command answering must never
+        # turn a traded-and-persisted wakeup into a red run.
+        if: always() && steps.gate.outputs.run != 'false'
+        env:
+          AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
+          AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
+        run: python -u scripts/ai_telegram_commands.py
+
       - name: Persist state to ai-bot-state branch
         # ALWAYS runs — even when the wakeup failed — because the journal
         # entry for a failure is exactly what the next wakeup's handoff
@@ -128,7 +139,7 @@ jobs:
           STATE_BRANCH: ai-bot-state
         run: |
           set -e
-          FILES="data/ai_bot/strategy.json data/ai_bot/progress.json data/ai_bot/journal.jsonl data/ai_bot/decisions.json data/ai_bot/paper_ledger.json data/ai_bot/trades.jsonl"
+          FILES="data/ai_bot/strategy.json data/ai_bot/progress.json data/ai_bot/journal.jsonl data/ai_bot/decisions.json data/ai_bot/paper_ledger.json data/ai_bot/trades.jsonl data/ai_bot/telegram_offset.txt"
           HAVE=""
           for f in $FILES; do [ -f "$f" ] && HAVE="$HAVE $f"; done
           if [ -z "$HAVE" ]; then

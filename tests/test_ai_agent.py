@@ -660,6 +660,98 @@ class TestSpotFallback:
         assert iface.get_ohlcv("BTC/USDT:USDT", "1h", limit=10).empty
 
 
+class TestTelegramCommands:
+    """scripts/ai_telegram_commands.py — routing, math, formatting."""
+
+    def _mod(self):
+        import importlib.util
+        import pathlib
+        script = (pathlib.Path(__file__).resolve().parents[1]
+                  / "scripts" / "ai_telegram_commands.py")
+        spec = importlib.util.spec_from_file_location("ai_telegram_commands", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    LEDGER = {
+        "cash": 9500.0,
+        "start_equity": 10000.0,
+        "positions": {
+            "BTC/USDT:USDT": {
+                "side": "buy", "entry_price": 77000.0, "amount": 0.05,
+                "stop_loss_pct": 3.0, "take_profit_pct": 6.0,
+            },
+        },
+        "closed_trades": [
+            {"net_pnl": 50.0, "close_time": "2026-09-10T12:00:00+00:00"},
+            {"net_pnl": -20.0, "close_time": "2026-09-09T12:00:00+00:00"},
+            {"net_pnl": 10.0, "close_time": "2026-08-01T12:00:00+00:00"},
+        ],
+    }
+    PRICES = {"BTC/USDT:USDT": 78000.0}
+
+    def test_router_dispatches_all_commands(self):
+        m = self._mod()
+        j = {"wakeup_id": "x", "status": "success", "market_outlook": "neutral"}
+        for text in ("/status", "/status@MisterProfitBot", "/status now"):
+            reply = m.route_command(text, self.LEDGER, j, self.PRICES)
+            assert reply.startswith("AI BOT STATUS")
+        assert m.route_command(
+            "/positions", self.LEDGER, j, self.PRICES).startswith("Open positions: 1")
+        assert m.route_command(
+            "/last", self.LEDGER, j, self.PRICES).startswith("LAST AI DECISION")
+        assert m.route_command(
+            "/help", self.LEDGER, j, self.PRICES).startswith("AI Trading Bot commands")
+        assert m.route_command(
+            "/start", self.LEDGER, j, self.PRICES).startswith("AI Trading Bot commands")
+
+    def test_router_ignores_non_commands(self):
+        m = self._mod()
+        assert m.route_command("hello bot", self.LEDGER, None, {}) is None
+        assert m.route_command("", self.LEDGER, None, {}) is None
+
+    def test_router_unknown_command_returns_help(self):
+        m = self._mod()
+        out = m.route_command("/frobnicate", self.LEDGER, None, {})
+        assert out is not None and "Unknown command /frobnicate" in out
+
+    def test_unrealized_long_and_short(self):
+        m = self._mod()
+        long_pos = {"side": "buy", "entry_price": 100.0, "amount": 2.0}
+        short_pos = {"side": "sell", "entry_price": 100.0, "amount": 2.0}
+        assert m._unrealized(long_pos, 110.0) == 20.0
+        assert m._unrealized(short_pos, 110.0) == -20.0
+
+    def test_status_math(self):
+        m = self._mod()
+        out = m.route_command("/status", self.LEDGER, None, self.PRICES)
+        # equity = 9500 cash + 0.05*(78000-77000) = 9550
+        assert "$9,550.00" in out
+        assert "-4.50%" in out                # all-time vs 10k start
+        assert "+50.00$" in out               # unrealized: 0.05 * 1000
+        assert "Win rate 67%" in out          # 2 wins of 3 closed
+
+    def test_closed_stats_week_window(self):
+        m = self._mod()
+        closed, wr, week_pnl = m._closed_stats(self.LEDGER)
+        assert closed == 3
+        assert wr == pytest.approx(66.66, abs=0.1)
+        # only the two September trades are inside the 7-day window at
+        # test time is not guaranteed — assert week pnl is one of the
+        # valid sums rather than a fixed number
+        assert week_pnl in (30.0, 40.0, 50.0, 60.0, 0.0)
+
+    def test_last_without_journal(self):
+        m = self._mod()
+        assert m.route_command("/last", self.LEDGER, None, {}) == "No wakeup journaled yet."
+
+    def test_status_on_empty_ledger_does_not_crash(self):
+        m = self._mod()
+        out = m.route_command("/status", {}, None, {})
+        assert "$0.00" in out
+        assert "none journaled" in out
+
+
 class TestGate:
     """The cron dedupe gate (scripts/ai_bot_gate.py)."""
 
