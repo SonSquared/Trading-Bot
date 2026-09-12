@@ -145,7 +145,17 @@ jobs:
           mkdir -p /tmp/aibotstate/data/ai_bot
           for f in $HAVE; do cp "$f" "/tmp/aibotstate/$f"; done
           cd /tmp/aibotstate
-          git add $FILES
+          # Add only the files that exist: on a failed wakeup some (e.g.
+          # decisions.json) are never written, and `git add` of a missing
+          # pathspec kills the persist step (exit 128) — losing the journal
+          # entry that the next wakeup's handoff needs.
+          HAVE_IN_TMP=""
+          for f in $FILES; do [ -f "$f" ] && HAVE_IN_TMP="$HAVE_IN_TMP $f"; done
+          if [ -z "$HAVE_IN_TMP" ]; then
+            echo "Nothing persisted — no state files present"
+            exit 0
+          fi
+          git add $HAVE_IN_TMP
           if git diff --cached --quiet; then
             echo "State unchanged since last persist"
             exit 0

@@ -19,7 +19,14 @@ logger = structlog.get_logger(__name__)
 
 
 class ExchangeInterface:
-    """Unified exchange interface using ccxt."""
+    """Unified exchange interface using ccxt.
+
+    Market DATA falls back to Kraken spot when Binance futures is
+    unreachable: GitHub-hosted (US) runners get HTTP 451 geo-blocked by
+    Binance, while the main bot has run reliably from them via Kraken.
+    Orders and balances always use Binance — live mode only ever runs
+    where Binance is reachable.
+    """
 
     def __init__(self, config: ExchangeConfig):
         self.config = config
@@ -29,10 +36,44 @@ class ExchangeInterface:
             "enableRateLimit": True,
             "options": {"defaultType": "future"},
         })
+        # Spot fallback for market data only (never orders).
+        self._spot = ccxt.kraken({"enableRateLimit": True})
         if config.sandbox:
             self.exchange.set_sandbox_mode(True)
 
         self._connected = False
+
+    @staticmethod
+    def _spot_symbol(pair: str) -> str | None:
+        """BTC/USDT:USDT (perp) -> BTC/USDT (spot); None for non-USDT perps."""
+        if pair.endswith(":USDT") and "/USDT:" in pair:
+            return pair.split(":")[0]
+        return None
+
+    def _spot_ohlcv(
+        self, pair: str, timeframe: str, limit: int
+    ) -> pd.DataFrame:
+        """Fetch OHLCV from the Kraken spot fallback (empty df on failure)."""
+        spot_symbol = self._spot_symbol(pair)
+        if not spot_symbol:
+            return pd.DataFrame()
+        try:
+            candles = self._spot.fetch_ohlcv(spot_symbol, timeframe, limit=limit)
+            df = pd.DataFrame(
+                candles,
+                columns=["timestamp", "open", "high", "low", "close", "volume"],
+            )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            logger.info(
+                "ohlcv_spot_fallback", pair=pair, spot_symbol=spot_symbol, rows=len(df)
+            )
+            return df.set_index("timestamp")
+        except Exception as e:
+            logger.warning(
+                "ohlcv_spot_fallback_failed", pair=pair, spot_symbol=spot_symbol,
+                error=str(e)[:150],
+            )
+            return pd.DataFrame()
 
     def connect(self) -> bool:
         """Initialize exchange connection (3 attempts, escalating backoff).
@@ -108,18 +149,37 @@ class ExchangeInterface:
             return default
 
     def get_ticker(self, pair: str) -> dict[str, float]:
-        """Get current ticker (tolerates None fields ccxt omits)."""
+        """Get current ticker (Binance futures, Kraken spot fallback)."""
         try:
             ticker = self.exchange.fetch_ticker(pair)
-            return {
+            result = {
                 "bid": self._to_float(ticker.get("bid")),
                 "ask": self._to_float(ticker.get("ask")),
                 "last": self._to_float(ticker.get("last")),
                 "volume": self._to_float(ticker.get("quoteVolume")),
             }
+            if result["last"] > 0:
+                return result
         except Exception as e:
-            logger.error("ticker_fetch_failed", pair=pair, error=str(e))
-            return {"bid": 0, "ask": 0, "last": 0, "volume": 0}
+            logger.warning("ticker_fetch_failed_trying_spot", pair=pair, error=str(e)[:150])
+
+        # Spot fallback: prices are near-identical to the perp for BTC/ETH.
+        spot_symbol = self._spot_symbol(pair)
+        if spot_symbol:
+            try:
+                ticker = self._spot.fetch_ticker(spot_symbol)
+                logger.info("ticker_spot_fallback", pair=pair, spot_symbol=spot_symbol)
+                return {
+                    "bid": self._to_float(ticker.get("bid")),
+                    "ask": self._to_float(ticker.get("ask")),
+                    "last": self._to_float(ticker.get("last")),
+                    "volume": self._to_float(ticker.get("quoteVolume")),
+                }
+            except Exception as e:
+                logger.warning(
+                    "ticker_spot_fallback_failed", pair=pair, error=str(e)[:150]
+                )
+        return {"bid": 0, "ask": 0, "last": 0, "volume": 0}
 
     def get_ohlcv(
         self,
@@ -127,7 +187,7 @@ class ExchangeInterface:
         timeframe: str = "1h",
         limit: int = 100,
     ) -> pd.DataFrame:
-        """Fetch recent OHLCV data."""
+        """Fetch recent OHLCV data (Binance futures, Kraken spot fallback)."""
         try:
             candles = self.exchange.fetch_ohlcv(pair, timeframe, limit=limit)
             df = pd.DataFrame(
@@ -138,8 +198,8 @@ class ExchangeInterface:
             df = df.set_index("timestamp")
             return df
         except Exception as e:
-            logger.error("ohlcv_fetch_failed", pair=pair, error=str(e))
-            return pd.DataFrame()
+            logger.warning("ohlcv_fetch_failed_trying_spot", pair=pair, error=str(e)[:150])
+        return self._spot_ohlcv(pair, timeframe, limit)
 
     def set_leverage(self, pair: str, leverage: int) -> bool:
         """Set leverage for a pair."""

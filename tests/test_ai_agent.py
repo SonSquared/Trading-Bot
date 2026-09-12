@@ -579,6 +579,87 @@ class TestEngineParsing:
         assert d.actions == []
 
 
+class TestSpotFallback:
+    """Kraken spot fallback (GitHub runners are geo-blocked by Binance)."""
+
+    def _iface(self):
+        from trading_system.bot.exchange import ExchangeInterface
+        from trading_system.config import ExchangeConfig
+
+        return ExchangeInterface(ExchangeConfig())
+
+    def test_spot_symbol_mapping(self):
+        iface = self._iface()
+        assert iface._spot_symbol("BTC/USDT:USDT") == "BTC/USDT"
+        assert iface._spot_symbol("ETH/USDT:USDT") == "ETH/USDT"
+        assert iface._spot_symbol("SOL/USD") is None
+        assert iface._spot_symbol("BTC/USDC:USDC") is None
+
+    def test_get_ticker_falls_back_to_spot(self, monkeypatch):
+        iface = self._iface()
+
+        calls = []
+
+        def binance_raises(pair):
+            calls.append(("binance", pair))
+            raise RuntimeError("451 geo-blocked")
+
+        def spot_ok(pair):
+            calls.append(("spot", pair))
+            return {"last": 77000.0, "bid": 76999.0, "ask": 77001.0,
+                    "quoteVolume": 1e9}
+
+        monkeypatch.setattr(iface.exchange, "fetch_ticker", binance_raises)
+        monkeypatch.setattr(iface._spot, "fetch_ticker", spot_ok)
+
+        t = iface.get_ticker("BTC/USDT:USDT")
+        assert t["last"] == 77000.0
+        assert [c[0] for c in calls] == ["binance", "spot"]
+
+    def test_get_ticker_binance_success_skips_spot(self, monkeypatch):
+        iface = self._iface()
+
+        def binance_ok(pair):
+            return {"last": 77000.0, "bid": 1, "ask": 1, "quoteVolume": 1}
+
+        def spot_raises(pair):
+            raise AssertionError("spot must not be called when Binance works")
+
+        monkeypatch.setattr(iface.exchange, "fetch_ticker", binance_ok)
+        monkeypatch.setattr(iface._spot, "fetch_ticker", spot_raises)
+        assert iface.get_ticker("BTC/USDT:USDT")["last"] == 77000.0
+
+    def test_get_ohlcv_falls_back_to_spot(self, monkeypatch):
+        iface = self._iface()
+
+        def binance_raises(pair, tf, limit):
+            raise RuntimeError("451 geo-blocked")
+
+        def spot_ok(pair, tf, limit):
+            return [
+                [1700000000000 + i * 3600000, 1, 2, 0.5, 1.5, 10]
+                for i in range(limit)
+            ]
+
+        monkeypatch.setattr(iface.exchange, "fetch_ohlcv", binance_raises)
+        monkeypatch.setattr(iface._spot, "fetch_ohlcv", spot_ok)
+
+        df = iface.get_ohlcv("BTC/USDT:USDT", "1h", limit=60)
+        assert len(df) == 60
+        assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+
+    def test_both_fail_returns_empty(self, monkeypatch):
+        iface = self._iface()
+
+        monkeypatch.setattr(
+            iface.exchange, "fetch_ohlcv",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("451")))
+        monkeypatch.setattr(
+            iface._spot, "fetch_ohlcv",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+        assert iface.get_ohlcv("BTC/USDT:USDT", "1h", limit=10).empty
+
+
 class TestGate:
     """The cron dedupe gate (scripts/ai_bot_gate.py)."""
 
