@@ -70,10 +70,10 @@ def _build_agent(config_path: str, mode_override: str | None = None,
             "Paper mode is the safe default: run without --live first."
         )
 
-    from trading_system.config import ExchangeConfig
-    from trading_system.bot.exchange import ExchangeInterface
     from trading_system.bot.ai_agent import AIAgent
-    from trading_system.bot.scheduler import Scheduler, DEFAULT_SCHEDULE
+    from trading_system.bot.exchange import ExchangeInterface
+    from trading_system.bot.scheduler import DEFAULT_SCHEDULE, Scheduler
+    from trading_system.config import ExchangeConfig
 
     ex_cfg = ExchangeConfig()
     sandbox = bool(bot_cfg.get("sandbox", False))
@@ -255,7 +255,7 @@ def next_(ctx, live: bool):
     setup_logging()
     mode = "live" if live else None
     agent, scheduler, cfg = _build_agent(ctx.obj["config"], mode_override=mode)
-    result = scheduler.run_next()
+    scheduler.run_next()
 
 
 @cli.command()

@@ -29,12 +29,18 @@ SLEEP_CHUNK_SECONDS = 60
 # Default crypto-adapted schedule (UTC). Times are interpreted in the
 # timezone given by tz_offset_hours relative to UTC.
 DEFAULT_SCHEDULE: list[dict] = [
-    {"name": "asia_session_open",   "hour": 0,  "minute": 0,  "description": "Pre-market research, check news"},
-    {"name": "asia_london_overlap", "hour": 6,  "minute": 0,  "description": "First trade check, scan for setups"},
-    {"name": "london_open",         "hour": 8,  "minute": 0,  "description": "Mid-morning review, manage positions"},
-    {"name": "us_open",             "hour": 14, "minute": 0,  "description": "US session start, new opportunities"},
-    {"name": "us_midday",           "hour": 20, "minute": 0,  "description": "Position management, adjust stops"},
-    {"name": "daily_close",         "hour": 23, "minute": 0,  "description": "End-of-day review, record results"},
+    {"name": "asia_session_open", "hour": 0, "minute": 0,
+     "description": "Pre-market research, check news"},
+    {"name": "asia_london_overlap", "hour": 6, "minute": 0,
+     "description": "First trade check, scan for setups"},
+    {"name": "london_open", "hour": 8, "minute": 0,
+     "description": "Mid-morning review, manage positions"},
+    {"name": "us_open", "hour": 14, "minute": 0,
+     "description": "US session start, new opportunities"},
+    {"name": "us_midday", "hour": 20, "minute": 0,
+     "description": "Position management, adjust stops"},
+    {"name": "daily_close", "hour": 23, "minute": 0,
+     "description": "End-of-day review, record results"},
 ]
 
 

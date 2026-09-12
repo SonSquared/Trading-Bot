@@ -42,7 +42,7 @@ import structlog
 from trading_system.bot.ai_engine import AIEngine, TradeAction, TradingDecision
 from trading_system.bot.exchange import ExchangeInterface
 from trading_system.bot.market_data import fetch_market_context
-from trading_system.bot.risk_manager import RiskManager, DEFAULT_RISK_MANAGER
+from trading_system.bot.risk_manager import RiskManager
 from trading_system.bot.telegram_notifier import TelegramNotifier
 
 logger = structlog.get_logger(__name__)
@@ -423,12 +423,15 @@ class AIAgent:
                 logger.warning("price_fetch_failed", pair=pair, error=str(e))
         return prices
 
-    def _get_equity_and_positions(self, pairs: list[str]) -> tuple[float, list[dict], dict[str, float]]:
+    def _get_equity_and_positions(
+        self, pairs: list[str]
+    ) -> tuple[float, list[dict], dict[str, float]]:
         """Unified account view across paper and live modes."""
         prices = self._current_prices(pairs)
 
         if self.mode == "paper" and self.ledger is not None:
-            peak = self.ledger.update_peak(prices)
+            # update_peak persists the high-water mark; the return is unused.
+            self.ledger.update_peak(prices)
             equity = self.ledger.equity(prices)
             positions = self.ledger.open_positions_list()
             for pos in positions:
@@ -535,12 +538,15 @@ class AIAgent:
             "",
             "--- Current Risk State ---",
             f"Open positions: {snapshot['open_positions']}",
-            f"Portfolio heat: {snapshot['portfolio_heat_pct']:.1f}% of {snapshot['max_heat_pct']}%",
-            f"Current drawdown: {snapshot['current_drawdown_pct']:.1f}% of {snapshot['max_drawdown_pct']}%",
+            f"Portfolio heat: {snapshot['portfolio_heat_pct']:.1f}%"
+            f" of {snapshot['max_heat_pct']}%",
+            f"Current drawdown: {snapshot['current_drawdown_pct']:.1f}%"
+            f" of {snapshot['max_drawdown_pct']}%",
             f"Peak equity: ${snapshot['peak_equity']:,.2f}",
             f"Daily P&L: ${snapshot['daily_pnl']:+,.2f}",
             f"Consecutive losses: {snapshot['consecutive_losses']}",
-            f"TRADING HALTED (drawdown limit): {'YES — closes only' if snapshot['trading_halted'] else 'No'}",
+            f"TRADING HALTED (drawdown limit): "
+            f"{'YES — closes only' if snapshot['trading_halted'] else 'No'}",
         ]
 
         if progress.get("last_wakeup"):
@@ -562,7 +568,8 @@ class AIAgent:
             f"Preferred pairs: {', '.join(prefs.get('preferred_pairs', []))}",
             f"Avoid high funding: {prefs.get('avoid_high_funding', True)}",
             f"Funding threshold: {prefs.get('funding_threshold_pct', 0.05)}%",
-            f"Style: {'trend following preferred' if prefs.get('prefer_trend_following') else 'flexible'}",
+            f"Style: "
+            f"{'trend following preferred' if prefs.get('prefer_trend_following') else 'flexible'}",
         ]
         return "\n".join(lines)
 

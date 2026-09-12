@@ -7,7 +7,6 @@ Handles order placement, position queries, and account info.
 
 from __future__ import annotations
 
-
 import ccxt
 import pandas as pd
 import structlog

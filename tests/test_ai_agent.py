@@ -15,14 +15,12 @@ import pandas as pd
 import pytest
 
 from trading_system.bot.ai_agent import (
-    AIAgent,
     DEFAULT_STRATEGY,
+    AIAgent,
     PaperLedger,
-    _utc_now_iso,
 )
 from trading_system.bot.ai_engine import AIEngine, TradeAction, TradingDecision
 from trading_system.bot.scheduler import Scheduler, _normalize_schedule
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -174,7 +172,7 @@ class TestMarketData:
         assert "insufficient" in ind["error"]
 
     def test_format_never_leaks_nan(self):
-        from trading_system.bot.market_data import format_indicators, compute_indicators
+        from trading_system.bot.market_data import compute_indicators, format_indicators
         ind = compute_indicators(make_ohlcv(60))  # short: some indicators warm up
         text = format_indicators("BTC/USDT:USDT", ind, 0.0001)
         assert "nan" not in text.lower()
@@ -800,6 +798,11 @@ class TestNotifierWeeklyAndTest:
 
         n = TelegramNotifier("token", "chat", enabled=True)
         captured = {}
-        monkeypatch.setattr(n, "_send_message", lambda text, parse_mode="HTML": captured.update(text=text) or True)
+
+        def fake_send(text, parse_mode="HTML"):
+            captured.update(text=text)
+            return True
+
+        monkeypatch.setattr(n, "_send_message", fake_send)
         assert n.send_test_message() is True
         assert "Telegram alerts are working" in captured["text"]

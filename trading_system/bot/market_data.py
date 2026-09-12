@@ -194,6 +194,15 @@ def format_indicators(pair: str, ind: dict[str, Any], funding_rate: float = 0.0)
     adx_val = ind["adx"]
     vol_ratio = ind["volume_ratio"]
 
+    if adx_val is None:
+        adx_note = ""
+    elif adx_val > 25:
+        adx_note = " (strong trend)"
+    elif adx_val < 20:
+        adx_note = " (weak trend)"
+    else:
+        adx_note = " (moderate)"
+
     lines = [
         f"Pair: {pair}",
         f"Current Price: {_fmt_price(ind['price'])}",
@@ -205,11 +214,7 @@ def format_indicators(pair: str, ind: dict[str, Any], funding_rate: float = 0.0)
         f"EMA 21: {_fmt_opt(ind['ema_21'], _fmt_price)}",
         f"EMA 50: {_fmt_opt(ind['ema_50'], _fmt_price)}",
         f"EMA Trend: {ind['ema_trend']}",
-        f"ADX: {_fmt_opt(adx_val, lambda v: f'{v:.1f}')}"
-        + (
-            f" {'(strong trend)' if adx_val > 25 else '(weak trend)' if adx_val < 20 else '(moderate)'}"
-            if adx_val is not None else ""
-        ),
+        f"ADX: {_fmt_opt(adx_val, lambda v: f'{v:.1f}')}{adx_note}",
         "",
         "--- Momentum ---",
         f"RSI(14): {_fmt_opt(rsi_val, lambda v: f'{v:.1f}')}"
