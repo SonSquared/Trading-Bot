@@ -39,10 +39,12 @@ bot:
 
 # AI engine settings
 ai:
-  # gemini-2.5-flash runs on Google's FREE tier (free AI Studio key, no
-  # credit card; 6 wakeups/day fit far inside the free rate limits).
-  # Any OpenAI model also works (set OPENAI_API_KEY instead).
-  model: gemini-2.5-flash
+  # gemini-flash-latest runs on Google's FREE tier (free AI Studio key, no
+  # credit card; 6 wakeups/day fit far inside the free rate limits). The
+  # alias always tracks the newest flash model, so Google retiring pinned
+  # versions never breaks the bot. Any OpenAI model also works (set
+  # OPENAI_API_KEY instead).
+  model: gemini-flash-latest
   temperature: 0.3
   max_tokens: 2000
 

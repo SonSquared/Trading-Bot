@@ -84,7 +84,7 @@ Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yam
 | `bot.paper_starting_equity` | `10000` | Paper account start |
 | `bot.sandbox` | `false` | `true` = Binance **testnet** rehearsal (keys: `BINANCE_TESTNET_*`) |
 | `bot.tz_offset_hours` | `0` | Local offset from UTC for schedule times |
-| `ai.model` | `gemini-2.5-flash` | FREE tier. Any Gemini or OpenAI chat model works |
+| `ai.model` | `gemini-flash-latest` | FREE tier. The alias tracks the newest Gemini flash, so pinning never goes stale. Any Gemini or OpenAI model works |
 | `risk.*` | see table above | Hard limits — edit freely, they're enforced either way |
 | `telegram.enabled` | `true` | Report-only notifications (env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — fails safe, sends nothing if secrets are absent |
 
@@ -158,7 +158,7 @@ Setup:
 
 | Symptom | Meaning / fix |
 |---|---|
-| `GEMINI_API_KEY (free) or OPENAI_API_KEY is required` | No key in `.env` — the bot refuses to guess. Free Gemini key: https://aistudio.google.com/apikey |
+| `GEMINI_API_KEY is required for gemini models` | No key in `.env` — the bot refuses to guess. Free Gemini key: https://aistudio.google.com/apikey |
 | `market data unavailable for all pairs` | Binance down or blocked in your region; check `status` |
 | `AI engine failed: ...` in journal, status ERROR | Model call failed twice; read the error, it names the cause |
 | Gate exit 3 in Actions | Normal — redundant cron firing was skipped as designed |
@@ -169,7 +169,7 @@ Setup:
 
 ## FAQ
 
-**Why not GPT-6 Astra?** You don't have it — and don't need it. The engine speaks the OpenAI chat API and defaults to `gemini-2.5-flash` on Google's **free tier** (free AI Studio key, no credit card; 6 wakeups/day fit far inside the free limits). To use OpenAI instead: set `ai.model` in `configs/ai_bot.yaml` and `OPENAI_API_KEY` in `.env`.
+**Why not GPT-6 Astra?** You don't have it — and don't need it. The engine speaks the OpenAI chat API and defaults to `gemini-flash-latest` on Google's **free tier** (free AI Studio key, no credit card; 6 wakeups/day fit far inside the free limits). The alias always tracks the newest flash model, so Google's version retirements never break the bot. To use OpenAI instead: set `ai.model` in `configs/ai_bot.yaml` and `OPENAI_API_KEY` in `.env`.
 
 **Can the AI "escape" the rules?** No. Validation happens in code after the model responds — bad pairs, oversized positions, missing stop-losses, and low confidence are rejected and journaled with reasons.
 
