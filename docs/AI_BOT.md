@@ -1,6 +1,6 @@
 # AI Trading Bot — User Guide
 
-An LLM-driven crypto trading bot (the Nate Herk "6 daily wakeups" plan, adapted to run on **gpt-4o** instead of GPT-6 Astra) for Binance USDⓈ-M perpetual futures, with hard risk rules enforced in code that the AI cannot override.
+An LLM-driven crypto trading bot (the Nate Herk "6 daily wakeups" plan, adapted to run on **Google Gemini's free tier** — `gemini-2.5-flash` via its OpenAI-compatible endpoint; no GPT-6 Astra, no API bill) for Binance USDⓈ-M perpetual futures, with hard risk rules enforced in code that the AI cannot override.
 
 ---
 
@@ -14,7 +14,7 @@ An LLM-driven crypto trading bot (the Nate Herk "6 daily wakeups" plan, adapted 
   │ 06:00  Asia/London     │        │ 3. Check paper SL/TP triggers    │
   │ 08:00  London open     │        │ 4. Fetch live Binance data       │
   │ 14:00  US open         │        │ 5. Compute indicators            │
-  │ 20:00  US midday       │        │ 6. Ask gpt-4o for a decision     │
+  │ 20:00  US midday       │        │ 6. Ask the LLM for a decision    │
   │ 23:00  Daily close     │        │ 7. Validate vs hard risk rules   │
   └────────────────────────┘        │ 8. Execute (closes, then opens)  │
                                     │ 9. Write handoff + journal       │
@@ -44,8 +44,8 @@ The AI never has memory between wakeups. Continuity lives entirely in shared fil
 # 1. Install (already done if you followed the build):
 pip install -r requirements.txt
 
-# 2. Add your OpenAI key — copy .env.example to .env and set:
-#    OPENAI_API_KEY=sk-...
+# 2. Add a FREE Gemini key — copy .env.example to .env and set:
+#    GEMINI_API_KEY=...      (from https://aistudio.google.com/apikey — no credit card)
 # Paper mode needs NO Binance keys (public market data only).
 
 # 3. Run one wakeup right now:
@@ -55,7 +55,7 @@ python scripts/start_ai_bot.py once
 python scripts/start_ai_bot.py journal
 ```
 
-The first wakeup creates `data/ai_bot/strategy.json` (the AI's rulebook), starts a **$10,000 paper account**, fetches real BTC/ETH data from Binance, and asks gpt-4o for a decision. Every action and rejection is journaled.
+The first wakeup creates `data/ai_bot/strategy.json` (the AI's rulebook), starts a **$10,000 paper account**, fetches real BTC/ETH data from Binance, and asks the model for a decision. Every action and rejection is journaled.
 
 ---
 
@@ -84,7 +84,7 @@ Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yam
 | `bot.paper_starting_equity` | `10000` | Paper account start |
 | `bot.sandbox` | `false` | `true` = Binance **testnet** rehearsal (keys: `BINANCE_TESTNET_*`) |
 | `bot.tz_offset_hours` | `0` | Local offset from UTC for schedule times |
-| `ai.model` | `gpt-4o` | Any OpenAI chat model (`gpt-4o-mini` is cheaper) |
+| `ai.model` | `gemini-2.5-flash` | FREE tier. Any Gemini or OpenAI chat model works |
 | `risk.*` | see table above | Hard limits — edit freely, they're enforced either way |
 | `telegram.enabled` | `true` | Report-only notifications (env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) — fails safe, sends nothing if secrets are absent |
 
@@ -146,7 +146,7 @@ The repo ships `.github/workflows/ai_bot.yml`, following the same battle-tested 
 Setup:
 
 1. Push this repo to GitHub
-2. Add repo secret: `OPENAI_API_KEY` (Settings → Secrets and variables → Actions)
+2. Add repo secret: `GEMINI_API_KEY` (Settings → Secrets and variables → Actions) — free from https://aistudio.google.com/apikey
 3. Actions tab → **AI Trading Bot** → enable scheduled workflows
 4. Optionally add `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for phone alerts
 
@@ -158,7 +158,7 @@ Setup:
 
 | Symptom | Meaning / fix |
 |---|---|
-| `OPENAI_API_KEY environment variable is required` | No key in `.env` — the bot refuses to guess |
+| `GEMINI_API_KEY (free) or OPENAI_API_KEY is required` | No key in `.env` — the bot refuses to guess. Free Gemini key: https://aistudio.google.com/apikey |
 | `market data unavailable for all pairs` | Binance down or blocked in your region; check `status` |
 | `AI engine failed: ...` in journal, status ERROR | Model call failed twice; read the error, it names the cause |
 | Gate exit 3 in Actions | Normal — redundant cron firing was skipped as designed |
@@ -169,10 +169,10 @@ Setup:
 
 ## FAQ
 
-**Why not GPT-6 Astra?** You don't have it — and don't need it. The engine works with any OpenAI chat model; `gpt-4o` gives the best reasoning-per-dollar for this task. Change one line in `configs/ai_bot.yaml`.
+**Why not GPT-6 Astra?** You don't have it — and don't need it. The engine speaks the OpenAI chat API and defaults to `gemini-2.5-flash` on Google's **free tier** (free AI Studio key, no credit card; 6 wakeups/day fit far inside the free limits). To use OpenAI instead: set `ai.model` in `configs/ai_bot.yaml` and `OPENAI_API_KEY` in `.env`.
 
 **Can the AI "escape" the rules?** No. Validation happens in code after the model responds — bad pairs, oversized positions, missing stop-losses, and low confidence are rejected and journaled with reasons.
 
 **Does it always trade?** No. Most wakeups correctly decide to do nothing — empty `actions` is a valid, journaled outcome.
 
-**What does it cost?** One gpt-4o call per wakeup ≈ 6 calls/day; a typical decision is ~2–3k tokens ≈ under $0.05/day at default settings.
+**What does it cost?** The LLM: **$0** — `gemini-2.5-flash` on Google's free tier comfortably covers 6 wakeups/day. Everything else (GitHub Actions, Binance public data, Telegram) is free too.

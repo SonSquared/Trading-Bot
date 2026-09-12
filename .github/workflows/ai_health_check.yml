@@ -111,7 +111,7 @@ jobs:
             } else {
               msg = 'No successful AI wakeup EVER recorded.\n\n' +
                 '(' + journalNote + ')\n\n' +
-                'If this bot was just deployed: add the OPENAI_API_KEY secret and ' +
+                'If this bot was just deployed: add the GEMINI_API_KEY (free) or OPENAI_API_KEY secret and ' +
                 'trigger AI Trading Bot -> Run workflow once manually.';
             }
 

@@ -319,7 +319,7 @@ class AIAgent:
 
         self.pairs: list[str] = list(bot_cfg.get("pairs", DEFAULT_STRATEGY["pairs"]))
         self.timeframe: str = bot_cfg.get("timeframe", DEFAULT_STRATEGY["timeframe"])
-        model = ai_model or self.config.get("ai", {}).get("model", "gpt-4o")
+        model = ai_model or self.config.get("ai", {}).get("model", "gemini-2.5-flash")
         self.ai = engine or AIEngine(
             model=model,
             temperature=self.config.get("ai", {}).get("temperature", 0.3),

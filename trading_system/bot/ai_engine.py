@@ -1,7 +1,8 @@
 """
-AI Trading Engine — OpenAI GPT-4o reasoning for crypto trading.
+AI Trading Engine — LLM reasoning for crypto trading.
 
-Replaces GPT-6 Astra with the widely available GPT-4o model.
+Defaults to Google Gemini's FREE tier (gemini-2.5-flash, no credit card);
+any OpenAI model works too via OPENAI_API_KEY.
 Each call is stateless: the agent provides all context via the prompt,
 and the engine returns a structured JSON trading decision.
 
@@ -99,11 +100,20 @@ If no trades should be taken, return: {"actions": [], "market_outlook": "...", .
 
 
 class AIEngine:
-    """OpenAI GPT-4o trading decision engine."""
+    """LLM trading decision engine.
+
+    Defaults to Google's Gemini FREE tier (gemini-2.5-flash via Gemini's
+    OpenAI-compatible endpoint — free AI Studio key, no credit card, and
+    6 wakeups/day fit far inside the free rate limits). Any OpenAI model
+    also works: set ai.model in the config and OPENAI_API_KEY.
+    """
+
+    # Gemini's OpenAI-compatible endpoint: same chat.completions API surface.
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gemini-2.5-flash",
         temperature: float = 0.3,
         max_tokens: int = 2000,
     ):
@@ -122,13 +132,25 @@ class AIEngine:
                 raise ImportError(
                     "openai package is required. Install with: pip install openai"
                 )
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key:
-                raise ValueError(
-                    "OPENAI_API_KEY environment variable is required. "
-                    "Set it in your .env file or export it."
-                )
-            self._client = OpenAI(api_key=api_key)
+            kwargs = {"api_key": ""}
+            if self.model.startswith("gemini"):
+                kwargs["api_key"] = os.environ.get("GEMINI_API_KEY", "")
+                kwargs["base_url"] = self.GEMINI_BASE_URL
+                if not kwargs["api_key"]:
+                    raise ValueError(
+                        "GEMINI_API_KEY is required for gemini models. Get a "
+                        "FREE key at https://aistudio.google.com/apikey and set "
+                        "it in your .env file."
+                    )
+            else:
+                kwargs["api_key"] = os.environ.get("OPENAI_API_KEY", "")
+                if not kwargs["api_key"]:
+                    raise ValueError(
+                        "OPENAI_API_KEY is required for OpenAI models — or set "
+                        "ai.model to gemini-2.5-flash to use a FREE Gemini key "
+                        "(https://aistudio.google.com/apikey)."
+                    )
+            self._client = OpenAI(**kwargs)
         return self._client
 
     @staticmethod

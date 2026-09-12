@@ -1,11 +1,12 @@
-# AI Trading Bot configuration (Nate Herk plan adapted to gpt-4o)
+# AI Trading Bot configuration (Nate Herk plan adapted to Gemini's FREE tier)
 #
 # Usage:
 #   python scripts/start_ai_bot.py once          # single wakeup now (paper)
 #   python scripts/start_ai_bot.py run           # continuous 6x/day schedule
 #   python scripts/start_ai_bot.py status        # show state summary
 #
-# Required environment (.env): OPENAI_API_KEY=sk-...
+# Required environment (.env): GEMINI_API_KEY=... (free from
+# https://aistudio.google.com/apikey — no credit card needed)
 # Optional: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 bot:
@@ -38,8 +39,10 @@ bot:
 
 # AI engine settings
 ai:
-  # Any OpenAI chat model. gpt-4o recommended; gpt-4o-mini is cheaper.
-  model: gpt-4o
+  # gemini-2.5-flash runs on Google's FREE tier (free AI Studio key, no
+  # credit card; 6 wakeups/day fit far inside the free rate limits).
+  # Any OpenAI model also works (set OPENAI_API_KEY instead).
+  model: gemini-2.5-flash
   temperature: 0.3
   max_tokens: 2000
 
