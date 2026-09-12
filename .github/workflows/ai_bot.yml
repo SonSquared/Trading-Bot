@@ -41,9 +41,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # pytest is a dev tool, not in requirements.txt (same pattern as bot.yml)
+        run: pip install -r requirements.txt pytest
       - name: AI bot tests
-        run: pytest tests/test_ai_agent.py -q
+        run: python -m pytest tests/test_ai_agent.py -q
 
   run-bot:
     if: github.event_name != 'push'
