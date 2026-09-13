@@ -1,24 +1,32 @@
 name: AI Bot Telegram Poller
 # Always-on command responder: /status etc. answered within seconds, not
-# at the next wakeup. Each generation long-polls for up to 20 minutes;
-# the next generation cancels it and takes over (concurrency), so
-# coverage is continuous and billing is bounded to ~1,440 runner-min/day
-# (free on public repos; see docs/AI_BOT_PRE_LIVE.md for the math and
-# the private-repo decision).
+# at the next wakeup. Continuity does NOT depend on GitHub's cron
+# scheduler (which silently dropped this workflow's slots for 70+
+# minutes on 2026-09-13): each generation RELAUNCHES ITSELF on
+# completion via workflow_run, and the trading wakeup/digest completions
+# kick the chain too. The crons stay only as a harmless backup.
 on:
   schedule:
-    # :07/:22/:37/:52 — deliberately NOT on the trading crons (:02/:32) so
-    # the two workflows' first polling requests never collide on Telegram.
-    # Four explicit cron lines (not a comma-list) — safest across GitHub's
-    # cron parser, and each registration is independent under load drops.
+    # Backup only — four explicit lines, :07/:22/:37/:52, off the trading
+    # crons (:02/:32). If these never fire, the chain below sustains it.
     - cron: '7 * * * *'
     - cron: '22 * * * *'
     - cron: '37 * * * *'
     - cron: '52 * * * *'
   workflow_dispatch:  # manual start from the Actions tab
+  workflow_run:
+    # THE primary mechanism: when this workflow completes (any
+    # conclusion), start the next generation — a self-sustaining chain.
+    # The main trading bot's completions also kick the chain, so it
+    # self-heals even after every generation has died (e.g. quota,
+    # manual cancel): the next wakeup revives it automatically.
+    workflows:
+      - "AI Bot Telegram Poller"
+      - "AI Trading Bot"
+    types: [completed]
 
 permissions:
-  contents: read
+  contents: write  # the offset persist pushes to the ai-bot-state branch
 
 # The KEY line: a new generation CANCELS the previous one and starts
 # fresh (checkout, poller, restore) — this is what makes 15-min crons
@@ -33,6 +41,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Record start time (for the anti-tight-loop pad)
+        run: echo "POLL_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - name: Restore AI bot state from ai-bot-state branch
@@ -65,7 +76,35 @@ jobs:
         env:
           AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
           AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
-        run: python -u scripts/ai_poller.py --max-minutes 20
+        # The chain relaunches this workflow on every completion, so a
+        # fast exit (Telegram 409 yield, blip) must be padded to ~5 min
+        # minimum — otherwise completions would chain into a tight loop.
+        run: |
+          start=$(date +%s)
+          python -u scripts/ai_poller.py --max-minutes 20
+          rc=$?
+          elapsed=$(( $(date +%s) - start ))
+          if [ "$elapsed" -lt 300 ]; then
+            pad=$(( 300 - elapsed ))
+            echo "Short poll generation (${elapsed}s) — padding ${pad}s " \
+                 "to keep the relaunch chain from tight-looping"
+            sleep "$pad"
+          fi
+          exit $rc
+
+      - name: Anti-tight-loop pad (every outcome, even failed setup)
+        # The chain relaunches on EVERY completion. A run that dies early
+        # (checkout/pip failure) would otherwise relaunch within seconds
+        # forever; this guarantees >=5 minutes between generations no
+        # matter where the run failed.
+        if: always()
+        run: |
+          elapsed=$(( $(date +%s) - POLL_START ))
+          if [ "$elapsed" -lt 300 ]; then
+            pad=$(( 300 - elapsed ))
+            echo "Generation lasted ${elapsed}s — padding ${pad}s"
+            sleep "$pad"
+          fi
 
       - name: Persist poller offset (best-effort)
         if: always()

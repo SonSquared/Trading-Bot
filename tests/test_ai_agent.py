@@ -1259,13 +1259,28 @@ class TestPollerWorkflow:
     def test_bounded_generations_and_cancel(self):
         d = _wf_yaml(".github/workflows/ai_poller.yml")
         assert d["concurrency"]["cancel-in-progress"] is True
+        # Backup crons: four explicit lines (:07/:22/:37/:52), off the
+        # trading crons. Continuity must NOT depend on them.
         crons = [c["cron"] for c in d["on"]["schedule"]]
-        assert crons == ["7,22,37,52 * * * *"]  # one cron = 4 generations/hour
+        assert crons == ["7 * * * *", "22 * * * *", "37 * * * *", "52 * * * *"]
+        # Primary continuity: the workflow relaunches itself on completion
+        # (cron is unreliable for fresh workflows), and trading-wakeup
+        # completions revive the chain after any outage.
+        wr = d["on"]["workflow_run"]
+        assert set(wr["workflows"]) == {"AI Bot Telegram Poller", "AI Trading Bot"}
+        assert wr["types"] == ["completed"]
+        # The offset persist pushes to the state branch.
+        assert d["permissions"]["contents"] == "write"
         job = d["jobs"]["poll"]
         assert job["timeout-minutes"] <= 30
         steps = "\n--".join(s.get("run", "") for s in job["steps"])
         assert "--max-minutes 20" in steps
         assert "pip install -r requirements.txt" in steps  # no dev tools
+        # Anti-tight-loop pad runs even on failed setup, so a broken run
+        # can never chain into a hot relaunch loop.
+        pads = [s for s in job["steps"]
+                if "Anti-tight-loop pad" in str(s.get("name", ""))]
+        assert pads and pads[0]["if"] == "always()"
 
     def test_poller_never_blocks_trading(self):
         """Different concurrency groups: poller cancels can't touch trading."""
