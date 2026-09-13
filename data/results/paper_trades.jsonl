@@ -16,3 +16,4 @@
 {"timestamp": "2026-09-12T05:06:30.660848+00:00", "pair": "ETH_USDT_USDT", "action": "OPEN_LONG", "price": 2513.8926779999997, "size_usd": 33.69779915906214, "fee": 0.016848899579531073, "slippage": 0.006739559831812429, "strategy": "Donchian_Breakout", "cash_after": 62.56477811010731, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-12T11:16:59.262073+00:00", "action": "FUND", "pair": "*", "funding": 0.0033697799159062144, "cash_after": 62.561408330191405, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-12T18:30:53.320471+00:00", "action": "FUND", "pair": "*", "funding": 0.0033697799159062144, "cash_after": 62.5580385502755, "note": "schedule-gate-ack"}
+{"timestamp": "2026-09-13T00:23:43.998608+00:00", "action": "FUND", "pair": "*", "funding": 0.0033697799159062144, "cash_after": 62.55466877035959, "note": "schedule-gate-ack"}
