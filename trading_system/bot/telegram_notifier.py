@@ -276,6 +276,10 @@ class TelegramNotifier:
         msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Weekly"
         return self._send_message(msg)
 
+    def send_message(self, text: str) -> bool:
+        """Send a pre-formatted message verbatim (used by report scripts)."""
+        return self._send_message(text)
+
     def send_test_message(self) -> bool:
         """Send a verification message so the user can confirm alerts arrive."""
         msg = (

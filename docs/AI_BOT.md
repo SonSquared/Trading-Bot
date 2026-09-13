@@ -142,6 +142,9 @@ The repo ships `.github/workflows/ai_bot.yml`, following the same battle-tested 
 - **Continuity files persist to the `ai-bot-state` branch** (git, not the unreliable Actions cache), restored on every run — including failure journals
 - `workflow_dispatch` lets you trigger a wakeup manually from the Actions tab
 - A `quality` job runs the AI bot test suite on every push that touches bot code
+- **Daily digest at 23:50 UTC** (`ai_daily_digest.yml`): one Telegram heartbeat per day — wakeups ok/failed, P&L, equity, open positions, the AI's last reasoning. A day with zero wakeups produces a loud "NO WAKEUPS RAN TODAY" alert, so quiet success is never indistinguishable from a dead bot
+- **Weekly report Sundays 17:00 UTC** (`ai_weekly_report.yml`): week P&L, win rate, AI notes
+- **Hourly health check** (`ai_health_check.yml`): watchdog that alerts if successful wakeups silently stop
 
 Setup:
 
@@ -175,4 +178,4 @@ Setup:
 
 **Does it always trade?** No. Most wakeups correctly decide to do nothing — empty `actions` is a valid, journaled outcome.
 
-**What does it cost?** The LLM: **$0** — `gemini-2.5-flash` on Google's free tier comfortably covers 6 wakeups/day. Everything else (GitHub Actions, Binance public data, Telegram) is free too.
+**What does it cost?** The LLM: **$0** — `gemini-flash-latest` on Google's free tier comfortably covers 6 wakeups/day. Everything else (GitHub Actions, Binance public data, Telegram) is free too.

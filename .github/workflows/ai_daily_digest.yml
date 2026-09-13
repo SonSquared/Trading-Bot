@@ -1,0 +1,49 @@
+name: AI Bot Daily Digest
+on:
+  schedule:
+    # Daily 23:50 UTC — after the last wakeup slots (23:02/23:32) so the
+    # digest summarizes the full day including the daily_close wakeup.
+    # Runs even on quiet days: "no wakeups ran today" is itself an alert.
+    - cron: '50 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  daily-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore AI bot state from ai-bot-state branch
+        # Same restore as the weekly report — the digest reads
+        # paper_ledger.json / journal.jsonl from data/ai_bot.
+        run: |
+          mkdir -p data/ai_bot
+          if git ls-remote --exit-code --heads origin ai-bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin ai-bot-state
+            git checkout FETCH_HEAD -- data/ai_bot/ \
+              && echo "State restored from ai-bot-state branch" \
+              || echo "WARNING: ai-bot-state branch has no data/ai_bot yet"
+          else
+            echo "No ai-bot-state branch yet — digest will say so"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send daily Telegram digest
+        env:
+          # AI_ prefix so the main bot's TELEGRAM_* secrets stay untouched.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
+        run: python -u scripts/ai_daily_digest.py

@@ -145,6 +145,10 @@ def build_report(data_dir: Path, days: int = 7) -> dict:
 @click.option("--days", default=7, type=int, show_default=True, help="Lookback window")
 def main(config: str, dry_run: bool, days: int) -> None:
     """Send the weekly AI bot report (P&L, win rate, AI notes)."""
+    # Windows consoles default to cp1252; emoji/box chars would crash echo.
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
     import os
 
     try:

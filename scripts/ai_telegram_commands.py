@@ -265,6 +265,11 @@ def _write_offset(value: int) -> None:
 
 
 def main() -> int:
+    # Windows consoles default to cp1252; emoji replies would crash print.
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+
     # Load .env when run manually; in Actions the env is already set.
     try:
         from dotenv import load_dotenv

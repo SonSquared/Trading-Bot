@@ -979,3 +979,136 @@ class TestNotifierWeeklyAndTest:
         monkeypatch.setattr(n, "_send_message", fake_send)
         assert n.send_test_message() is True
         assert "Telegram alerts are working" in captured["text"]
+
+    def test_send_message_wrapper(self, monkeypatch):
+        """Public send_message passes text verbatim (used by report scripts)."""
+        from trading_system.bot.telegram_notifier import TelegramNotifier
+
+        n = TelegramNotifier("token", "chat", enabled=True)
+        captured = {}
+        monkeypatch.setattr(
+            n, "_send_message",
+            lambda text, parse_mode="HTML": captured.update(text=text) or True,
+        )
+        assert n.send_message("HELLO DIGEST") is True
+        assert captured["text"] == "HELLO DIGEST"
+
+
+class TestDailyDigest:
+    """scripts/ai_daily_digest.py summarize + format (pure functions)."""
+
+    NOW = datetime(2026, 9, 13, 23, 50, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _entry(ts, status="success", outlook="neutral", reasoning="r",
+               equity=10000.0, errors=None, closed=None):
+        return {
+            "wakeup_id": ts.replace(":", "").replace("-", "").replace("T", "_"),
+            "timestamp": ts, "mode": "paper", "status": status,
+            "market_outlook": outlook, "ai_reasoning": reasoning,
+            "actions_executed": 0, "equity": equity,
+            "errors": errors or [], "closed_triggers": closed or [],
+        }
+
+    def _write(self, tmp_path, entries, ledger=None):
+        d = tmp_path / "ai_bot"
+        d.mkdir(exist_ok=True)
+        with open(d / "journal.jsonl", "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        if ledger is not None:
+            (d / "paper_ledger.json").write_text(json.dumps(ledger))
+        return d
+
+    def test_quiet_day_message(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-13T14:02:11+00:00"),
+            self._entry("2026-09-13T23:32:09+00:00",
+                        reasoning="Flat market, standing aside."),
+        ])
+        s = summarize_day(d, now=self.NOW)
+        msg = format_digest(s)
+        assert "✅ Wakeups: 2/2 ok" in msg
+        assert "no trades closed" in msg
+        assert "$10,000.00" in msg
+        assert 'AI said: "Flat market, standing aside."' in msg
+
+    def test_day_with_trades_shows_pnl(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        win = {"pair": "BTC/USDT:USDT", "net_pnl": 24.0, "pnl_pct": 1.2}
+        loss = {"pair": "ETH/USDT:USDT", "net_pnl": -10.0, "pnl_pct": -0.5}
+        d = self._write(tmp_path, [
+            self._entry("2026-09-13T14:02:11+00:00", closed=[win, loss]),
+        ])
+        s = summarize_day(d, now=self.NOW)
+        assert s["pnl_today"] == pytest.approx(14.0)
+        assert s["closed_count"] == 2
+        msg = format_digest(s)
+        assert "P&L today: $+14.00 (2 closed, 1 wins)" in msg
+        assert "BTC/USDT:USDT +1.20% ($+24.00)" in msg
+        assert "ETH/USDT:USDT -0.50% ($-10.00)" in msg
+
+    def test_failed_wakeup_flagged(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-13T14:02:11+00:00"),
+            self._entry("2026-09-13T20:02:11+00:00", status="error",
+                        errors=["market data unavailable for all pairs"]),
+            self._entry("2026-09-13T23:32:09+00:00"),
+        ])
+        s = summarize_day(d, now=self.NOW)
+        assert s["wakeups"] == 3 and s["failed"] == 1
+        msg = format_digest(s)
+        assert "⚠️ Wakeups: 2/3 ok" in msg
+        assert "market data unavailable" in msg
+
+    def test_no_wakeups_is_loud_alert(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-12T23:32:09+00:00"),  # yesterday only
+        ])
+        s = summarize_day(d, now=self.NOW)
+        assert s["wakeups"] == 0
+        msg = format_digest(s)
+        assert "NO WAKEUPS RAN TODAY" in msg
+
+    def test_equity_falls_back_to_ledger(self, tmp_path):
+        from scripts.ai_daily_digest import summarize_day
+
+        entry = self._entry("2026-09-13T14:02:11+00:00")
+        del entry["equity"]  # older journals may lack the field
+        d = self._write(tmp_path, [entry], ledger={"cash": 10123.45})
+        s = summarize_day(d, now=self.NOW)
+        assert s["equity"] == pytest.approx(10123.45)
+
+    def test_corrupt_journal_lines_skipped(self, tmp_path):
+        from scripts.ai_daily_digest import summarize_day
+
+        d = tmp_path / "ai_bot"
+        d.mkdir(exist_ok=True)
+        good = json.dumps(self._entry("2026-09-13T14:02:11+00:00"))
+        (d / "journal.jsonl").write_text(
+            good + "\n{not valid json}\n\n", encoding="utf-8"
+        )
+        s = summarize_day(d, now=self.NOW)
+        assert s["wakeups"] == 1  # corrupt line did not block the digest
+
+    def test_missing_data_dir_fails_loudly(self, tmp_path):
+        """No data dir → CLI raises instead of texting a made-up summary."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text("bot:\n  data_dir: does_not_exist\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, "scripts/ai_daily_digest.py", "--config", str(cfg)],
+            capture_output=True, text=True, cwd=Path(__file__).parent.parent,
+        )
+        assert r.returncode != 0
+        assert "run a wakeup first" in (r.stderr + r.stdout)
