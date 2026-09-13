@@ -9,7 +9,12 @@ on:
   schedule:
     # :07/:22/:37/:52 — deliberately NOT on the trading crons (:02/:32) so
     # the two workflows' first polling requests never collide on Telegram.
-    - cron: '7,22,37,52 * * * *'
+    # Four explicit cron lines (not a comma-list) — safest across GitHub's
+    # cron parser, and each registration is independent under load drops.
+    - cron: '7 * * * *'
+    - cron: '22 * * * *'
+    - cron: '37 * * * *'
+    - cron: '52 * * * *'
   workflow_dispatch:  # manual start from the Actions tab
 
 permissions:
