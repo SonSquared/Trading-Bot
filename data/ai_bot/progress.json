@@ -1,9 +1,9 @@
 {
-  "last_wakeup": "20260913_113925",
+  "last_wakeup": "20260913_155110",
   "last_actions": [],
   "last_outlook": "neutral",
   "peak_equity": 10000.0,
   "day": "2026-09-13",
   "day_start_equity": 10000.0,
-  "notes": "Wakeup 20260913_113925 FAILED: AI engine failed: Failed to get AI decision: Error code: 503 - [{'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}]"
+  "notes": "Wakeup 20260913_155110 FAILED: AI engine failed: Failed to get AI decision after trying 3 model(s) x2 attempts \u2014 last: gemini-2.0-flash: Error code: 404 - [{'error': {'code': 404, 'message': 'This model models/gemini-2.0-flash is no longer available. Please update your code to use models/gemini-3.6-flash for the latest features and improvements. We recommend you to use the Interactions API.', 'status': 'NOT_FOUND'}}]"
 }
