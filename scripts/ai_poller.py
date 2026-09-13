@@ -3,12 +3,14 @@
 
 The scheduled wakeup responder (scripts/ai_telegram_commands.py) answers
 commands only at wakeups — worst case ~6h later. This poller closes that
-gap: a GitHub Actions job launches it every 15 minutes; it long-polls
-Telegram (server-held getUpdates, near-zero traffic) and answers /status
-and friends within seconds. The NEXT generation cancels this one
-(concurrency cancel-in-progress), so coverage is continuous and billing
-is bounded to ~24×60 = 1,440 runner-minutes/day — free on public repos
-(unlimited minutes), a decision point on private ones (2,000/month cap).
+gap: a GitHub Actions job launches it every 15 minutes (backup crons,
+plus every trading/digest/health-check completion via workflow_run); it
+long-polls Telegram (server-held getUpdates, near-zero traffic) and
+answers /status and friends within seconds. The NEXT generation cancels
+this one (concurrency cancel-in-progress), so coverage is continuous and
+billing is bounded to ~24×60 = 1,440 runner-minutes/day — free on public
+repos (unlimited minutes), a decision point on private ones (2,000/month
+cap).
 
 Coordination with the wakeup responder, without double answers:
   - The update offset lives in data/ai_bot/telegram_offset.txt, re-read

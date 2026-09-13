@@ -19,6 +19,24 @@ on:
     - cron: '2 0,6,8,14,20,23 * * *'
     - cron: '32 0,6,8,14,20,23 * * *'
   workflow_dispatch:  # manual trigger from the Actions tab
+  workflow_run:
+    # SELF-HEALING CHAIN: GitHub's cron silently drops slots (proven
+    # 2026-09-13: the 06/08 UTC wakeups never fired; one arrived 4h late).
+    # Other AI-suite workflows' completions kick the next wakeup, turning
+    # a dropped slot into a delayed one. GitHub ignores SELF-referencing
+    # workflow_run (this workflow can't kick itself — proven on the
+    # poller), so the kickers are the OTHER suite members: the hourly
+    # health patrol (crons proven reliable), the Telegram poller, and
+    # the digest. scripts/ai_bot_gate.py makes each kicked run safe: it
+    # runs the wakeup immediately when the journal is stale, otherwise
+    # sleeps (as the relay) until the next scheduled slot.
+    workflows:
+      - "AI Bot Telegram Poller"
+      - "AI Bot Health Check"
+      - "AI Bot Daily Digest"
+      - "AI Bot Weekly Report"
+      - "Bot Health Check"
+    types: [completed]
 
 permissions:
   contents: write  # pushing continuity files to the ai-bot-state branch
@@ -49,7 +67,12 @@ jobs:
   run-bot:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The gate can act as a RELAY: when the journal is fresh it sleeps
+    # (in 30-min chunks) until the next scheduled slot, so a dropped cron
+    # slot is recovered on time. Worst relay wait is ~5h15m (largest
+    # schedule gap minus the 45-min gate window) — GitHub's hard job cap
+    # is 360 minutes, and that covers it with margin.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -76,37 +99,26 @@ jobs:
             echo "No ai-bot-state branch yet — first run starts fresh"
           fi
 
-      - name: Schedule gate (dedupe redundant firings)
+      - name: Schedule gate (self-scheduling relay)
         id: gate
-        # Runs BEFORE pip setup so skipped firings burn almost no quota.
-        # Exit 3 = skip (green); other nonzero = real failure (red).
-        run: |
-          set +e
-          python scripts/ai_bot_gate.py
-          code=$?
-          set -e
-          if [ "$code" -eq 3 ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          elif [ "$code" -eq 0 ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Gate failed with exit $code"
-            exit "$code"
-          fi
+        # Runs BEFORE pip setup. Journal stale -> run NOW (on-time wakeup
+        # or catch-up after dropped slots). Journal fresh -> this step
+        # BECOMES the relay: it sleeps until the next scheduled slot, so
+        # the next wakeup fires on time even if every cron slot is
+        # dropped. The concurrency group queues overlapping firings and
+        # their gate checks then see fresh state — no duplicate wakeups.
+        run: python scripts/ai_bot_gate.py
 
       - name: Set up Python
-        if: steps.gate.outputs.run != 'false'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
-        if: steps.gate.outputs.run != 'false'
         run: pip install -r requirements.txt
 
       - name: Run one AI wakeup
-        if: steps.gate.outputs.run != 'false'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -120,11 +132,14 @@ jobs:
         run: python -u scripts/start_ai_bot.py once
 
       - name: Answer Telegram commands (/status /positions /last)
-        # ALWAYS: a failed wakeup must still answer pending commands —
-        # its /status reply is exactly what the user needs then. Exits 0
-        # even when Telegram is unreachable: command answering must never
-        # turn a traded-and-persisted wakeup into a red run.
-        if: always() && steps.gate.outputs.run != 'false'
+        # ALWAYS, unconditionally: the /status round-trip proof of
+        # 2026-09-13 showed a gate-skipped run is exactly when a texted
+        # command can go unanswered for hours (the poller long-poll was
+        # dead). The responder consumes pending updates so nothing is
+        # ever left dangling; it must never block state persistence, so
+        # the persist step below still runs with always() even if this
+        # step exits nonzero.
+        if: always()
         env:
           AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
           AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
@@ -178,7 +193,7 @@ jobs:
           echo "Persisted: $HAVE"
 
       - name: Upload AI bot logs
-        if: always() && steps.gate.outputs.run != 'false'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-bot-state-${{ github.run_number }}

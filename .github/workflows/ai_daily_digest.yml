@@ -47,3 +47,38 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
         run: python -u scripts/ai_daily_digest.py
+
+      - name: Persist digest marker to ai-bot-state branch
+        # The digest writes digest_sent.txt after a CONFIRMED send; the
+        # idempotence guard reads it on the next trigger. Persisting it
+        # means the 2026-09-13 "false NO-WAKEUPS alarm" (a manual test
+        # run tripping the scheduled send) can never happen again.
+        if: always()
+        env:
+          STATE_BRANCH: ai-bot-state
+        run: |
+          set -e
+          if [ ! -f data/ai_bot/digest_sent.txt ]; then
+            echo "No digest marker (send failed or dry-run) — nothing to persist"
+            exit 0
+          fi
+          rm -rf /tmp/aibotstate
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            git worktree add /tmp/aibotstate "origin/$STATE_BRANCH"
+          else
+            git worktree add --orphan /tmp/aibotstate
+          fi
+          mkdir -p /tmp/aibotstate/data/ai_bot
+          cp data/ai_bot/digest_sent.txt /tmp/aibotstate/data/ai_bot/
+          cd /tmp/aibotstate
+          git add data/ai_bot/digest_sent.txt
+          if git diff --cached --quiet; then
+            echo "Marker unchanged — nothing to persist"
+            exit 0
+          fi
+          git -c user.name="ai-bot-state-persister" \
+              -c user.email="actions@users.noreply.github.com" \
+              commit -m "digest marker: ${{ github.run_number }}"
+          git push origin "HEAD:$STATE_BRANCH"
+          echo "Digest marker persisted"

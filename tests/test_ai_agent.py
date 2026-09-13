@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -579,6 +580,101 @@ class TestEngineParsing:
         assert d.actions == []
 
 
+class TestEngineResilience:
+    """Model fallback chain: a retired/overloaded model can't kill a wakeup.
+
+    Real incidents this pins: gemini-2.5-flash retired (404) and a 503
+    'high demand' spike — each once silenced the bot for half a day.
+    """
+
+    VALID = json.dumps({
+        "actions": [], "market_outlook": "neutral",
+        "risk_assessment": "ok", "reasoning": "flat",
+    })
+
+    @staticmethod
+    def _engine_with_client(monkeypatch, responses):
+        """AIEngine whose client pops queued responses/exceptions in order."""
+        eng = AIEngine()
+        calls: list[str] = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs.get("model"))
+                item = responses.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
+
+        eng._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FakeCompletions()))
+        monkeypatch.setattr(
+            "trading_system.bot.ai_engine.time.sleep", lambda s: None)
+        return eng, calls
+
+    @staticmethod
+    def _resp(text):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+    def test_retired_model_404_falls_back_to_next(self, monkeypatch):
+        eng, calls = self._engine_with_client(
+            monkeypatch,
+            [Exception("Error code: 404 - model no longer available"),
+             Exception("Error code: 404 - model no longer available"),
+             self._resp(self.VALID)])
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is True
+        # Two failed attempts on the primary, then the fallback answered.
+        assert calls == ["gemini-flash-latest", "gemini-flash-latest",
+                         "gemini-flash"]
+        assert d.model == "gemini-flash"
+        assert eng.model == "gemini-flash"  # sticks with the working model
+
+    def test_503_spike_retried_on_same_model(self, monkeypatch):
+        eng, calls = self._engine_with_client(
+            monkeypatch,
+            [Exception("Error code: 503 - high demand"),
+             self._resp(self.VALID)])
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is True
+        assert calls == ["gemini-flash-latest", "gemini-flash-latest"]
+
+    def test_all_models_exhausted_returns_failed_decision(self, monkeypatch):
+        eng, calls = self._engine_with_client(
+            monkeypatch, [Exception("Error code: 404")] * 6)
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is False
+        assert d.actions == []
+        assert len(calls) == 6  # 3 models x 2 attempts
+        assert "Failed to get AI decision" in d.reasoning
+
+    def test_openai_config_has_no_gemini_fallback(self, monkeypatch):
+        eng = AIEngine(model="gpt-4o")
+        calls: list[str] = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs.get("model"))
+                raise Exception("api down")
+
+        eng._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FakeCompletions()))
+        monkeypatch.setattr(
+            "trading_system.bot.ai_engine.time.sleep", lambda s: None)
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is False
+        assert calls == ["gpt-4o", "gpt-4o"]  # single model, two attempts
+
+    def test_empty_response_retries_then_falls_back(self, monkeypatch):
+        eng, calls = self._engine_with_client(
+            monkeypatch,
+            [self._resp(""), self._resp(""), self._resp(self.VALID)])
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is True
+        assert len(calls) == 3
+
+
 class TestSpotFallback:
     """Kraken spot fallback (GitHub runners are geo-blocked by Binance)."""
 
@@ -753,44 +849,111 @@ class TestTelegramCommands:
 
 
 class TestGate:
-    """The cron dedupe gate (scripts/ai_bot_gate.py)."""
+    """The self-scheduling gate/relay (scripts/ai_bot_gate.py).
 
-    def _run_gate(self, monkeypatch, tmp_path, journal_lines=None):
+    Stale journal -> run now (on-time wakeup or catch-up after dropped
+    cron slots). Fresh journal -> the gate becomes the RELAY: it sleeps
+    until the next scheduled slot, so trading continues even when GitHub
+    drops every cron slot (proven 2026-09-13).
+    """
+
+    def _mod(self):
         import importlib.util
         import pathlib
         spec = importlib.util.spec_from_file_location(
             "ai_bot_gate", pathlib.Path("scripts/ai_bot_gate.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        journal = tmp_path / "journal.jsonl"
-        if journal_lines is not None:
-            journal.write_text("\n".join(journal_lines) + "\n")
-        monkeypatch.setattr(mod, "JOURNAL", journal)
-        return mod.main()
+        return mod
 
-    def test_no_journal_proceeds(self, tmp_path, monkeypatch):
-        assert self._run_gate(monkeypatch, tmp_path) == 0
+    def test_no_journal_proceeds_immediately(self, tmp_path, monkeypatch):
+        mod = self._mod()
+        monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
+        monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
+        assert mod.main() == 0
 
-    def test_recent_wakeup_skips(self, tmp_path, monkeypatch):
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).isoformat()
-        rc = self._run_gate(
-            monkeypatch, tmp_path,
-            [json.dumps({"timestamp": now_iso, "status": "success"})])
-        assert rc == 3  # skip
+    def test_stale_journal_proceeds_immediately(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+        mod = self._mod()
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        (tmp_path / "journal.jsonl").write_text(json.dumps({"timestamp": old}))
+        monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
+        monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
+        assert mod.main() == 0
 
-    def test_old_wakeup_proceeds(self, tmp_path, monkeypatch):
-        from datetime import datetime, timedelta, timezone
-        old_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        rc = self._run_gate(
-            monkeypatch, tmp_path,
-            [json.dumps({"timestamp": old_iso, "status": "success"})])
-        assert rc == 0
+    def test_fresh_journal_relays_then_catches_up(self, tmp_path, monkeypatch):
+        """While the journal is fresh the gate relays (sleeps toward the next
+        slot); the moment the gate window opens it runs immediately —
+        catch-up must never wait for a slot once 45 min have passed."""
+        from datetime import timedelta
+        mod = self._mod()
+        (tmp_path / "journal.jsonl").write_text(
+            json.dumps({"timestamp": "2026-09-13T21:50:00+00:00"}))
+        monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
+        monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
+        monkeypatch.setattr(mod, "DEFAULT_SLOTS", ((0, 30),))  # one slot: 00:30
+        state = {"t": datetime(2026, 9, 13, 22, 0, tzinfo=timezone.utc)}
+        sleeps: list[float] = []
 
-    def test_corrupt_journal_proceeds(self, tmp_path, monkeypatch):
+        def fake_now():
+            return state["t"]
+
+        def fake_sleep(sec):
+            sleeps.append(sec)
+            state["t"] += timedelta(seconds=sec)
+            assert len(sleeps) <= 40, "relay never exited"
+
+        monkeypatch.setattr(mod, "_now_utc", fake_now)
+        monkeypatch.setattr(mod, "_sleep", fake_sleep)
+        assert mod.main() == 0
+        # 22:00 (10 min old) -> 30m chunk; 22:30 (40 min old) -> 30m chunk;
+        # 23:00 (70 min old, stale) -> proceed immediately.
+        assert sleeps == [1800.0, 1800.0]
+        assert (state["t"].hour, state["t"].minute) == (23, 0)
+        assert all(s <= mod.MAX_SLEEP_SECONDS for s in sleeps)
+
+    def test_decide_semantics(self):
+        mod = self._mod()
+        slots = [(0, 0), (6, 0)]
+
+        # No journal -> run now.
+        now = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
+        assert mod.decide(now, None, slots) == 0.0
+
+        # Stale (2h old) -> run now even between slots.
+        last = datetime(2026, 9, 13, 1, 0, tzinfo=timezone.utc)
+        assert mod.decide(now, last, slots) == 0.0
+
+        # Fresh (10 min old) at 00:10, next slot 06:00 -> relay 5h50m.
+        last = datetime(2026, 9, 13, 0, 0, tzinfo=timezone.utc)
+        w = mod.decide(datetime(2026, 9, 13, 0, 10, tzinfo=timezone.utc),
+                       last, slots)
+        assert w == pytest.approx(5 * 3600 + 50 * 60, abs=1)
+
+        # Manual wakeup 5 min before a slot -> the gate window holds the
+        # next run past the slot (no duplicate right after it).
+        last = datetime(2026, 9, 13, 5, 50, tzinfo=timezone.utc)
+        w = mod.decide(datetime(2026, 9, 13, 5, 55, tzinfo=timezone.utc),
+                       last, slots)
+        assert w == pytest.approx(40 * 60, abs=1)
+
+    def test_load_slots_parses_config_and_tz(self, tmp_path):
+        mod = self._mod()
+        cfg = tmp_path / "ai_bot.yaml"
+        cfg.write_text(
+            "bot:\n  tz_offset_hours: -5\nschedule:\n"
+            "  - name: a\n    hour: 0\n    minute: 0\n"
+            "  - name: b\n    hour: 14\n    minute: 0\n")
+        # local = UTC + offset  =>  utc_hour = local_hour - offset
+        assert mod._load_slots(cfg) == [(5, 0), (19, 0)]
+
+    def test_corrupt_journal_treated_as_stale(self, tmp_path, monkeypatch):
         # A corrupt journal must not silently block trading.
-        rc = self._run_gate(monkeypatch, tmp_path, ["{{{not json"])
-        assert rc == 0
+        mod = self._mod()
+        (tmp_path / "journal.jsonl").write_text("{{{not json")
+        monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
+        monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
+        assert mod.main() == 0
 
 
 class TestWeeklyReport:
@@ -1035,6 +1198,40 @@ class TestDailyDigest:
         assert "$10,000.00" in msg
         assert 'AI said: "Flat market, standing aside."' in msg
 
+    def test_success_failure_mix_surfaces_error(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-13T00:49:07+00:00"),
+            self._entry("2026-09-13T11:39:25+00:00", status="error",
+                        errors=["AI engine failed: 503 high demand"]),
+        ])
+        s = summarize_day(d, now=self.NOW)
+        msg = format_digest(s)
+        assert "1/2 ok" in msg
+        assert "503" in msg
+
+    def test_already_sent_marker_suppresses_duplicate(self, tmp_path):
+        """The 2026-09-13 bug: a manual run fired the scheduled digest early,
+        then the scheduled run sent a false NO-WAKEUPS alarm."""
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [self._entry("2026-09-13T14:02:11+00:00")])
+        (d / "digest_sent.txt").write_text("2026-09-13")
+        s = summarize_day(d, now=self.NOW)
+        assert s["already_sent"] is True
+        msg = format_digest(s)
+        assert "Already delivered" in msg
+        assert "NO WAKEUPS" not in msg
+
+    def test_stale_marker_does_not_suppress(self, tmp_path):
+        from scripts.ai_daily_digest import summarize_day
+
+        d = self._write(tmp_path, [self._entry("2026-09-13T14:02:11+00:00")])
+        (d / "digest_sent.txt").write_text("2026-09-12")  # yesterday
+        s = summarize_day(d, now=self.NOW)
+        assert s["already_sent"] is False
+
     def test_day_with_trades_shows_pnl(self, tmp_path):
         from scripts.ai_daily_digest import format_digest, summarize_day
 
@@ -1263,11 +1460,12 @@ class TestPollerWorkflow:
         # trading crons. Continuity must NOT depend on them.
         crons = [c["cron"] for c in d["on"]["schedule"]]
         assert crons == ["7 * * * *", "22 * * * *", "37 * * * *", "52 * * * *"]
-        # Primary continuity: the workflow relaunches itself on completion
-        # (cron is unreliable for fresh workflows), and trading-wakeup
-        # completions revive the chain after any outage.
+        # Kicker completions: trading/digest/health runs revive the chain
+        # after any outage. NO self-reference: GitHub ignores a workflow
+        # listing itself in workflow_run (proven — run #2 never fired).
         wr = d["on"]["workflow_run"]
-        assert set(wr["workflows"]) == {"AI Bot Telegram Poller", "AI Trading Bot"}
+        assert "AI Bot Telegram Poller" not in set(wr["workflows"])
+        assert {"AI Trading Bot", "AI Bot Daily Digest"} <= set(wr["workflows"])
         assert wr["types"] == ["completed"]
         # The offset persist pushes to the state branch.
         assert d["permissions"]["contents"] == "write"
@@ -1290,11 +1488,41 @@ class TestPollerWorkflow:
         assert b["concurrency"]["cancel-in-progress"] is False
 
     def test_trading_workflow_answers_fallback(self):
-        """Wakeup responder still runs (always()) as the poller's fallback."""
+        """Wakeup responder runs ALWAYS — even gate-skipped runs must
+        answer pending commands (the 2026-09-13 unanswered /help)."""
         d = _wf_yaml(".github/workflows/ai_bot.yml")
         steps = d["jobs"]["run-bot"]["steps"]
         ans = [s for s in steps if "Answer Telegram" in str(s.get("name", ""))]
-        assert ans and ans[0]["if"] == "always() && steps.gate.outputs.run != 'false'"
+        assert ans and ans[0]["if"] == "always()"
+
+    def test_trading_workflow_self_healing_chain(self):
+        """The wakeup chain must not depend on cron alone (GitHub dropped
+        four consecutive slots on 2026-09-13), and must not self-reference
+        (GitHub ignores a workflow_run workflow listing itself)."""
+        d = _wf_yaml(".github/workflows/ai_bot.yml")
+        wr = d["on"]["workflow_run"]
+        assert "AI Trading Bot" not in set(wr["workflows"])
+        assert {"AI Bot Health Check", "AI Bot Telegram Poller"} <= set(wr["workflows"])
+        # The gate is the relay: fresh journal -> sleep to next slot.
+        gate = [s for s in d["jobs"]["run-bot"]["steps"]
+                if "Schedule gate" in str(s.get("name", ""))]
+        assert gate and "scripts/ai_bot_gate.py" in gate[0]["run"]
+        # GitHub's hard job cap is 360 min; the worst relay wait (~5h15m)
+        # must fit under it.
+        assert d["jobs"]["run-bot"]["timeout-minutes"] == 360
+
+    def test_health_check_recheck_window(self):
+        """The watchdog waits for the self-healing chain before staying red."""
+        text = open(".github/workflows/ai_health_check.yml", encoding="utf-8").read()
+        assert "RECHECK_MINUTES" in text
+        assert "setFailed" in text  # still fails loudly if never recovered
+
+    def test_digest_marker_persisted(self):
+        """The digest's sent-marker must persist, or manual test runs keep
+        re-tripping the scheduled digest (the false-alarm bug)."""
+        d = _wf_yaml(".github/workflows/ai_daily_digest.yml")
+        names = [str(s.get("name", "")) for s in d["jobs"]["daily-digest"]["steps"]]
+        assert any("Persist digest marker" in n for n in names)
 
 
 class TestPreLiveChecklist:

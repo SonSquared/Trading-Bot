@@ -138,13 +138,13 @@ Reading a journal entry:
 
 The repo ships `.github/workflows/ai_bot.yml`, following the same battle-tested pattern as the main bot:
 
-- **6 wakeup slots/day**, each fired **twice** (`:02` and `:32`) because GitHub's free-tier cron drops slots wholesale — `scripts/ai_bot_gate.py` turns the redundant firing into a ~15-second no-op
+- **6 wakeup slots/day** (`00/06/08/14/20/23 UTC`, each fired twice at `:02`/`:32`), **plus a self-healing chain**: GitHub's cron silently drops slots (proven 2026-09-13 — four consecutive wakeups never fired), so every completed AI-suite run kicks the next wakeup via `workflow_run`, and `scripts/ai_bot_gate.py` acts as a **relay** — it runs the wakeup immediately when the journal is stale, otherwise sleeps until the next scheduled slot. A dropped slot becomes a slightly late wakeup, never a missed one
 - **Continuity files persist to the `ai-bot-state` branch** (git, not the unreliable Actions cache), restored on every run — including failure journals
 - `workflow_dispatch` lets you trigger a wakeup manually from the Actions tab
 - A `quality` job runs the AI bot test suite on every push that touches bot code
 - **Daily digest at 23:50 UTC** (`ai_daily_digest.yml`): one Telegram heartbeat per day — wakeups ok/failed, P&L, equity, open positions, the AI's last reasoning. A day with zero wakeups produces a loud "NO WAKEUPS RAN TODAY" alert, so quiet success is never indistinguishable from a dead bot
 - **Weekly report Sundays 17:00 UTC** (`ai_weekly_report.yml`): week P&L, win rate, AI notes
-- **Hourly health check** (`ai_health_check.yml`): watchdog that alerts if successful wakeups silently stop
+- **Hourly health check** (`ai_health_check.yml`): watchdog that alerts if successful wakeups silently stop — then waits ~6 minutes for the self-healing chain to recover and goes green if a fresh success lands, so a fixed incident never leaves a red patrol on the board
 
 Setup:
 
@@ -163,8 +163,8 @@ Setup:
 |---|---|
 | `GEMINI_API_KEY is required for gemini models` | No key in `.env` — the bot refuses to guess. Free Gemini key: https://aistudio.google.com/apikey |
 | `market data unavailable for all pairs` | Binance down or blocked in your region; check `status` |
-| `AI engine failed: ...` in journal, status ERROR | Model call failed twice; read the error, it names the cause |
-| Gate exit 3 in Actions | Normal — redundant cron firing was skipped as designed |
+| `AI engine failed: ...` in journal, status ERROR | All models/attempts exhausted (retired model → fallback chain → retry/backoff); read the error, it names the last cause. A single 404/503 no longer kills the wakeup |
+| Gate prints "relaying: sleeping ..." | Normal — a wakeup just ran; this run holds the fort until the next scheduled slot (the anti-cron-drop relay) |
 | Equity looks reset to $10,000 | The `data/ai_bot/` dir was deleted; paper state lives there |
 | Want to start over | `rm -rf data/ai_bot` and run again |
 

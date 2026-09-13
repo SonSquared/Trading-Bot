@@ -117,4 +117,38 @@ jobs:
             }
 
             await alert('AI BOT HEALTH ALERT', msg);
+
+            // SELF-HEAL WINDOW: the AI Trading Bot chain (workflow_run) is
+            // kicked by this patrol's own completion path and by the alert
+            // going out. Give a recovery wakeup a few minutes to land; if
+            // it journaled a success, the incident is already over — go
+            // green instead of leaving a red run on the board all day
+            // (a red patrol every hour is exactly the cry-wolf pattern
+            // that trains the user to ignore real alerts).
+            const RECHECK_MINUTES = 6;
+            console.log('Waiting ' + RECHECK_MINUTES + ' min for the self-healing chain to recover...');
+            await new Promise(r => setTimeout(r, RECHECK_MINUTES * 60 * 1000));
+            try {
+              const resp2 = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: 'data/ai_bot/journal.jsonl',
+                ref: 'ai-bot-state',
+              });
+              const text2 = Buffer.from(resp2.data.content, 'base64').toString('utf8');
+              const lines2 = text2.trim().split('\n').filter(l => l.trim());
+              const freshCutoff = new Date(Date.now() - (RECHECK_MINUTES + 4) * 60 * 1000);
+              for (let i = lines2.length - 1; i >= 0; i--) {
+                try {
+                  const e = JSON.parse(lines2[i]);
+                  if (e.status === 'success' && e.timestamp &&
+                      new Date(e.timestamp) >= freshCutoff) {
+                    console.log('RECOVERED: successful wakeup journaled at ' + e.timestamp +
+                      ' during the wait window — incident resolved, patrol goes green.');
+                    return;
+                  }
+                } catch (_) { /* skip corrupt line */ }
+              }
+            } catch (err) { /* still unrecovered */ }
+
             core.setFailed('No successful AI wakeup in the last ' + HOURS + 'h');

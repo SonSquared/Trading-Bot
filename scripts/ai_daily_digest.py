@@ -27,6 +27,12 @@ import click
 
 from trading_system.bot.telegram_notifier import TelegramNotifier
 
+# Records the last date a digest was actually delivered. A SUCCESSFUL
+# send writes today's date; the digest skips a re-send for the same day.
+# Missing/corrupt marker = "not sent yet" — a loud duplicate digest beats
+# a silent gap, by design.
+MARKER = "digest_sent.txt"
+
 
 def _load_ledger(data_dir: Path) -> dict:
     path = data_dir / "paper_ledger.json"
@@ -84,6 +90,18 @@ def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
 
     positions = ledger.get("positions", {}) or {}
 
+    # Idempotence guard: did today's digest already get DELIVERED? The
+    # marker file lives in the same data dir and persists on the state
+    # branch, so the cloud digest only ever fires once per day. A missing
+    # or corrupt marker is treated as not-sent (resend loudly).
+    already_sent = False
+    marker_path = data_dir / MARKER
+    if marker_path.exists():
+        try:
+            already_sent = marker_path.read_text().strip() == day
+        except OSError:
+            already_sent = False
+
     return {
         "day": day,
         "wakeups": wakeups,
@@ -97,11 +115,21 @@ def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
         "open_positions": positions,
         "outlook": (last or {}).get("market_outlook"),
         "reasoning": (last or {}).get("ai_reasoning"),
+        "already_sent": already_sent,
     }
 
 
 def format_digest(s: dict) -> str:
     """Render the summary dict as the Telegram message text."""
+    if s.get("already_sent"):
+        return (
+            f"AI BOT DAILY DIGEST — {s['day']}\n"
+            f"{'=' * 30}\n"
+            "✅ Already delivered earlier today — no duplicate send.\n"
+            "(Idempotence guard: one digest per day, even if this job is\n"
+            "re-run manually.)"
+        )
+
     if s["wakeups"] == 0:
         return (
             f"AI BOT DAILY DIGEST — {s['day']}\n"
@@ -227,6 +255,15 @@ def main(config: str, dry_run: bool) -> None:
             err=True,
         )
         sys.exit(1)
+
+    # Mark today as delivered ONLY after a confirmed send, so a failed
+    # send retries on the next trigger instead of going silent for the day.
+    marker_path = data_dir / MARKER
+    try:
+        marker_path.write_text(s["day"])
+        click.echo(f"Digest sent; marked delivered in {marker_path}")
+    except OSError as e:
+        click.echo(f"WARNING: digest sent but marker write failed: {e}", err=True)
 
 
 if __name__ == "__main__":

@@ -15,14 +15,18 @@ on:
     - cron: '52 * * * *'
   workflow_dispatch:  # manual start from the Actions tab
   workflow_run:
-    # THE primary mechanism: when this workflow completes (any
-    # conclusion), start the next generation — a self-sustaining chain.
-    # The main trading bot's completions also kick the chain, so it
+    # Trading wakeup + digest completions also kick the chain, so it
     # self-heals even after every generation has died (e.g. quota,
-    # manual cancel): the next wakeup revives it automatically.
+    # manual cancel).
+    # NOTE: this workflow deliberately does NOT list itself here. GitHub
+    # ignores self-referencing workflow_run triggers entirely (proven:
+    # run #2 never fired after run #1), so self-chaining silently did
+    # nothing. Continuity comes from the four backup crons above plus
+    # the AI Trading Bot / digest completions below.
     workflows:
-      - "AI Bot Telegram Poller"
       - "AI Trading Bot"
+      - "AI Bot Daily Digest"
+      - "AI Bot Health Check"
     types: [completed]
 
 permissions:

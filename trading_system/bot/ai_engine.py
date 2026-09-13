@@ -103,15 +103,32 @@ class AIEngine:
 
     Defaults to Google's Gemini FREE tier via its OpenAI-compatible
     endpoint — free AI Studio key, no credit card, and 6 wakeups/day fit
-    far inside the free rate limits. The default model is the
+    far inside the free rate limits. The primary model is the
     'gemini-flash-latest' alias, which always tracks the newest flash
-    model: Google retires pinned versions for new keys (gemini-2.5-flash
-    was blocked this way), the alias never goes stale. Any OpenAI model
-    also works: set ai.model in the config and OPENAI_API_KEY.
+    model; see MODEL_FALLBACKS for why a single retired/overloaded model
+    can never kill a wakeup anymore. Any OpenAI model also works: set
+    ai.model in the config and OPENAI_API_KEY.
     """
 
     # Gemini's OpenAI-compatible endpoint: same chat.completions API surface.
     GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    # Tried in order on ANY error (retired model 404, 429 rate limit, 503
+    # "high demand", ...). History: gemini-2.5-flash was retired for new
+    # keys (404), and gemini-flash-latest itself once returned 503 under
+    # load — a wakeup dying on either is a silent trading gap. The first
+    # entry is the evergreen alias; the bare 'gemini-flash' alias and the
+    # long-lived gemini-2.0-flash are the safety net.
+    MODEL_FALLBACKS: tuple[str, ...] = (
+        "gemini-flash-latest",
+        "gemini-flash",
+        "gemini-2.0-flash",
+    )
+
+    # Backoff (seconds) consumed between consecutive attempts. Transient
+    # 503/429 spikes usually clear within seconds; the spread keeps the
+    # total retry window (~10s worst case) well inside the job budget.
+    RETRY_BACKOFF: tuple[float, ...] = (2, 4, 4)
 
     def __init__(
         self,
@@ -177,46 +194,88 @@ class AIEngine:
         """Generate a trading decision from assembled context.
 
         All context is pre-formatted strings — the engine does not fetch data.
-        This keeps it pure and testable. Retries once on transient errors.
+        This keeps it pure and testable.
+
+        Resilience: the configured model is tried first, then every entry of
+        MODEL_FALLBACKS (gemini configs only), two attempts each, with real
+        backoff between attempts. A retired model (404) or a demand spike
+        (503/429) therefore degrades to a slower wakeup, never a dead one.
+        Only when every model and attempt is exhausted does this return an
+        explicitly-failed decision (ok=False) for the agent to report.
         """
         user_prompt = self._build_prompt(
             market_context, portfolio_context, strategy_context, risk_context
         )
 
-        logger.info("ai_decision_request", model=self.model)
+        if self.model.startswith("gemini"):
+            chain = (self.model,) + tuple(
+                m for m in self.MODEL_FALLBACKS if m != self.model
+            )
+        else:
+            # Non-gemini (e.g. OpenAI) config: fallback list is gemini-only.
+            chain = (self.model,)
 
-        last_error: Exception | None = None
-        for attempt in (1, 2):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    response_format={"type": "json_object"},
-                )
+        sleeps = iter(self.RETRY_BACKOFF)
 
-                raw = (response.choices[0].message.content or "").strip()
-                logger.info("ai_decision_response", attempt=attempt, raw_length=len(raw))
+        def _nap() -> None:
+            time.sleep(next(sleeps, 4))
 
-                if not raw:
-                    logger.error("ai_empty_response", attempt=attempt)
-                    last_error = RuntimeError("model returned an empty response")
-                    continue
+        errors: list[str] = []
+        for model_i, model in enumerate(chain):
+            for attempt in (1, 2):
+                logger.info("ai_decision_request", model=model, attempt=attempt)
+                try:
+                    response = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                        response_format={"type": "json_object"},
+                    )
 
-                return self._parse_response(raw)
+                    raw = (response.choices[0].message.content or "").strip()
+                    logger.info(
+                        "ai_decision_response",
+                        model=model,
+                        attempt=attempt,
+                        raw_length=len(raw),
+                    )
 
-            except Exception as e:
-                last_error = e
-                logger.warning("ai_decision_attempt_failed", attempt=attempt, error=str(e))
-                if attempt == 1:
-                    time.sleep(2)  # brief backoff before the retry
+                    if not raw:
+                        logger.error("ai_empty_response", model=model, attempt=attempt)
+                        errors.append(f"{model}: empty response")
+                    else:
+                        decision = self._parse_response(raw)
+                        decision.model = model
+                        if model != self.model:
+                            logger.warning(
+                                "ai_model_fallback", failed=self.model, working=model
+                            )
+                            # Stick with the working model for any later
+                            # calls in this process (one wakeup = one run).
+                            self.model = model
+                        return decision
 
-        logger.error("ai_decision_failed", error=str(last_error))
-        return self._error_decision(f"Failed to get AI decision: {last_error}")
+                except Exception as e:  # noqa: BLE001 — every error retries/falls back
+                    errors.append(f"{model}: {e}")
+                    logger.warning(
+                        "ai_decision_attempt_failed",
+                        model=model,
+                        attempt=attempt,
+                        error=str(e),
+                    )
+                _nap()  # between the two attempts, and before the next model
+            if model_i < len(chain) - 1:
+                logger.warning("ai_model_exhausted", failed_model=model)
+
+        logger.error("ai_decision_failed", attempts=len(errors), last=errors[-1] if errors else "?")
+        return self._error_decision(
+            f"Failed to get AI decision after trying {len(chain)} model(s) "
+            f"x2 attempts — last: {errors[-1] if errors else 'unknown'}"
+        )
 
     def _build_prompt(
         self,
