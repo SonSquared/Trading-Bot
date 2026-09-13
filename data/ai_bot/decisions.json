@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260913_004907",
+  "wakeup_id": "20260913_165719",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volatility and flat momentum across both pairs with ADX below 15, indicating choppy sideways consolidation.",
-    "reasoning": "BTC and ETH are both exhibiting weak trend strength (ADX 8.0 on BTC, 14.3 on ETH) along with neutral RSI and compressed Bollinger Bands. Volume is notably low. Trend-following conditions are not met, warranting patience until directional expansion occurs."
+    "risk_assessment": "Low volatility environment with mixed momentum signals. Price is testing overhead resistance against lagging bearish EMA alignments.",
+    "reasoning": "BTC has rebounded above its 50 EMA toward the 24h high resistance at $77,418, but the EMA structure (9 < 21 < 50) remains bearish and Stochastic is approaching overbought territory (85.9). ETH is consolidating around its middle Bollinger Band and 50 EMA on depressed volume (0.28x avg). Neither asset presents a clear trend-following setup with sufficient edge. Preserving capital until a confirmed breakout or reversal setup emerges."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-13T00:49:16.271378+00:00"
+  "decided_at": "2026-09-13T16:57:51.708863+00:00"
 }
