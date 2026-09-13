@@ -1112,3 +1112,184 @@ class TestDailyDigest:
         )
         assert r.returncode != 0
         assert "run a wakeup first" in (r.stderr + r.stdout)
+
+
+class TestAlwaysOnPoller:
+    """scripts/ai_poller.py — instant /status responder logic.
+
+    Every dependency is injected, so these tests run with zero network
+    and zero mutation of the shared commands module.
+    """
+
+    @staticmethod
+    def _upd(uid, text="/status", chat="5421461006"):
+        return {"update_id": uid,
+                "message": {"text": text, "chat": {"id": chat}}}
+
+    def test_poller_reuses_wakeup_responder_routing(self):
+        """Both responders share one routing table — answers can never drift."""
+        import scripts.ai_poller as poller
+        import scripts.ai_telegram_commands as cmds
+
+        assert poller.cmds is cmds
+        assert cmds.route_command("/status", {}, None, {}) is not None
+
+    def test_answers_only_unseen_updates_and_confirms_server_side(self):
+        import scripts.ai_poller as poller
+
+        updates = {"ok": True, "result": [
+            self._upd(101, "/status"), self._upd(102, "/help"),
+        ]}
+        sends: list[str] = []
+        calls: list = []
+        r = poller.poll_once(
+            "tok", "5421461006",
+            get_updates=lambda tok, off, ps: calls.append(off) or (updates, 200),
+            send=lambda tok, m, **kw: sends.append(kw["text"]) or {"ok": True},
+            read_offset=lambda: 0,
+            write_offset=lambda v: None,
+            load_ledger=lambda: {},
+            load_journal=lambda: None,
+            prices_fn=lambda pairs: {},
+        )
+        assert r["answered"] == 2 and not r["conflict"]
+        # First call used no offset; the second is the server-side confirm
+        # carrying the final offset (103), so a fresh generation is never
+        # re-sent these updates (fresh FS, stale offset file).
+        assert calls == [None, 103]
+
+    def test_dedupes_against_disk_offset(self, tmp_path):
+        import scripts.ai_poller as poller
+
+        offset_file = tmp_path / "telegram_offset.txt"
+        # Telegram semantics: offset N = "updates < N are processed; send
+        # me N and newer". The wakeup responder handled up to 100 and
+        # wrote 101, so 101/102 are UNPROCESSED and must be answered;
+        # anything below 101 is defensively skipped.
+        offset_file.write_text("101")
+        updates = {"ok": True, "result": [
+            self._upd(100, "/status"),  # < offset -> skipped, never re-answered
+            self._upd(101, "/status"),  # unprocessed -> answered
+            self._upd(101, "/status"),  # duplicate in batch -> answered once
+            self._upd(102, "/status"),  # unprocessed -> answered
+        ]}
+        sends: list[str] = []
+        poller.poll_once(
+            "tok", "5421461006",
+            get_updates=lambda tok, off, ps: (updates, 200),
+            send=lambda tok, m, **kw: sends.append(kw["text"]) or {"ok": True},
+            read_offset=lambda: int(offset_file.read_text()),
+            write_offset=lambda v: offset_file.write_text(str(v)),
+            load_ledger=lambda: {},
+            load_journal=lambda: None,
+            prices_fn=lambda pairs: {},
+        )
+        assert len(sends) == 2  # 101 and 102; 100 and the dup never sent
+        assert offset_file.read_text() == "103"
+
+    def test_conflict_yields_immediately(self):
+        import scripts.ai_poller as poller
+
+        r = poller.poll_once(
+            "tok", "5421461006",
+            get_updates=lambda tok, off, ps: (None, 409),
+            send=lambda tok, m, **kw: {"ok": True},
+            read_offset=lambda: 0,
+            write_offset=lambda v: None,
+            load_ledger=lambda: {},
+            load_journal=lambda: None,
+            prices_fn=lambda pairs: {},
+        )
+        assert r["conflict"] is True
+
+    def test_offset_never_moves_backwards(self, tmp_path):
+        import scripts.ai_poller as poller
+
+        offset_file = tmp_path / "telegram_offset.txt"
+        offset_file.write_text("500")
+        updates = {"ok": True, "result": [
+            self._upd(600, "/help"), self._upd(505, "/help"),
+        ]}
+        poller.poll_once(
+            "tok", "5421461006",
+            get_updates=lambda tok, off, ps: (updates, 200),
+            send=lambda tok, m, **kw: {"ok": True},
+            read_offset=lambda: int(offset_file.read_text()),
+            write_offset=lambda v: offset_file.write_text(str(v)),
+            load_ledger=lambda: {},
+            load_journal=lambda: None,
+            prices_fn=lambda pairs: {},
+        )
+        assert offset_file.read_text() == "601"
+
+    def test_ignores_unauthorized_chat(self):
+        import scripts.ai_poller as poller
+
+        updates = {"ok": True, "result": [self._upd(7, "/status", chat="999")]}
+        sends: list[str] = []
+        written: list = []
+        poller.poll_once(
+            "tok", "5421461006",
+            get_updates=lambda tok, off, ps: (updates, 200),
+            send=lambda tok, m, **kw: sends.append(kw["text"]) or {"ok": True},
+            read_offset=lambda: 0,
+            write_offset=written.append,
+            load_ledger=lambda: {},
+            load_journal=lambda: None,
+            prices_fn=lambda pairs: {},
+        )
+        assert sends == []  # nobody else's chat is ever answered
+        assert written == [8]  # ...but the update is still consumed
+
+
+def _wf_yaml(path) -> dict:
+    """Load a workflow file, normalizing YAML 1.1's `on:` -> True key."""
+    from pathlib import Path as _Path
+
+    import yaml
+
+    d = yaml.safe_load(_Path(path).read_text())
+    d["on"] = d.pop("on", None) or d.pop(True, None)
+    return d
+
+
+class TestPollerWorkflow:
+    """ai_poller.yml structural pins: bounded billing + safe coordination."""
+
+    def test_bounded_generations_and_cancel(self):
+        d = _wf_yaml(".github/workflows/ai_poller.yml")
+        assert d["concurrency"]["cancel-in-progress"] is True
+        crons = [c["cron"] for c in d["on"]["schedule"]]
+        assert crons == ["7,22,37,52 * * * *"]  # one cron = 4 generations/hour
+        job = d["jobs"]["poll"]
+        assert job["timeout-minutes"] <= 30
+        steps = "\n--".join(s.get("run", "") for s in job["steps"])
+        assert "--max-minutes 20" in steps
+        assert "pip install -r requirements.txt" in steps  # no dev tools
+
+    def test_poller_never_blocks_trading(self):
+        """Different concurrency groups: poller cancels can't touch trading."""
+        p = _wf_yaml(".github/workflows/ai_poller.yml")
+        b = _wf_yaml(".github/workflows/ai_bot.yml")
+        assert p["concurrency"]["group"] != b["concurrency"]["group"]
+        assert b["concurrency"]["cancel-in-progress"] is False
+
+    def test_trading_workflow_answers_fallback(self):
+        """Wakeup responder still runs (always()) as the poller's fallback."""
+        d = _wf_yaml(".github/workflows/ai_bot.yml")
+        steps = d["jobs"]["run-bot"]["steps"]
+        ans = [s for s in steps if "Answer Telegram" in str(s.get("name", ""))]
+        assert ans and ans[0]["if"] == "always() && steps.gate.outputs.run != 'false'"
+
+
+class TestPreLiveChecklist:
+    """docs/AI_BOT_PRE_LIVE.md — config/trade claims must match the code."""
+
+    def test_checklist_doc_exists(self):
+        from pathlib import Path as _Path
+
+        p = _Path("docs/AI_BOT_PRE_LIVE.md")
+        assert p.exists(), "the pre-live checklist doc must exist"
+        text = p.read_text(encoding="utf-8")
+        for section in ("GREEN", "YELLOW", "RED", "Testnet", "leverage"):
+            assert section in text

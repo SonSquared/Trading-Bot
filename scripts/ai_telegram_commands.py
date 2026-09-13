@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Answer Telegram commands for the AI trading bot (report-only).
 
-Cron-based bots cannot receive messages in real time, so — exactly like
-the main bot (scripts/telegram_bot.py) — each scheduled run polls
-getUpdates for pending commands and replies. A command texted between
-wakeups is therefore answered at the NEXT wakeup (worst case ~6h; the
-:30 redundant slot is gate-skipped and does not answer).
+Two responders share this module's routing and credentials:
+  - scripts/ai_poller.py (always-on, launched in 15-min generations by
+    ai_poller.yml) long-polls getUpdates and answers within seconds;
+  - the scheduled wakeup path (below) answers anything pending at each
+    wakeup as a fallback (e.g. while the poller is disabled).
+Both dedupe via the shared update offset in data/ai_bot.
 
 Commands (accepted ONLY from AI_TELEGRAM_CHAT_ID):
     /status     equity, open positions, last wakeup outcome
@@ -64,6 +65,13 @@ def _tg(token: str, method: str, **params) -> dict | None:
         data = resp.json()
         if resp.status_code == 200 and data.get("ok"):
             return data
+        if resp.status_code == 409 and method == "getUpdates":
+            # The always-on poller (scripts/ai_poller.py) holds the
+            # long-poll — commands are answered within seconds by it.
+            # This is the healthy steady state, not a warning.
+            print("getUpdates: always-on poller active (HTTP 409) — "
+                  "it answers commands; nothing to do here.")
+            return None
         print(f"WARNING: {method} failed: HTTP {resp.status_code} {data}", file=sys.stderr)
         return None
     except Exception as e:  # noqa: BLE001 — report-only, must not crash the run
@@ -223,8 +231,8 @@ HELP_TEXT = (
     "  /positions open-position detail\n"
     "  /last      the AI's latest decision + reasoning\n"
     "  /help      this list\n\n"
-    "Answers arrive at the next scheduled wakeup "
-    "(6x/day). Trade alerts and the Sunday report come automatically."
+    "Answers usually arrive within a minute (always-on responder). "
+    "Trade alerts and the daily/weekly reports come automatically."
 )
 
 

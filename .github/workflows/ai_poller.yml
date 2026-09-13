@@ -1,0 +1,94 @@
+name: AI Bot Telegram Poller
+# Always-on command responder: /status etc. answered within seconds, not
+# at the next wakeup. Each generation long-polls for up to 20 minutes;
+# the next generation cancels it and takes over (concurrency), so
+# coverage is continuous and billing is bounded to ~1,440 runner-min/day
+# (free on public repos; see docs/AI_BOT_PRE_LIVE.md for the math and
+# the private-repo decision).
+on:
+  schedule:
+    # :07/:22/:37/:52 — deliberately NOT on the trading crons (:02/:32) so
+    # the two workflows' first polling requests never collide on Telegram.
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:  # manual start from the Actions tab
+
+permissions:
+  contents: read
+
+# The KEY line: a new generation CANCELS the previous one and starts
+# fresh (checkout, poller, restore) — this is what makes 15-min crons
+# yield continuous, overlap-free coverage.
+concurrency:
+  group: ai-telegram-poller
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore AI bot state from ai-bot-state branch
+        # Read-only restore of ledger/journal/offset; the poller never
+        # writes trading state. Its offset advance is confirmed
+        # server-side at Telegram, so persisting the file back is a
+        # nice-to-have, not a correctness requirement.
+        run: |
+          mkdir -p data/ai_bot
+          if git ls-remote --exit-code --heads origin ai-bot-state >/dev/null 2>&1; then
+            git fetch --depth=1 origin ai-bot-state
+            git checkout FETCH_HEAD -- data/ai_bot/ \
+              && echo "State restored from ai-bot-state branch" \
+              || echo "WARNING: ai-bot-state branch has no data/ai_bot yet"
+          else
+            echo "No ai-bot-state branch yet — /status will show a fresh account"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        # requirements only — never the dev tools; this job runs ~2,880x/month
+        run: pip install -r requirements.txt
+
+      - name: Poll Telegram and answer commands
+        env:
+          AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
+          AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
+        run: python -u scripts/ai_poller.py --max-minutes 20
+
+      - name: Persist poller offset (best-effort)
+        if: always()
+        env:
+          STATE_BRANCH: ai-bot-state
+        run: |
+          set -e
+          if [ ! -f data/ai_bot/telegram_offset.txt ]; then
+            echo "No offset file produced — nothing to persist"
+            exit 0
+          fi
+          rm -rf /tmp/aibotstate
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            git worktree add /tmp/aibotstate "origin/$STATE_BRANCH"
+          else
+            git worktree add --orphan /tmp/aibotstate
+          fi
+          mkdir -p /tmp/aibotstate/data/ai_bot
+          cp data/ai_bot/telegram_offset.txt /tmp/aibotstate/data/ai_bot/
+          cd /tmp/aibotstate
+          git add data/ai_bot/telegram_offset.txt
+          if git diff --cached --quiet; then
+            echo "Offset unchanged — nothing to persist"
+            exit 0
+          fi
+          git -c user.name="ai-bot-state-persister" \
+              -c user.email="actions@users.noreply.github.com" \
+              commit -m "poller offset: ${{ github.run_number }}"
+          git push origin "HEAD:$STATE_BRANCH"
+          echo "Offset persisted"
