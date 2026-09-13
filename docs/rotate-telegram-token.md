@@ -1,10 +1,11 @@
 # Rotating the leaked Telegram bot token
 
-**Why this is urgent:** the token `8783971913:AAH1ZdvtKvHjgVuC2c9LLebYnM-o8gBMQaY`
-was committed to this repository and is present in git *history*. Even though
-it has now been removed from every source file, anyone with repo access (or a
-leaked clone) still has a working token until it is revoked on Telegram's
-side. Revoking makes the old token permanently dead regardless of history.
+**Why this was urgent:** the main bot's token (redacted here; it lives in
+git *history* only) was once committed to this repository. Even though
+it has now been removed from every source file, anyone with repo access
+still has a working token until it is revoked on Telegram's side.
+Revoking makes the old token permanently dead regardless of history.
+(2026-09-13: revocation verified — the old token returns HTTP 401.)
 
 Do these steps in order. Steps 1–2 take ~2 minutes; the rest is copy-paste.
 
@@ -14,7 +15,7 @@ Do these steps in order. Steps 1–2 take ~2 minutes; the rest is copy-paste.
 2. Send `/mybots` and pick your bot (e.g. "trading-bot-sonsquared").
 3. Tap **API Token**.
 4. Tap **Revoke current token** and confirm.
-   - This instantly kills `8783971913:AAH1…` — the leaked token is now
+   - This instantly kills the old (leaked) token — it is now
      worthless. Any bot that still uses it will get `401 Unauthorized`.
 5. Tap **Generate new token** (or `/token`) and copy the new token.
    - It looks like `123456789:AAH...` — treat it like a password from here on.
@@ -75,7 +76,7 @@ fly deploy -a trading-bot-sonsquared
    within a few minutes (the next scheduled run answers commands).
 3. Confirm the OLD token is dead:
    ```
-   curl https://api.telegram.org/bot8783971913:AAH1ZdvtKvHjgVuC2c9LLebYnM-o8gBMQaY/getMe
+   curl "https://api.telegram.org/bot<OLD_TOKEN>/getMe"
    ```
    Expect `{"ok":false,...}` (401). The NEW token should return
    `{"ok":true,...}`.
