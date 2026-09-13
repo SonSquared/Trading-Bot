@@ -593,8 +593,12 @@ class TestEngineResilience:
     })
 
     @staticmethod
-    def _engine_with_client(monkeypatch, responses):
-        """AIEngine whose client pops queued responses/exceptions in order."""
+    def _engine_with_client(monkeypatch, responses, discovered=()):
+        """AIEngine whose client pops queued responses/exceptions in order.
+
+        `discovered` is what the API model-listing returns when the engine
+        asks (empty = discovery yields nothing).
+        """
         eng = AIEngine()
         calls: list[str] = []
 
@@ -610,6 +614,7 @@ class TestEngineResilience:
             chat=SimpleNamespace(completions=FakeCompletions()))
         monkeypatch.setattr(
             "trading_system.bot.ai_engine.time.sleep", lambda s: None)
+        monkeypatch.setattr(eng, "_discover_models", lambda: tuple(discovered))
         return eng, calls
 
     @staticmethod
@@ -673,6 +678,65 @@ class TestEngineResilience:
         d = eng.decide("m", "p", "s", "r")
         assert d.ok is True
         assert len(calls) == 3
+
+    def test_total_name_retirement_rescued_by_discovery(self, monkeypatch):
+        """The 2026-09-13 15:51 UTC incident: EVERY pinned name 404'd.
+        The engine must then ask the API which models the key CAN use and
+        succeed with a discovered one — no human intervention."""
+        err = Exception(
+            "Error code: 404 - model no longer available, NOT_FOUND")
+        eng, calls = self._engine_with_client(
+            monkeypatch,
+            [Exception(str(err))] * 6 + [self._resp(self.VALID)],
+            discovered=("gemini-3.7-flash",))
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is True
+        # 3 static models x2 attempts, then the DISCOVERED model answered.
+        assert calls == ["gemini-flash-latest", "gemini-flash-latest",
+                         "gemini-flash", "gemini-flash",
+                         "gemini-3.6-flash", "gemini-3.6-flash",
+                         "gemini-3.7-flash"]
+        assert d.model == "gemini-3.7-flash"
+
+    def test_discovery_yields_nothing_fails_loudly(self, monkeypatch):
+        err = Exception("Error code: 404 - NOT_FOUND, no longer available")
+        eng, calls = self._engine_with_client(
+            monkeypatch, [Exception(str(err))] * 6, discovered=())
+        d = eng.decide("m", "p", "s", "r")
+        assert d.ok is False
+        assert len(calls) == 6  # no invented names, honest failure
+
+    def test_model_missing_detector(self):
+        f = AIEngine._is_model_missing
+        assert f(Exception("Error code: 404 - model no longer available"))
+        assert f(Exception("Error code: 404 - status NOT_FOUND"))
+        assert not f(Exception("Error code: 503 - high demand"))
+        assert not f(Exception("Error code: 429 - rate limit"))
+        assert not f(Exception("connection reset"))
+
+    def test_discovery_ranks_alias_newest_full_flash_first(self, monkeypatch):
+        """The live listing ranking: evergreen aliases first, then newest
+        generation, full flash before lite, image/audio models excluded."""
+        import requests as _requests
+
+        class FakeResp:
+            def json(self):
+                return {"data": [
+                    {"id": "models/gemini-9.9-flash-image"},
+                    {"id": "models/gemini-9.9-flash-lite"},
+                    {"id": "models/gemini-9.9-flash"},
+                    {"id": "models/gemini-3.6-flash"},
+                    {"id": "models/gemini-flash-latest"},
+                    {"id": "models/gemini-9.9-pro"},
+                ]}
+
+        monkeypatch.setattr(_requests, "get", lambda *a, **k: FakeResp())
+        monkeypatch.setenv("GEMINI_API_KEY", "k")
+        got = AIEngine()._discover_models()
+        assert got[0] == "gemini-flash-latest"
+        assert "gemini-9.9-flash" in got[:2]
+        assert "gemini-9.9-flash-image" not in got
+        assert all("pro" not in m for m in got)
 
 
 class TestSpotFallback:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -114,15 +115,17 @@ class AIEngine:
     GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     # Tried in order on ANY error (retired model 404, 429 rate limit, 503
-    # "high demand", ...). History: gemini-2.5-flash was retired for new
-    # keys (404), and gemini-flash-latest itself once returned 503 under
-    # load — a wakeup dying on either is a silent trading gap. The first
-    # entry is the evergreen alias; the bare 'gemini-flash' alias and the
-    # long-lived gemini-2.0-flash are the safety net.
+    # "high demand", ...). History: gemini-2.5-flash, the bare
+    # gemini-flash alias, AND gemini-2.0-flash were each retired for new
+    # keys within weeks of each other (all three 404'd on 2026-09-13),
+    # while Google's own error message pointed to gemini-3.6-flash.
+    # Pinned names are a losing game — see _discover_models: when every
+    # static name 404s, the engine asks the API which models THIS key can
+    # still use and tries the best flash model from the live answer.
     MODEL_FALLBACKS: tuple[str, ...] = (
         "gemini-flash-latest",
         "gemini-flash",
-        "gemini-2.0-flash",
+        "gemini-3.6-flash",
     )
 
     # Backoff (seconds) consumed between consecutive attempts. Transient
@@ -140,6 +143,7 @@ class AIEngine:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._client = None
+        self._discovery_done = False  # ask-the-API-for-models: once per run
 
     @property
     def client(self):
@@ -184,6 +188,65 @@ class AIEngine:
             ok=False,
         )
 
+    @staticmethod
+    def _is_model_missing(error: Exception) -> bool:
+        """True when the API says this model doesn't exist for this key.
+
+        Google's retirement 404s read like: 'This model models/gemini-X
+        is no longer available ... status: NOT_FOUND'. A 503 demand spike
+        or a 429 rate limit is NOT a missing model.
+        """
+        s = str(error)
+        return "404" in s and ("no longer available" in s or "NOT_FOUND" in s)
+
+    def _discover_models(self) -> tuple[str, ...]:
+        """Ask Gemini which models THIS key can actually use.
+
+        Hits the OpenAI-compatible models listing (free, not billed,
+        no quota) and ranks the chat-capable flash models newest-first.
+        This is what makes model retirement a non-event: whatever name
+        Google invents next appears in the listing the moment this key
+        can use it. Returns [] on ANY problem — discovery is a bonus,
+        never a dependency.
+        """
+        try:
+            import requests
+
+            key = os.environ.get("GEMINI_API_KEY", "")
+            if not key:
+                return ()
+            resp = requests.get(
+                self.GEMINI_BASE_URL + "models",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=15,
+            )
+            data = resp.json().get("data", [])
+            ids = [
+                str(d.get("id", "")).removeprefix("models/")
+                for d in data
+                if isinstance(d, dict) and d.get("id")
+            ]
+
+            def _rank(mid: str) -> tuple[int, float, int]:
+                m = re.search(r"gemini-(\d+(?:\.\d+)?)", mid)
+                ver = float(m.group(1)) if m else 0.0
+                return (
+                    0 if "latest" in mid else 1,  # evergreen aliases first
+                    -ver,                          # newest generation first
+                    1 if "lite" in mid else 0,     # full flash before lite
+                )
+
+            flash = [
+                i
+                for i in ids
+                if "flash" in i
+                and not any(x in i for x in ("image", "tts", "live", "embed"))
+            ]
+            return tuple(sorted(flash, key=_rank)[:4])
+        except Exception as e:  # noqa: BLE001 — discovery must never crash decide()
+            logger.warning("ai_model_discovery_failed", error=str(e))
+            return ()
+
     def decide(
         self,
         market_context: str,
@@ -221,7 +284,14 @@ class AIEngine:
             time.sleep(next(sleeps, 4))
 
         errors: list[str] = []
-        for model_i, model in enumerate(chain):
+        nap = True  # back off before the next attempt?
+        # while, NOT for-enumerate: discovery can APPEND to `chain`
+        # mid-loop, and a for-loop keeps iterating the ORIGINAL tuple —
+        # appended models would silently never be tried (caught by test).
+        model_i = 0
+        while model_i < len(chain):
+            model = chain[model_i]
+            model_i += 1
             for attempt in (1, 2):
                 logger.info("ai_decision_request", model=model, attempt=attempt)
                 try:
@@ -267,7 +337,23 @@ class AIEngine:
                         attempt=attempt,
                         error=str(e),
                     )
-                _nap()  # between the two attempts, and before the next model
+                    # A retired model is deterministic — no point backing off
+                    # before trying the next name. Transient errors nap.
+                    nap = not self._is_model_missing(e)
+                    # First time the API says "model missing": ask it which
+                    # models this key CAN use, and append them to the chain.
+                    # Next retirement => zero human intervention needed.
+                    if not self._discovery_done and self._is_model_missing(e):
+                        self._discovery_done = True
+                        discovered = self._discover_models()
+                        if discovered:
+                            chain = chain + tuple(
+                                m for m in discovered if m not in chain
+                            )
+                            logger.info("ai_models_discovered", added=list(discovered))
+                if nap:
+                    _nap()  # between the two attempts, and before the next model
+                nap = True
             if model_i < len(chain) - 1:
                 logger.warning("ai_model_exhausted", failed_model=model)
 
