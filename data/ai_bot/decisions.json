@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_010205",
+  "wakeup_id": "20260914_020327",
   "decision": {
     "actions": [],
-    "market_outlook": "bearish",
-    "risk_assessment": "Extremely low volume (0.01x) and neutral momentum (RSI ~41) indicate weak trend conviction and potential chop.",
-    "reasoning": "Both BTC/USDT and ETH/USDT display bearish EMA alignments (9 < 21 < 50), but momentum is weak and volume is non-existent. Taking positions under current ultra-low volume conditions presents unfavorable risk/reward due to chop risk. Confidence remains below 60."
+    "market_outlook": "neutral",
+    "risk_assessment": "Extremely low volume across major pairs with neutral RSI readings. High risk of choppy, directionless price action.",
+    "reasoning": "Both BTC and ETH are displaying weak bearish EMA alignments with moderate ADX (~22) and neutral RSI (~46-48). Volume ratios are near zero (0.00x for BTC, 0.09x for ETH), indicating minimal market participation. Without volume confirmation or a clear breakout/trend setup, confidence remains below the 60 threshold required to open new positions."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-14T01:02:26.077437+00:00"
+  "decided_at": "2026-09-14T02:03:49.260008+00:00"
 }
