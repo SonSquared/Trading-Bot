@@ -1,21 +1,11 @@
 {
-  "wakeup_id": "20260914_140021",
+  "wakeup_id": "20260914_150208",
   "decision": {
-    "actions": [
-      {
-        "pair": "BTC/USDT:USDT",
-        "side": "long",
-        "size_pct": 10.0,
-        "stop_loss_pct": 1.5,
-        "take_profit_pct": 2.5,
-        "confidence": 68.0,
-        "reasoning": "BTC maintains a clear bullish EMA alignment (EMA9 > EMA21 > EMA50) with positive MACD momentum and RSI at 64.5. Risking 0.15% of equity with 1.67 R:R targeting resistance near 7d high."
-      }
-    ],
-    "market_outlook": "bullish",
-    "risk_assessment": "Low overall portfolio risk with 0 open positions. BTC is in a steady uptrend while ETH remains neutral.",
-    "reasoning": "BTC is exhibiting strong trend continuation signals across EMAs and MACD. ETH is currently consolidating with a weak ADX (15.7), so capital is focused solely on BTC."
+    "actions": [],
+    "market_outlook": "neutral",
+    "risk_assessment": "BTC is consolidating near upper Bollinger Bands with overbought stochastic levels, while ETH shows a weak bearish trend. Volume is exceptionally low across both pairs, suggesting lack of conviction. Holding existing BTC long position but refraining from opening new positions until volatility and volume normalize.",
+    "reasoning": "Confidence is below 60 for any new setups due to low volume, neutral-to-overbought momentum on BTC, and weak trend on ETH. Existing BTC long position remains managed within risk parameters."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-14T14:00:59.849500+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-09-14T15:02:56.703752+00:00"
 }
