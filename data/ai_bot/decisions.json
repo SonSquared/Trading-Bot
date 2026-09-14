@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_115451",
+  "wakeup_id": "20260914_125605",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low trend strength across both BTC (ADX 18.5) and ETH (ADX 16.7). Low volatility with Stochastic rolling over from upper zone.",
-    "reasoning": "Both BTC and ETH exhibit weak trend momentum with ADX below 20 and neutral RSI values. Stochastic indicators show downward momentum crosses, while prices trade around EMA levels without clear continuation volume. Sitting on the sidelines until a clearer breakout or trend confirmation occurs."
+    "risk_assessment": "Low trend strength across both pairs with ADX below 20. Market is consolidating within recent ranges, posing chop risk for trend-following strategies.",
+    "reasoning": "Both BTC and ETH exhibit weak trend strength (ADX 18.9 and 15.6 respectively) and neutral RSI readings. BTC volume is below average. Without momentum confirmation or a clear breakout, confidence to enter new trend-following positions remains below the required 60 threshold."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-14T11:55:00.653446+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-14T12:59:13.411002+00:00"
 }
