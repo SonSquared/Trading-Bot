@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_090316",
+  "wakeup_id": "20260914_104946",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volume and weak trend strength (ADX < 20) across both BTC and ETH indicate low momentum. BTC and ETH are near 24h highs and upper Bollinger Bands with overbought stochastic levels.",
-    "reasoning": "Despite bullish EMA alignments, extremely low volume ratios (0.04x on BTC, 0.00x on ETH) and weak ADX values suggest high risk of fakeouts. No high-conviction trades available; confidence remains below 60."
+    "risk_assessment": "Weak trend strength with ADX under 20 on both pairs, low volume, and overbought short-term indicators near upper Bollinger Bands.",
+    "reasoning": "Both BTC and ETH exhibit weak ADX readings (18.5 and 17.7) despite bullish EMA alignments. Trading volume is low (0.59x and 0.38x of 20-period average) and Stochastic indicators are overbought while prices test resistance near the upper Bollinger Bands. Risk/reward for entering long at the top of the range without strong trend momentum is unfavorable."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-14T09:04:59.251856+00:00"
+  "decided_at": "2026-09-14T10:50:21.424514+00:00"
 }
