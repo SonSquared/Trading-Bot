@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_210229",
+  "wakeup_id": "20260914_220402",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Overall trend remains bullish across BTC and ETH with aligned EMAs and ADX indicating active trend strength. However, extremely low volume (0.04x on BTC, 0.20x on ETH) increases risk of short-term whipsaws. Existing BTC long position is at maximum single position size limit (10% of equity).",
-    "reasoning": "BTC long position is already active at the max single position limit (10% equity). ETH lacks volume confirmation (0.20x volume ratio) and is approaching local resistance near the upper Bollinger Band ($2,555.49) while Stochastic K/D rolls over. Confidence for a new ETH entry is below the required 60 threshold due to low volume."
+    "risk_assessment": "Low volatility with bullish EMA alignment across BTC and ETH, but volume is extremely thin and ETH is testing upper Bollinger Band resistance.",
+    "reasoning": "Portfolio already holds a max-sized BTC long (10% equity). ETH shows bullish structure but is encountering immediate resistance near the upper Bollinger Band ($2,558) with declining stochastic momentum and negligible volume, offering an unfavorable risk/reward for a breakout entry."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-14T21:02:56.288341+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-14T22:04:15.842435+00:00"
 }
