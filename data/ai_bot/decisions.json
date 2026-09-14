@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_070207",
+  "wakeup_id": "20260914_080042",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volatility and weak trend strength across both pairs with overbought stochastics near resistance levels.",
-    "reasoning": "Both BTC and ETH exhibit ADX readings below 18, indicating an absent or very weak trend. BTC is trading near its 24h high ($77,862) and upper Bollinger Band ($77,873) with overbought Stochastic readings (81.7/82.7) and negligible volume. Risk-reward for entering a new breakout long or counter-trend short is unfavorable. Maintaining cash position until clearer momentum or pullback confirmation emerges."
+    "risk_assessment": "Low volume and weak trend strength (ADX under 20 on both BTC and ETH). Both pairs are pressing near their 24-hour highs and upper Bollinger Bands with overbought Stochastic readings, elevating short-term pullback risk.",
+    "reasoning": "Although moving averages are aligned in a bullish stack, ADX indicates a weak trend regime (<18) and price is testing local resistance (24h high and upper BB) with Stochastics in overbought territory (>88). With zero volume confirmation, risk-reward for long breakouts is unfavorable. Standing aside until a clean pullback or confirmed volume breakout occurs."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-14T07:03:38.975234+00:00"
+  "decided_at": "2026-09-14T08:02:09.739893+00:00"
 }
