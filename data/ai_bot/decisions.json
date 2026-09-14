@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_170554",
+  "wakeup_id": "20260914_180742",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "BTC RSI is overbought at 71.8 and Stochastic is at 93.4 near the upper Bollinger Band, indicating a high risk of a short-term pullback despite the bullish EMA trend. ETH shows weak trend ADX and neutral momentum. Volume is currently very low. Holding existing position but refraining from opening new trades until momentum cools or a clearer pullback opportunity arises.",
-    "reasoning": "Confidence is below the required threshold for initiating new positions due to overbought momentum indicators on BTC and weak trend strength on ETH."
+    "risk_assessment": "BTC RSI is overbought at 73.5 with low volume ratio (0.24x) near the upper Bollinger Band and 24h high resistance. ETH volume is also very low (0.07x). Awaiting a pullback or clearer momentum confirmation before adding new positions.",
+    "reasoning": "Existing BTC long is performing adequately, but opening new positions at overbought levels with low volume presents poor risk-reward ratios. Confidence is below the threshold for new entries."
   },
   "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-14T17:06:36.369687+00:00"
+  "decided_at": "2026-09-14T18:08:28.219216+00:00"
 }

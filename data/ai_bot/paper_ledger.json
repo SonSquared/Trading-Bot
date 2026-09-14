@@ -1,7 +1,7 @@
 {
   "cash": 9999.5,
   "start_equity": 10000.0,
-  "peak_equity": 10007.025505801683,
+  "peak_equity": 10008.849677158742,
   "positions": {
     "BTC/USDT:USDT": {
       "side": "buy",
