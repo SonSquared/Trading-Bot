@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260914_230042",
+  "wakeup_id": "20260915_000050",
   "decision": {
     "actions": [],
-    "market_outlook": "bullish",
-    "risk_assessment": "Low portfolio heat at 10.0%. Drawdown is minimal (0.1%). Existing BTC long position remains profitable and active. Extremely low market volume across pairs reduces entry conviction.",
-    "reasoning": "BTC long position is performing well above entry with intact bullish trend indicators. ETH presents a favorable trend structure (EMA 9 > 21 > 50, MACD positive), but current volume ratio (0.03x) indicates a lack of market participation. Confidence for new trades remains below the required threshold of 60."
+    "market_outlook": "neutral",
+    "risk_assessment": "Low volume across majors with neutral momentum indicators (RSI near 50, MACD histograms slightly negative). Holding existing BTC long position while awaiting clearer trend continuation signals before adding new exposure.",
+    "reasoning": "Both BTC and ETH show neutral momentum with low volume (0.00x ratio) and MACD histograms pointing to minor short-term consolidation. With an existing BTC long position already open, conditions do not warrant adding new positions as confidence remains below the threshold for new entries."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-14T23:01:45.051169+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-09-15T00:01:36.038837+00:00"
 }
