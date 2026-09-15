@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260915_080044",
+  "wakeup_id": "20260915_090457",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Both BTC and ETH are pressing against 24-hour lows and lower Bollinger Bands with heavily oversold stochastics. Entering shorts at key support carries significant mean-reversion risk, while counter-trend longs lack bullish confirmation.",
-    "reasoning": "BTC and ETH are trading below all key short-term EMAs (9, 21, 50) with negative MACD histograms. However, stochastic oscillators are deeply oversold (K < 3) and prices are sitting directly on the 24h low and lower Bollinger Bands. Strategy guidelines favor trend following, but shorting directly into oversold support yields poor risk/reward, and volume is stagnant. Standing aside until either a confirmed breakdown or a valid reversal structure forms."
+    "risk_assessment": "Market is in a downtrend but severely oversold on short-term momentum indicators near key support levels, presenting high bounce risk.",
+    "reasoning": "Both BTC and ETH exhibit bearish trend structure across EMAs, but Stochastic is severely oversold (< 10) and RSI is near oversold levels with price sitting near 24h lows and Bollinger lower bands. Entering short positions at oversold support carries bad risk-reward, while entering long positions conflicts with the preferred trend-following style. Confidence to take new trades is below 60, so remaining in cash is optimal."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-15T08:03:45.140996+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-15T09:05:45.404630+00:00"
 }
