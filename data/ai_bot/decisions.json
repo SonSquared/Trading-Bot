@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260915_191157",
+  "wakeup_id": "20260915_200044",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Low volume consolidation near lower Bollinger Bands; strong bearish trend intact with elevated ADX.",
-    "reasoning": "Both BTC and ETH display clear bearish EMA structures with strong ADX trend strength (35.2 for BTC, 27.1 for ETH). However, trading volume is extremely depressed (0.39x average for BTC, 0.11x for ETH) and prices are resting near 24h lows / BB lower bands. Entering short at support with low volume is low probability, and taking counter-trend longs lacks volume backing. Confidence for new trades is below 60. Holding existing BTC position within safe risk bounds."
+    "risk_assessment": "Both BTC and ETH are in a bearish EMA trend with low volume and neutral-to-weak momentum. The existing BTC long position is in a minor profit, but overall market conditions do not support new trend-following entries at this time.",
+    "reasoning": "EMAs indicate a bearish alignment on 1h timeframes for both assets (EMA9 < EMA21 < EMA50) along with negative MACD histograms and low volume ratios. Confidence for initiating new positions is below the required threshold of 60."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-15T19:12:24.430747+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-09-15T20:01:39.477404+00:00"
 }
