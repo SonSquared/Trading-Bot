@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260915_214740",
+  "wakeup_id": "20260915_224911",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "High trend strength (ADX > 30) in a bearish direction for both BTC and ETH, but near-oversold momentum indicators (RSI ~32, price near lower Bollinger Band) increase risk of a temporary short-term mean-reversion bounce.",
-    "reasoning": "Both BTC and ETH show strong 1h downtrends with bearish EMA alignment and high ADX values. However, opening new short positions at lower Bollinger bands with RSI near oversold levels offers poor reward-to-risk. Waiting for a corrective bounce to EMA resistances before looking for trend-following short entries. Existing small BTC long position remains within safe risk parameters."
+    "risk_assessment": "Moderate risk; strong bearish trend confirmed by ADX > 35 and aligned EMAs on both BTC and ETH, though trading volume is currently compressed at 0.35x-0.37x average near local support.",
+    "reasoning": "Both BTC and ETH remain in strong downtrends with all major EMAs sloping downward and negative MACD momentum. Existing BTC long position is holding near lower Bollinger Bands with low unrealized loss (-0.31%), well within risk boundaries. Low volume and proximity to support do not provide a favorable risk/reward setup for fresh short entries, while counter-trend longs against strong ADX readings carry low confidence (<60). Holding existing position without adding new exposure."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-15T21:48:09.394168+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-15T22:49:29.403745+00:00"
 }
