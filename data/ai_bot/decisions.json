@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260915_060043",
+  "wakeup_id": "20260915_070310",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Market volume is extremely low and indicators are mixed across both BTC and ETH. Stochastic is near oversold, but lack of momentum and volume suggest waiting for a clearer directional trigger.",
-    "reasoning": "Both BTC and ETH are consolidating near neutral RSI levels (around 42) with very low volume ratios. Existing BTC long position is currently holding near support, but confidence for new entries or adjustments is below the 60 threshold due to lack of trending momentum."
+    "risk_assessment": "Low trading volume across major pairs with moderate drawdown on existing BTC long position. Overall portfolio risk remains well within safe boundaries at 10% heat.",
+    "reasoning": "Market volume is severely depressed (0.10x on BTC, 0.01x on ETH), signaling low liquidity and higher slippage risk. Although stochastic indicators are oversold, EMAs and MACD do not confirm a strong reversal or trend-following signal. Maintaining existing position without adding risk until volume and trend alignment improve."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-15T06:02:06.737802+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-15T07:05:12.501435+00:00"
 }
