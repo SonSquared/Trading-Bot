@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260915_070310",
+  "wakeup_id": "20260915_080044",
   "decision": {
     "actions": [],
-    "market_outlook": "neutral",
-    "risk_assessment": "Low trading volume across major pairs with moderate drawdown on existing BTC long position. Overall portfolio risk remains well within safe boundaries at 10% heat.",
-    "reasoning": "Market volume is severely depressed (0.10x on BTC, 0.01x on ETH), signaling low liquidity and higher slippage risk. Although stochastic indicators are oversold, EMAs and MACD do not confirm a strong reversal or trend-following signal. Maintaining existing position without adding risk until volume and trend alignment improve."
+    "market_outlook": "bearish",
+    "risk_assessment": "Both BTC and ETH are pressing against 24-hour lows and lower Bollinger Bands with heavily oversold stochastics. Entering shorts at key support carries significant mean-reversion risk, while counter-trend longs lack bullish confirmation.",
+    "reasoning": "BTC and ETH are trading below all key short-term EMAs (9, 21, 50) with negative MACD histograms. However, stochastic oscillators are deeply oversold (K < 3) and prices are sitting directly on the 24h low and lower Bollinger Bands. Strategy guidelines favor trend following, but shorting directly into oversold support yields poor risk/reward, and volume is stagnant. Standing aside until either a confirmed breakdown or a valid reversal structure forms."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-15T07:05:12.501435+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-15T08:03:45.140996+00:00"
 }
