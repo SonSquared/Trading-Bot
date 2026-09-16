@@ -22,13 +22,13 @@
   "signal_history": {},
   "last_daily_alert_date": "2026-09-16",
   "last_candle_seen": {
-    "BTC_USDT_USDT": "2026-09-16 12:00:00+00:00",
-    "ETH_USDT_USDT": "2026-09-16 12:00:00+00:00"
+    "BTC_USDT_USDT": "2026-09-16 16:00:00+00:00",
+    "ETH_USDT_USDT": "2026-09-16 16:00:00+00:00"
   },
-  "last_equity_marked": 94.68815744088556,
+  "last_equity_marked": 94.79860996412351,
   "last_prices": {
-    "ETH_USDT_USDT": 2401.95,
-    "BTC_USDT_USDT": 75866.5
+    "ETH_USDT_USDT": 2410.11,
+    "BTC_USDT_USDT": 76076.2
   },
-  "last_run_at": "2026-09-16T18:15:24.948982+00:00"
+  "last_run_at": "2026-09-16T21:27:33.756101+00:00"
 }
