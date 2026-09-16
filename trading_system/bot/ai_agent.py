@@ -191,11 +191,18 @@ class PaperLedger:
         direction = 1.0 if pos["side"] == "buy" else -1.0
         gross_pnl = direction * (price - pos["entry_price"]) * pos["amount"]
         exit_notional = pos["amount"] * price
-        fee = exit_notional * self.taker_fee_pct / 100
-        net_pnl = gross_pnl - fee
-        self.data["cash"] = self.cash + net_pnl
+        # The entry fee was already deducted from cash at open; only the exit
+        # fee moves cash here. `net_pnl` reports the FULL round-trip cost so
+        # the alert reconciles with the equity change (audited 2026-09-16:
+        # the message said -$17.71 while equity moved -$18.21 — the missing
+        # $0.50 was the entry fee, and every P&L total inherited the error).
+        size_usd = float(pos.get("size_usd") or pos["amount"] * pos["entry_price"])
+        entry_fee = size_usd * self.taker_fee_pct / 100
+        exit_fee = exit_notional * self.taker_fee_pct / 100
+        cash_delta = gross_pnl - exit_fee
+        net_pnl = gross_pnl - entry_fee - exit_fee
+        self.data["cash"] = self.cash + cash_delta
         del self.positions[pair]
-
         record = {
             "pair": pair,
             "side": "close",
@@ -203,12 +210,19 @@ class PaperLedger:
             "entry_price": pos["entry_price"],
             "exit_price": float(price),
             "amount": pos["amount"],
+            "size_usd": round(size_usd, 4),
             "gross_pnl": round(gross_pnl, 4),
-            "fees": round(fee, 4),
+            "entry_fee": round(entry_fee, 4),
+            "exit_fee": round(exit_fee, 4),
+            "fees": round(entry_fee + exit_fee, 4),
             "net_pnl": round(net_pnl, 4),
+            "cash_delta": round(cash_delta, 4),
+            # Price move (unchanged convention, used by charts/backtests) vs
+            # the round-trip net % that matches net_pnl and equity.
             "pnl_pct": round(
                 direction * (price - pos["entry_price"]) / pos["entry_price"] * 100, 4
             ),
+            "pnl_pct_net": round(net_pnl / size_usd * 100, 4) if size_usd else 0.0,
             "reason": reason,
             "entry_time": pos["entry_time"],
             "close_time": _utc_now_iso(),
@@ -786,7 +800,8 @@ class AIAgent:
             self.notifier.notify_trade_close(
                 pair=pair, side=rec["position_side"],
                 entry_price=rec["entry_price"], exit_price=rec["exit_price"],
-                pnl_pct=rec["pnl_pct"], pnl_usd=rec["net_pnl"],
+                pnl_pct=rec.get("pnl_pct_net", rec["pnl_pct"]),
+                pnl_usd=rec["net_pnl"],
                 reason="AI close", mode="paper",
             )
             return trade
@@ -838,7 +853,8 @@ class AIAgent:
             self.notifier.notify_trade_close(
                 pair=rec["pair"], side=rec["position_side"],
                 entry_price=rec["entry_price"], exit_price=rec["exit_price"],
-                pnl_pct=rec["pnl_pct"], pnl_usd=rec["net_pnl"],
+                pnl_pct=rec.get("pnl_pct_net", rec["pnl_pct"]),
+                pnl_usd=rec["net_pnl"],
                 reason=rec["reason"], mode="paper",
             )
         return closed
@@ -878,7 +894,9 @@ class AIAgent:
             closed_triggers = self.process_triggers(pairs)
             result["closed_triggers"] = [
                 {"pair": c["pair"], "reason": c["reason"],
-                 "net_pnl": c["net_pnl"], "pnl_pct": c["pnl_pct"]}
+                 "net_pnl": c["net_pnl"], "pnl_pct": c["pnl_pct"],
+                 "pnl_pct_net": c.get("pnl_pct_net"),
+                 "size_usd": c.get("size_usd")}
                 for c in closed_triggers
             ]
 

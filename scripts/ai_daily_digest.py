@@ -1,16 +1,34 @@
 #!/usr/bin/env python3
 """AI Trading Bot — daily digest (Telegram + stdout).
 
-One heartbeat message per day (23:50 UTC, after the last wakeup): how many
-wakeups ran and whether they succeeded, today's closed trades and P&L,
-current equity, open positions, and the AI's last reasoning in its own
-words. Because the digest runs on its own cron, a day with NO wakeups
-still produces a loud "no wakeups ran today" alert — the heartbeat also
-acts as a second watchdog.
+One heartbeat message per day: how many of the day's SCHEDULED wakeups
+actually ran and whether they succeeded, that day's closed trades and P&L,
+equity, open positions, and the AI's last reasoning in its own words.
+
+Two hard-won rules are baked in (2026-09-16 audit):
+
+1. THE REPORT IS ABOUT A SLOT-DEFINED DAY, NOT ABOUT WALL-CLOCK "TODAY".
+   The digest is scheduled 23:50 UTC, but GitHub's scheduler held it ~2h late
+   three days running (created 01:45, 01:55, 01:45), so every digest landed
+   after midnight and reported the NEW day's first two hours while labelling
+   itself with the new date. No digest ever described a complete day.
+   ``target_day`` anchors the report to "the day whose last slot (23:00) has
+   passed", which is stable whether the run happens at 23:50 or 02:10.
+
+2. A MISSING WAKEUP MUST NOT LOOK LIKE A HEALTHY ONE.
+   The old headline read "✅ Wakeups: 2/2 ok (of 6 scheduled)" on a day when
+   4 of 6 slots never fired — a green tick in front of a real outage. The
+   headline now counts SCHEDULE SLOTS served (a late catch-up wakeup counts
+   for the slot it belongs to) and shouts about failures and silent gaps.
+
+Because late runs are now harmless and the marker is authoritative, the
+digest is also idempotent: ``digest_sent.txt`` records the delivered day, and
+a re-trigger exits quietly instead of sending "already delivered" noise.
 
 Usage:
     python scripts/ai_daily_digest.py               # send via Telegram
     python scripts/ai_daily_digest.py --dry-run     # print, don't send
+    python scripts/ai_daily_digest.py --check-due   # exit 0 if due, 3 if not
 
 Zero LLM calls, no orders — report only.
 """
@@ -18,7 +36,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,11 +45,94 @@ import click
 
 from trading_system.bot.telegram_notifier import TelegramNotifier
 
-# Records the last date a digest was actually delivered. A SUCCESSFUL
-# send writes today's date; the digest skips a re-send for the same day.
+# Records the last day whose digest was actually delivered. A SUCCESSFUL
+# send writes the reported day; a re-trigger for the same day exits quietly.
 # Missing/corrupt marker = "not sent yet" — a loud duplicate digest beats
 # a silent gap, by design.
 MARKER = "digest_sent.txt"
+
+# The schedule's last wakeup hour (configs/ai_bot.yaml: daily_close at 23:00).
+# A digest run at/after this hour reports ITS OWN day; earlier than this it
+# reports the previous day (i.e. the run is late, not early).
+LAST_SLOT_HOUR = 23
+
+# Mirrors configs/ai_bot.yaml's schedule, used only if the config is unreadable.
+DEFAULT_SLOTS: tuple[tuple[int, int], ...] = (
+    (0, 0), (6, 0), (8, 0), (14, 0), (20, 0), (23, 0),
+)
+
+# A slot is considered served by any journal entry inside
+# [slot - 2 min, slot + GRACE]. The grace covers a catch-up wakeup that ran
+# late; the small backward tolerance covers a kick that ran just before the
+# slot. Windows never overlap (the closest slots are 1h apart).
+SLOT_GRACE_MINUTES = 180
+SLOT_EARLY_TOLERANCE_MINUTES = 2
+
+CHECK_DUE_OK = 0
+CHECK_DUE_ALREADY_SENT = 3
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def target_day(now: datetime, last_slot_hour: int = LAST_SLOT_HOUR) -> str:
+    """The UTC day this digest reports on (YYYY-MM-DD).
+
+    At/after the last slot hour -> today (the day that just finished).
+    Before it -> yesterday (this run is late — GitHub held the 23:50 cron).
+    """
+    if now.hour >= last_slot_hour:
+        return now.date().isoformat()
+    return (now.date() - timedelta(days=1)).isoformat()
+
+
+def _parse_ts(value: object) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def slot_report(
+    entries: list[dict],
+    day: str,
+    slots: list[tuple[int, int]],
+) -> tuple[list[str], list[str]]:
+    """Which of ``day``'s schedule slots produced a wakeup? -> (ran, missing).
+
+    Slot-based, not entry-based: a catch-up wakeup is credited to the slot it
+    was meant for. Matching is 1:1 (greedy, nearest unfilled slot) so one
+    wakeup can never cover two slots — otherwise a 08:30 wakeup would mark
+    both 06:00 and 08:00 as served and hide a genuine miss.
+    """
+    labels = [f"{h:02d}:{m:02d}" for h, m in slots]
+    base = _parse_ts(f"{day}T00:00:00+00:00")
+    if base is None:
+        return [], labels
+    slot_dts = [base + timedelta(hours=h, minutes=m) for h, m in slots]
+    stamps = sorted(
+        t for t in (_parse_ts(e.get("timestamp")) for e in entries) if t
+    )
+    early = timedelta(minutes=SLOT_EARLY_TOLERANCE_MINUTES)
+    grace = timedelta(minutes=SLOT_GRACE_MINUTES)
+    taken: set[int] = set()
+    for t in stamps:
+        best: int | None = None
+        best_gap = None
+        for i, slot in enumerate(slot_dts):
+            if i in taken or not (slot - early <= t <= slot + grace):
+                continue
+            gap = abs((t - slot).total_seconds())
+            if best_gap is None or gap < best_gap:
+                best, best_gap = i, gap
+        if best is not None:
+            taken.add(best)
+    return (
+        [labels[i] for i in sorted(taken)],
+        [labels[i] for i in range(len(labels)) if i not in taken],
+    )
 
 
 def _load_ledger(data_dir: Path) -> dict:
@@ -62,10 +163,16 @@ def _load_journal(data_dir: Path) -> list[dict]:
     return entries
 
 
-def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
-    """Compute today's summary dict from the shared continuity files."""
-    now = now or datetime.now(timezone.utc)
-    day = now.strftime("%Y-%m-%d")
+def summarize_day(
+    data_dir: Path,
+    now: datetime | None = None,
+    slots: list[tuple[int, int]] | None = None,
+    last_slot_hour: int = LAST_SLOT_HOUR,
+) -> dict:
+    """Compute the reported day's summary dict from the shared continuity files."""
+    now = now or _utc_now()
+    slots = list(slots) if slots else list(DEFAULT_SLOTS)
+    day = target_day(now, last_slot_hour)
 
     journal = _load_journal(data_dir)
     todays = [e for e in journal if (e.get("timestamp") or "").startswith(day)]
@@ -90,10 +197,11 @@ def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
 
     positions = ledger.get("positions", {}) or {}
 
-    # Idempotence guard: did today's digest already get DELIVERED? The
+    ran_slots, missing_slots = slot_report(journal, day, slots)
+
+    # Idempotence guard: did this day's digest already get DELIVERED? The
     # marker file lives in the same data dir and persists on the state
-    # branch, so the cloud digest only ever fires once per day. A missing
-    # or corrupt marker is treated as not-sent (resend loudly).
+    # branch, so the cloud digest only ever fires once per day.
     already_sent = False
     marker_path = data_dir / MARKER
     if marker_path.exists():
@@ -105,7 +213,9 @@ def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
     return {
         "day": day,
         "wakeups": wakeups,
-        "expected_wakeups": 6,
+        "expected_wakeups": len(slots),
+        "slots_ran": ran_slots,
+        "slots_missing": missing_slots,
         "failed": len(failed),
         "errors": errors,
         "closed": closed_today,
@@ -119,6 +229,18 @@ def summarize_day(data_dir: Path, now: datetime | None = None) -> dict:
     }
 
 
+def _trade_pct(c: dict) -> float:
+    """Round-trip net % when the ledger provides it, else the price move.
+
+    Older records predate ``pnl_pct_net``; the dollar figure shown next to it
+    is always net, so preferring the net percentage keeps the two consistent.
+    """
+    for key in ("pnl_pct_net", "pnl_pct"):
+        if c.get(key) is not None:
+            return float(c[key])
+    return 0.0
+
+
 def format_digest(s: dict) -> str:
     """Render the summary dict as the Telegram message text."""
     if s.get("already_sent"):
@@ -130,20 +252,35 @@ def format_digest(s: dict) -> str:
             "re-run manually.)"
         )
 
-    if s["wakeups"] == 0:
+    expected = int(s.get("expected_wakeups", len(DEFAULT_SLOTS)))
+    ran = len(s.get("slots_ran") or [])
+    missing = list(s.get("slots_missing") or [])
+    failed = int(s.get("failed", 0))
+
+    if s["wakeups"] == 0 and ran == 0:
         return (
             f"AI BOT DAILY DIGEST — {s['day']}\n"
             f"{'=' * 30}\n"
-            "⚠️ NO WAKEUPS RAN TODAY — the schedule did not fire.\n"
+            f"⚠️ NO WAKEUPS RAN — none of the {expected} scheduled slots "
+            "fired.\n"
             "Check: GitHub → Actions → AI Trading Bot for red runs.\n"
             "(The watchdog patrols hourly; this digest is the second net.)"
         )
 
-    ok = s["wakeups"] - s["failed"]
-    if s["failed"]:
-        head = f"⚠️ Wakeups: {ok}/{s['wakeups']} ok (of {s['expected_wakeups']} scheduled)"
+    problems = []
+    if failed:
+        problems.append(f"{failed} FAILED")
+    if missing:
+        shown = ", ".join(f"{m} UTC" for m in missing[:4])
+        more = f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""
+        problems.append(f"{len(missing)} never fired: {shown}{more}")
+
+    if problems:
+        head = (
+            f"⚠️ Wakeups: {ran}/{expected} slots ran — " + " | ".join(problems)
+        )
     else:
-        head = f"✅ Wakeups: {ok}/{s['wakeups']} ok (of {s['expected_wakeups']} scheduled)"
+        head = f"✅ Wakeups: {ran}/{expected} slots ran, all ok"
 
     lines = [
         f"AI BOT DAILY DIGEST — {s['day']}",
@@ -160,7 +297,7 @@ def format_digest(s: dict) -> str:
             if float(c.get("net_pnl", 0)) > 0:
                 wins += 1
             detail.append(
-                f"  {c.get('pair', '?')} {float(c.get('pnl_pct', 0)):+.2f}% "
+                f"  {c.get('pair', '?')} {_trade_pct(c):+.2f}% "
                 f"(${float(c.get('net_pnl', 0)):+.2f})"
             )
         lines.append(
@@ -187,7 +324,7 @@ def format_digest(s: dict) -> str:
         text = " ".join(s["reasoning"].split())[:200]
         lines.append(f'AI said: "{text}"')
 
-    stamp = datetime.now(timezone.utc).strftime("%b %d, %H:%M UTC")
+    stamp = _utc_now().strftime("%b %d, %H:%M UTC")
     lines.append(f"\n{stamp} | Daily digest")
     return "\n".join(lines)
 
@@ -199,10 +336,29 @@ def _force_utf8_stdout() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def _slots_from_config(cfg: dict) -> list[tuple[int, int]]:
+    """Schedule slots in UTC, honouring the config's tz_offset_hours."""
+    tz_off = int((cfg.get("bot", {}) or {}).get("tz_offset_hours", 0) or 0)
+    slots: list[tuple[int, int]] = []
+    for entry in cfg.get("schedule") or []:
+        if not isinstance(entry, dict) or "hour" not in entry:
+            continue
+        hour = int(entry["hour"])
+        minute = int(entry.get("minute", 0) or 0)
+        slots.append(((hour - tz_off) % 24, minute))
+    return sorted(slots) or list(DEFAULT_SLOTS)
+
+
 @click.command()
 @click.option("--config", default="configs/ai_bot.yaml", help="Config file path")
 @click.option("--dry-run", is_flag=True, help="Print the digest without sending")
-def main(config: str, dry_run: bool) -> None:
+@click.option(
+    "--check-due/--no-check-due",
+    default=False,
+    help=f"Exit {CHECK_DUE_OK} if this day's digest is still due, "
+    f"{CHECK_DUE_ALREADY_SENT} if it was already delivered. No send.",
+)
+def main(config: str, dry_run: bool, check_due: bool) -> None:
     """Send the daily AI bot digest (wakeups, P&L, equity, AI note)."""
     _force_utf8_stdout()
     import os
@@ -221,13 +377,36 @@ def main(config: str, dry_run: bool) -> None:
         cfg = yaml.safe_load(cfg_path.read_text()) or {}
 
     data_dir = Path(cfg.get("bot", {}).get("data_dir", "data/ai_bot"))
+    slots = _slots_from_config(cfg)
+    last_slot_hour = max(h for h, _ in slots)
+
+    if check_due:
+        # Used by the workflow's cheap pre-check: no state dir yet simply
+        # means "not delivered", and the real run then fails loudly.
+        if not data_dir.exists():
+            click.echo("Due: no data dir yet (the scheduled run will report it).")
+            return
+        s = summarize_day(data_dir, slots=slots, last_slot_hour=last_slot_hour)
+        if s["already_sent"]:
+            click.echo(f"Not due: digest for {s['day']} already delivered.")
+            sys.exit(CHECK_DUE_ALREADY_SENT)
+        click.echo(f"Due: digest for {s['day']} not delivered yet.")
+        return
+
     if not data_dir.exists():
         raise click.ClickException(f"No data dir at {data_dir} — run a wakeup first.")
 
-    s = summarize_day(data_dir)
+    s = summarize_day(data_dir, slots=slots, last_slot_hour=last_slot_hour)
     msg = format_digest(s)
 
     click.echo(msg)
+
+    if s["already_sent"]:
+        # Quiet exit: sending "already delivered" would be noise, and the
+        # marker is authoritative (persisted on the state branch).
+        click.echo(f"(digest for {s['day']} already delivered — nothing sent)")
+        return
+
     if dry_run:
         click.echo("(dry-run: Telegram send skipped)")
         return
@@ -256,12 +435,12 @@ def main(config: str, dry_run: bool) -> None:
         )
         sys.exit(1)
 
-    # Mark today as delivered ONLY after a confirmed send, so a failed
-    # send retries on the next trigger instead of going silent for the day.
+    # Mark the REPORTED day as delivered ONLY after a confirmed send, so a
+    # failed send retries on the next trigger instead of going silent.
     marker_path = data_dir / MARKER
     try:
         marker_path.write_text(s["day"])
-        click.echo(f"Digest sent; marked delivered in {marker_path}")
+        click.echo(f"Digest for {s['day']} sent; marked delivered in {marker_path}")
     except OSError as e:
         click.echo(f"WARNING: digest sent but marker write failed: {e}", err=True)
 

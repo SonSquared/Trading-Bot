@@ -138,11 +138,12 @@ Reading a journal entry:
 
 The repo ships `.github/workflows/ai_bot.yml`, following the same battle-tested pattern as the main bot:
 
-- **6 wakeup slots/day** (`00/06/08/14/20/23 UTC`, each fired twice at `:02`/`:32`), **plus a self-healing chain**: GitHub's cron silently drops slots (proven 2026-09-13 — four consecutive wakeups never fired), so every completed AI-suite run kicks the next wakeup via `workflow_run`, and `scripts/ai_bot_gate.py` acts as a **relay** — it runs the wakeup immediately when the journal is stale, otherwise sleeps until the next scheduled slot. A dropped slot becomes a slightly late wakeup, never a missed one
+- **6 wakeup slots/day** (`00/06/08/14/20/23 UTC`, each fired twice at `:02`/`:32`), **plus a self-healing chain**: GitHub's cron is unreliable on this repo (2026-09-13: four consecutive wakeups never fired; the 23:50 digest ran ~2h late, three days running; the "hourly" patrol actually fires ~6x/day), so other AI-suite workflows' completions kick the next wakeup check via `workflow_run` — the Telegram poller's ~20-minute generation is the heartbeat
+- **`scripts/ai_bot_gate.py` is strictly SLOT-BASED**: it runs a wakeup only when the most recent schedule slot has no journal entry (on time, or catch-up for a slot GitHub dropped), sleeps briefly toward a slot that is about to come due, and otherwise exits immediately. That is what keeps the bot at exactly **6 decisions/day** — the mesh kicks it far more often than that, and a stale-journal trigger under those kicks produced **22-25 wakeups/day** until the 2026-09-16 audit fixed it
 - **Continuity files persist to the `ai-bot-state` branch** (git, not the unreliable Actions cache), restored on every run — including failure journals
 - `workflow_dispatch` lets you trigger a wakeup manually from the Actions tab
 - A `quality` job runs the AI bot test suite on every push that touches bot code
-- **Daily digest at 23:50 UTC** (`ai_daily_digest.yml`): one Telegram heartbeat per day — wakeups ok/failed, P&L, equity, open positions, the AI's last reasoning. A day with zero wakeups produces a loud "NO WAKEUPS RAN TODAY" alert, so quiet success is never indistinguishable from a dead bot
+- **Daily digest at 23:50 UTC** (`ai_daily_digest.yml`): one Telegram heartbeat per day — how many of the **6 scheduled slots ran**, failures, P&L, equity, open positions, the AI's last reasoning. The report is anchored to *the day whose last slot (23:00) has passed*, so the ~2h cron slip that used to make it describe the wrong day is harmless. A missed slot is named (`⚠️ ... 3 never fired: 06:00 UTC, ...`) instead of being hidden behind a green tick, a day with zero wakeups shouts "NO WAKEUPS RAN", and `digest_sent.txt` on the state branch keeps it idempotent. It is also kicked by every wakeup completion, so the report lands minutes after the last slot instead of hours later
 - **Weekly report Sundays 17:00 UTC** (`ai_weekly_report.yml`): week P&L, win rate, AI notes
 - **Hourly health check** (`ai_health_check.yml`): watchdog that alerts if successful wakeups silently stop — then waits ~6 minutes for the self-healing chain to recover and goes green if a fresh success lands, so a fixed incident never leaves a red patrol on the board
 
@@ -164,7 +165,11 @@ Setup:
 | `GEMINI_API_KEY is required for gemini models` | No key in `.env` — the bot refuses to guess. Free Gemini key: https://aistudio.google.com/apikey |
 | `market data unavailable for all pairs` | Binance down or blocked in your region; check `status` |
 | `AI engine failed: ...` in journal, status ERROR | All models/attempts exhausted (retired model → fallback chain → retry/backoff); read the error, it names the last cause. A single 404/503 no longer kills the wakeup |
-| Gate prints "relaying: sleeping ..." | Normal — a wakeup just ran; this run holds the fort until the next scheduled slot (the anti-cron-drop relay) |
+| Gate prints "relaying: sleeping …" | Normal — a kick landed just before a slot; this run waits (≤10 min) and fires it on time |
+| Gate prints "already served ... SKIPPING" | Normal — a redundant trigger between slots. This is the guard that keeps it at 6 decisions/day |
+| Digest says "⚠️ ... never fired: 06:00 UTC" | A slot's wakeup never ran (GitHub dropped the trigger and nothing kicked it in time). Not fatal — the next trigger catches up — but repeated misses are worth a look |
+| Digest says "Not due: digest for … already delivered" | Normal — the digest is re-triggered after the report went out; it exits without sending |
+| Digest workflow shows red at "Persist digest marker" | Must never happen — the job needs `contents: write` to push the marker. If it does, the anti-duplicate guard is inert until it's fixed |
 | Equity looks reset to $10,000 | The `data/ai_bot/` dir was deleted; paper state lives there |
 | Want to start over | `rm -rf data/ai_bot` and run again |
 

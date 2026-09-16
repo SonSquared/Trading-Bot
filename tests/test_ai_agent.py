@@ -325,6 +325,38 @@ class TestPaperLedger:
         assert led2.cash == led.cash
         assert led2.data["start_equity"] == 7777.0  # not re-initialized
 
+    def test_reported_pnl_reconciles_with_equity(self, tmp_path):
+        """REGRESSION (audit 2026-09-16): the close alert reported -$17.71
+        while equity had moved -$18.21 — net_pnl omitted the entry fee, so
+        every P&L total (alert, digest, weekly) disagreed with the account.
+        The real 2026-09-15 stop-loss is replayed here."""
+        led = PaperLedger(tmp_path / "led.json", starting_cash=10000.0)
+        led.open_position("BTC/USDT:USDT", "buy", 78227.30, 1000.0, 2.5, 5.0)
+        rec = led.close_position("BTC/USDT:USDT", 76880.30, "stop_loss triggered")
+
+        # What equity sees == the number shown to the user (the record
+        # rounds to 4dp, so allow a hair of sub-cent drift).
+        assert led.cash - 10000.0 == pytest.approx(rec["net_pnl"], abs=1e-3)
+        assert rec["net_pnl"] == pytest.approx(-18.21, abs=0.01)
+        assert rec["fees"] == pytest.approx(
+            rec["entry_fee"] + rec["exit_fee"], abs=1e-6)
+        assert rec["cash_delta"] == pytest.approx(
+            rec["gross_pnl"] - rec["exit_fee"], abs=1e-3)
+        # The alert shows net %, so % and $ describe the same thing.
+        assert rec["pnl_pct_net"] == pytest.approx(
+            rec["net_pnl"] / rec["size_usd"] * 100, abs=1e-3)
+        # The raw price move is still recorded, unchanged in meaning.
+        assert rec["pnl_pct"] == pytest.approx(-1.7219, abs=1e-3)
+
+    def test_round_trip_win_is_net_of_both_fees(self, tmp_path):
+        led = PaperLedger(tmp_path / "led.json", starting_cash=10000.0)
+        led.open_position("BTC/USDT:USDT", "buy", 50000.0, 1000.0, 3.0, 6.0)
+        rec = led.close_position("BTC/USDT:USDT", 50300.0, "AI close")
+        assert rec["gross_pnl"] == pytest.approx(6.0, abs=0.01)
+        assert rec["net_pnl"] == pytest.approx(6.0 - 0.5 - 0.5030, abs=0.01)
+        assert rec["net_pnl"] < rec["gross_pnl"]
+        assert led.cash - 10000.0 == pytest.approx(rec["net_pnl"], abs=1e-3)
+
 
 # ---------------------------------------------------------------------------
 # Trigger prices (live-mode protective orders)
@@ -913,12 +945,14 @@ class TestTelegramCommands:
 
 
 class TestGate:
-    """The self-scheduling gate/relay (scripts/ai_bot_gate.py).
+    """The slot-based schedule gate (scripts/ai_bot_gate.py).
 
-    Stale journal -> run now (on-time wakeup or catch-up after dropped
-    cron slots). Fresh journal -> the gate becomes the RELAY: it sleeps
-    until the next scheduled slot, so trading continues even when GitHub
-    drops every cron slot (proven 2026-09-13).
+    The gate decides from the SCHEDULE, never from journal age: a firing
+    whose slot is already served is a SKIP (no wakeup), a firing for an
+    unserved slot runs (on time, or catch-up for a slot GitHub dropped) and
+    a firing just before a slot relays to it. This holds the bot to its 6
+    designed decisions/day even though the workflow_run mesh kicks it every
+    ~20 minutes — the bug that produced 22-25 wakeups/day on 2026-09-14/15.
     """
 
     def _mod(self):
@@ -934,72 +968,101 @@ class TestGate:
         mod = self._mod()
         monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
         monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
+        out = tmp_path / "out.txt"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
         assert mod.main() == 0
+        assert "run=true" in out.read_text()
 
-    def test_stale_journal_proceeds_immediately(self, tmp_path, monkeypatch):
+    def test_served_slot_skips_without_waking_the_ai(self):
+        """The core fix: a mesh kick between slots must NOT trade. Before
+        this, the gate ran a wakeup whenever the journal was >45 min old, so
+        a ~20-min heartbeat produced 22-25 wakeups/day instead of 6."""
+        mod = self._mod()
+        slots = [(14, 0), (20, 0)]
+        # 14:00 slot served at 14:02; kick arrives at 16:00 (6h to next slot).
+        last = datetime(2026, 9, 15, 14, 2, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 15, 16, 0, tzinfo=timezone.utc)
+        assert mod.decide(now, last, slots) == (mod.SKIP, 0.0)
+
+    def test_unserved_slot_runs_even_when_very_stale(self):
+        """A slot nobody triggered is catch-up material, not a skip."""
+        mod = self._mod()
+        slots = [(14, 0), (20, 0)]
+        last = datetime(2026, 9, 15, 14, 2, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 15, 20, 35, tzinfo=timezone.utc)
+        action, wait = mod.decide(now, last, slots)
+        assert (action, wait) == (mod.RUN, 0.0)
+
+    def test_kick_just_before_a_slot_relays_to_it(self):
+        mod = self._mod()
+        slots = [(14, 0), (20, 0)]
+        last = datetime(2026, 9, 15, 14, 2, tzinfo=timezone.utc)
+        action, wait = mod.decide(
+            datetime(2026, 9, 15, 19, 55, tzinfo=timezone.utc), last, slots)
+        assert action == mod.RELAY
+        assert wait == pytest.approx(5 * 60, abs=1)
+        assert wait <= mod.RELAY_WINDOW_SECONDS
+
+    def test_wakeup_a_hair_before_the_slot_counts_as_serving_it(self):
+        mod = self._mod()
+        slots = [(14, 0), (20, 0)]
+        last = datetime(2026, 9, 15, 13, 59, tzinfo=timezone.utc)
+        assert mod.decide(
+            datetime(2026, 9, 15, 14, 5, tzinfo=timezone.utc), last, slots
+        )[0] == mod.SKIP
+
+    def test_six_wakeups_per_day_under_a_20_minute_kick_mesh(self):
+        """REGRESSION (2026-09-14/15: 22-25 wakeups/day).
+
+        Replay a full day of triggers the way the workflow_run mesh fires
+        them — every 20 minutes — and require exactly one wakeup per
+        scheduled slot.
+        """
         from datetime import timedelta
         mod = self._mod()
-        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        (tmp_path / "journal.jsonl").write_text(json.dumps({"timestamp": old}))
-        monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
-        monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
-        assert mod.main() == 0
+        slots = [(0, 0), (6, 0), (8, 0), (14, 0), (20, 0), (23, 0)]
+        now = datetime(2026, 9, 15, 0, 0, tzinfo=timezone.utc)
+        last = datetime(2026, 9, 14, 23, 5, tzinfo=timezone.utc)  # 23:00 served
+        wakeups: list[datetime] = []
+        while now < datetime(2026, 9, 16, 0, 0, tzinfo=timezone.utc):
+            action, wait = mod.decide(now, last, slots)
+            if action == mod.RUN:
+                wakeups.append(now)
+                last = now
+            elif action == mod.RELAY:
+                now = now + timedelta(seconds=wait)
+                continue
+            now = now + timedelta(minutes=20)
+        assert len(wakeups) == 6, f"expected 6 wakeups, got {len(wakeups)}"
+        assert [(w.hour, w.minute) for w in wakeups] == [
+            (0, 0), (6, 0), (8, 0), (14, 0), (20, 0), (23, 0)]
 
-    def test_fresh_journal_relays_then_catches_up(self, tmp_path, monkeypatch):
-        """While the journal is fresh the gate relays (sleeps toward the next
-        slot); the moment the gate window opens it runs immediately —
-        catch-up must never wait for a slot once 45 min have passed."""
+    def test_relay_sleeps_then_runs(self, tmp_path, monkeypatch):
+        """main() relays only when the next slot is close, then runs."""
         from datetime import timedelta
         mod = self._mod()
         (tmp_path / "journal.jsonl").write_text(
-            json.dumps({"timestamp": "2026-09-13T21:50:00+00:00"}))
+            json.dumps({"timestamp": "2026-09-15T19:50:00+00:00"}))
         monkeypatch.setattr(mod, "JOURNAL", tmp_path / "journal.jsonl")
         monkeypatch.setattr(mod, "CONFIG", tmp_path / "none.yaml")
-        monkeypatch.setattr(mod, "DEFAULT_SLOTS", ((0, 30),))  # one slot: 00:30
-        state = {"t": datetime(2026, 9, 13, 22, 0, tzinfo=timezone.utc)}
+        monkeypatch.setattr(mod, "DEFAULT_SLOTS", ((20, 0),))
+        out = tmp_path / "out.txt"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        state = {"t": datetime(2026, 9, 15, 19, 55, tzinfo=timezone.utc)}
         sleeps: list[float] = []
-
-        def fake_now():
-            return state["t"]
 
         def fake_sleep(sec):
             sleeps.append(sec)
             state["t"] += timedelta(seconds=sec)
-            assert len(sleeps) <= 40, "relay never exited"
+            assert len(sleeps) <= 5, "relay never exited"
 
-        monkeypatch.setattr(mod, "_now_utc", fake_now)
+        monkeypatch.setattr(mod, "_now_utc", lambda: state["t"])
         monkeypatch.setattr(mod, "_sleep", fake_sleep)
         assert mod.main() == 0
-        # 22:00 (10 min old) -> 30m chunk; 22:30 (40 min old) -> 30m chunk;
-        # 23:00 (70 min old, stale) -> proceed immediately.
-        assert sleeps == [1800.0, 1800.0]
-        assert (state["t"].hour, state["t"].minute) == (23, 0)
+        assert sleeps == [300.0]
+        assert (state["t"].hour, state["t"].minute) == (20, 0)
         assert all(s <= mod.MAX_SLEEP_SECONDS for s in sleeps)
-
-    def test_decide_semantics(self):
-        mod = self._mod()
-        slots = [(0, 0), (6, 0)]
-
-        # No journal -> run now.
-        now = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
-        assert mod.decide(now, None, slots) == 0.0
-
-        # Stale (2h old) -> run now even between slots.
-        last = datetime(2026, 9, 13, 1, 0, tzinfo=timezone.utc)
-        assert mod.decide(now, last, slots) == 0.0
-
-        # Fresh (10 min old) at 00:10, next slot 06:00 -> relay 5h50m.
-        last = datetime(2026, 9, 13, 0, 0, tzinfo=timezone.utc)
-        w = mod.decide(datetime(2026, 9, 13, 0, 10, tzinfo=timezone.utc),
-                       last, slots)
-        assert w == pytest.approx(5 * 3600 + 50 * 60, abs=1)
-
-        # Manual wakeup 5 min before a slot -> the gate window holds the
-        # next run past the slot (no duplicate right after it).
-        last = datetime(2026, 9, 13, 5, 50, tzinfo=timezone.utc)
-        w = mod.decide(datetime(2026, 9, 13, 5, 55, tzinfo=timezone.utc),
-                       last, slots)
-        assert w == pytest.approx(40 * 60, abs=1)
+        assert "run=true" in out.read_text()
 
     def test_load_slots_parses_config_and_tz(self, tmp_path):
         mod = self._mod()
@@ -1250,29 +1313,92 @@ class TestDailyDigest:
     def test_quiet_day_message(self, tmp_path):
         from scripts.ai_daily_digest import format_digest, summarize_day
 
+        # All six scheduled slots ran (a quiet-but-healthy day).
         d = self._write(tmp_path, [
+            self._entry("2026-09-13T00:01:37+00:00"),
+            self._entry("2026-09-13T06:02:07+00:00"),
+            self._entry("2026-09-13T08:03:46+00:00"),
             self._entry("2026-09-13T14:02:11+00:00"),
+            self._entry("2026-09-13T20:01:40+00:00"),
             self._entry("2026-09-13T23:32:09+00:00",
                         reasoning="Flat market, standing aside."),
         ])
         s = summarize_day(d, now=self.NOW)
         msg = format_digest(s)
-        assert "✅ Wakeups: 2/2 ok" in msg
+        assert "✅ Wakeups: 6/6 slots ran, all ok" in msg
         assert "no trades closed" in msg
         assert "$10,000.00" in msg
         assert 'AI said: "Flat market, standing aside."' in msg
 
+    def test_late_run_reports_the_previous_day(self, tmp_path):
+        """REGRESSION (2026-09-14/15/16): GitHub held the 23:50 cron ~2h, so
+        the digest ran at ~01:45 and reported the NEW day's first two hours
+        while labelling itself with the new date — no digest ever described a
+        complete day. A late run must report the day whose last slot passed."""
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-14T14:02:11+00:00", outlook="bullish"),
+            self._entry("2026-09-14T23:35:00+00:00"),
+            self._entry("2026-09-15T00:01:00+00:00"),  # the new day
+        ])
+        late = datetime(2026, 9, 15, 1, 55, tzinfo=timezone.utc)
+        s = summarize_day(d, now=late)
+        assert s["day"] == "2026-09-14"
+        assert s["wakeups"] == 2  # only the 14th's entries
+        msg = format_digest(s)
+        assert "DIGEST — 2026-09-14" in msg
+        assert "2026-09-15" not in msg
+        # The on-time run for that same day reports the same day (so the
+        # marker value is identical and the guard works either way).
+        on_time = datetime(2026, 9, 14, 23, 50, tzinfo=timezone.utc)
+        assert summarize_day(d, now=on_time)["day"] == "2026-09-14"
+
+    def test_missed_slot_labels_are_named(self, tmp_path):
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-13T00:05:00+00:00"),
+            self._entry("2026-09-13T14:02:11+00:00"),
+            self._entry("2026-09-13T23:32:09+00:00"),
+        ])
+        s = summarize_day(d, now=self.NOW)
+        assert s["slots_missing"] == ["06:00", "08:00", "20:00"]
+        assert len(s["slots_ran"]) == 3
+        msg = format_digest(s)
+        assert "⚠️ Wakeups: 3/6 slots ran" in msg
+        assert "3 never fired" in msg
+        assert "06:00 UTC" in msg
+
+    def test_one_wakeup_cannot_serve_two_slots(self, tmp_path):
+        """A single 08:30 wakeup must not mark both 06:00 and 08:00 served."""
+        from scripts.ai_daily_digest import summarize_day
+
+        d = self._write(tmp_path, [self._entry("2026-09-13T08:30:00+00:00")])
+        s = summarize_day(d, now=self.NOW)
+        assert s["slots_ran"] == ["08:00"]
+        assert "06:00" in s["slots_missing"]
+
     def test_success_failure_mix_surfaces_error(self, tmp_path):
+        """A slot whose wakeup FAILED still counts as the slot having run —
+        the report distinguishes FAILED from never-fired, so neither can hide
+        behind the other."""
         from scripts.ai_daily_digest import format_digest, summarize_day
 
         d = self._write(tmp_path, [
             self._entry("2026-09-13T00:49:07+00:00"),
-            self._entry("2026-09-13T11:39:25+00:00", status="error",
+            self._entry("2026-09-13T06:02:00+00:00"),
+            self._entry("2026-09-13T08:03:00+00:00"),
+            self._entry("2026-09-13T14:02:11+00:00", status="error",
                         errors=["AI engine failed: 503 high demand"]),
+            self._entry("2026-09-13T20:01:00+00:00"),
+            self._entry("2026-09-13T23:32:09+00:00"),
         ])
         s = summarize_day(d, now=self.NOW)
+        assert len(s["slots_ran"]) == 6 and s["failed"] == 1
         msg = format_digest(s)
-        assert "1/2 ok" in msg
+        assert "⚠️ Wakeups: 6/6 slots ran — 1 FAILED" in msg
+        assert "never fired" not in msg
         assert "503" in msg
 
     def test_already_sent_marker_suppresses_duplicate(self, tmp_path):
@@ -1323,8 +1449,11 @@ class TestDailyDigest:
         ])
         s = summarize_day(d, now=self.NOW)
         assert s["wakeups"] == 3 and s["failed"] == 1
+        assert len(s["slots_ran"]) == 3 and len(s["slots_missing"]) == 3
         msg = format_digest(s)
-        assert "⚠️ Wakeups: 2/3 ok" in msg
+        assert "⚠️ Wakeups: 3/6 slots ran" in msg
+        assert "1 FAILED" in msg
+        assert "3 never fired" in msg
         assert "market data unavailable" in msg
 
     def test_no_wakeups_is_loud_alert(self, tmp_path):
@@ -1336,7 +1465,8 @@ class TestDailyDigest:
         s = summarize_day(d, now=self.NOW)
         assert s["wakeups"] == 0
         msg = format_digest(s)
-        assert "NO WAKEUPS RAN TODAY" in msg
+        assert "NO WAKEUPS RAN" in msg
+        assert "6 scheduled slots" in msg
 
     def test_equity_falls_back_to_ledger(self, tmp_path):
         from scripts.ai_daily_digest import summarize_day
@@ -1373,6 +1503,49 @@ class TestDailyDigest:
         )
         assert r.returncode != 0
         assert "run a wakeup first" in (r.stderr + r.stdout)
+
+    def test_check_due_exit_codes(self, tmp_path):
+        """--check-due lets the workflow skip a no-op in ~1s when the day's
+        report already went out (exit 3) and proceed when it hasn't (exit 0).
+        Any other failure must make it look DUE, never silently skip."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from scripts.ai_daily_digest import summarize_day
+
+        d = self._write(tmp_path, [self._entry("2026-09-13T14:02:11+00:00")])
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(f"bot:\n  data_dir: {d.as_posix()}\n", encoding="utf-8")
+        cmd = [sys.executable, "scripts/ai_daily_digest.py",
+               "--config", str(cfg), "--check-due"]
+        cwd = Path(__file__).parent.parent
+
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "Due" in r.stdout
+
+        (d / "digest_sent.txt").write_text(summarize_day(d)["day"])
+        r2 = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        assert r2.returncode == 3
+        assert "Not due" in r2.stdout
+
+        # A missing data dir is not an error for the pre-check: the real run
+        # reports it loudly.
+        cfg2 = tmp_path / "cfg2.yaml"
+        cfg2.write_text("bot:\n  data_dir: nope_dir\n", encoding="utf-8")
+        r3 = subprocess.run(
+            [sys.executable, "scripts/ai_daily_digest.py",
+             "--config", str(cfg2), "--check-due"],
+            capture_output=True, text=True, cwd=cwd,
+        )
+        assert r3.returncode == 0 and "Due" in r3.stdout
+
+    def test_trade_pct_prefers_round_trip_net(self):
+        from scripts.ai_daily_digest import _trade_pct
+
+        assert _trade_pct({"pnl_pct": -1.72, "pnl_pct_net": -1.82}) == -1.82
+        assert _trade_pct({"pnl_pct": -1.72}) == -1.72  # old records
 
 
 class TestAlwaysOnPoller:
@@ -1567,13 +1740,22 @@ class TestPollerWorkflow:
         wr = d["on"]["workflow_run"]
         assert "AI Trading Bot" not in set(wr["workflows"])
         assert {"AI Bot Health Check", "AI Bot Telegram Poller"} <= set(wr["workflows"])
-        # The gate is the relay: fresh journal -> sleep to next slot.
+        # NOT the digest: the digest is kicked BY this workflow, so a mutual
+        # pair would restart each other forever.
+        assert "AI Bot Daily Digest" not in set(wr["workflows"])
         gate = [s for s in d["jobs"]["run-bot"]["steps"]
                 if "Schedule gate" in str(s.get("name", ""))]
         assert gate and "scripts/ai_bot_gate.py" in gate[0]["run"]
-        # GitHub's hard job cap is 360 min; the worst relay wait (~5h15m)
-        # must fit under it.
         assert d["jobs"]["run-bot"]["timeout-minutes"] == 360
+
+    def test_wakeup_step_is_gated_on_the_schedule(self):
+        """A firing whose slot is already served must never reach the AI or
+        the exchange — this is what caps the bot at 6 decisions/day despite
+        a ~20-minute kick mesh (it was 22-25/day on 2026-09-14/15)."""
+        d = _wf_yaml(".github/workflows/ai_bot.yml")
+        steps = d["jobs"]["run-bot"]["steps"]
+        wake = [s for s in steps if "Run one AI wakeup" in str(s.get("name", ""))]
+        assert wake and wake[0]["if"] == "steps.gate.outputs.run == 'true'"
 
     def test_health_check_recheck_window(self):
         """The watchdog waits for the self-healing chain before staying red."""
@@ -1583,10 +1765,30 @@ class TestPollerWorkflow:
 
     def test_digest_marker_persisted(self):
         """The digest's sent-marker must persist, or manual test runs keep
-        re-tripping the scheduled digest (the false-alarm bug)."""
+        re-tripping the scheduled digest (the false-alarm bug). The workflow
+        also needs contents:write — read-only made the persist step fail on
+        2026-09-14/15/16 (3/3 runs red) and the marker never reached the
+        cloud, leaving the anti-duplicate guard inert."""
         d = _wf_yaml(".github/workflows/ai_daily_digest.yml")
         names = [str(s.get("name", "")) for s in d["jobs"]["daily-digest"]["steps"]]
         assert any("Persist digest marker" in n for n in names)
+        assert d["permissions"]["contents"] == "write"
+
+    def test_digest_is_delivered_after_the_last_slot(self):
+        """The report must be able to land right after the 23:00 slot, not
+        whenever GitHub runs the 23:50 cron (it ran ~2h late, three days
+        running, which is what mislabelled the reported day)."""
+        d = _wf_yaml(".github/workflows/ai_daily_digest.yml")
+        assert "AI Trading Bot" in set(d["on"]["workflow_run"]["workflows"])
+        crons = [c["cron"] for c in d["on"]["schedule"]]
+        assert "50 23 * * *" in crons and len(crons) >= 2  # + a backup firing
+        steps = d["jobs"]["daily-digest"]["steps"]
+        send = [s for s in steps if "Send daily Telegram digest" in str(s.get("name", ""))]
+        # No conditional skip path: the script itself decides, and a run that
+        # is already delivered exits 0 loudly instead of being skipped by
+        # YAML that could misfire.
+        assert send and "if" not in send[0]
+        assert "python -u scripts/ai_daily_digest.py" in send[0]["run"]
 
 
 class TestPreLiveChecklist:

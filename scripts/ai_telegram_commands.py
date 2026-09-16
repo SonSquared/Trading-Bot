@@ -194,7 +194,9 @@ def cmd_status(ledger: dict, journal: dict | None, prices: dict[str, float]) -> 
         lines.append(
             f"Last wakeup: {journal.get('wakeup_id', '?')} "
             f"[{journal.get('status', '?')}] outlook={journal.get('market_outlook', '?')} "
-            f"trades={journal.get('actions_approved', 0)}"
+            # EXECUTED actions, not merely approved ones — "approved" read as
+            # a trade count while an approved-then-rejected action is not one.
+            f"trades={journal.get('actions_executed', 0)}"
         )
     else:
         lines.append("Last wakeup: none journaled yet")

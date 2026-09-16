@@ -84,8 +84,11 @@ def build_report(data_dir: Path, days: int = 7) -> dict:
     week_wins = sum(1 for t in week_trades if float(t.get("net_pnl", 0)) > 0)
 
     def _fmt(t: dict) -> str:
+        # Prefer the round-trip net % so the percentage and the dollar figure
+        # describe the same thing (the $ is always net of both fees).
+        pct = t.get("pnl_pct_net", t.get("pnl_pct", 0)) or 0
         return (
-            f"{t.get('pair', '?')} {t.get('pnl_pct', 0):+.2f}% "
+            f"{t.get('pair', '?')} {float(pct):+.2f}% "
             f"(${float(t.get('net_pnl', 0)):+.2f})"
         )
 

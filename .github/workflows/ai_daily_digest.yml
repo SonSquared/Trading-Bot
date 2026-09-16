@@ -1,14 +1,30 @@
 name: AI Bot Daily Digest
 on:
   schedule:
-    # Daily 23:50 UTC — after the last wakeup slots (23:02/23:32) so the
-    # digest summarizes the full day including the daily_close wakeup.
-    # Runs even on quiet days: "no wakeups ran today" is itself an alert.
+    # Primary: 23:50 UTC, right after the last wakeup slot (23:00). The
+    # digest reports "the day whose last slot has passed", so running a
+    # little late (or very late) can no longer mislabel or mis-scope it.
     - cron: '50 23 * * *'
+    # Backup: GitHub held the primary run ~2h late on 2026-09-14/15/16
+    # (created 01:45, 01:55, 01:45) and thins crons hard on this repo, so a
+    # second daily firing is cheap insurance. The marker makes it a no-op.
+    - cron: '30 0 * * *'
+  workflow_run:
+    # Self-healing delivery: every wakeup completion re-checks whether the
+    # day's report went out, so the report arrives minutes after the 23:00
+    # slot instead of whenever GitHub gets around to the cron (it ran ~2h
+    # late three days running). When the day is already delivered the script
+    # logs it and exits 0 without sending — no duplicate, no silent skip.
+    workflows:
+      - "AI Trading Bot"
+    types: [completed]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # the sent-marker is pushed to ai-bot-state. This was
+  # read-only, so the persist step failed on 2026-09-14/15/16 (3/3 runs red)
+  # and the marker never reached the cloud — leaving the anti-duplicate guard
+  # inert. Fixed 2026-09-16.
 
 jobs:
   daily-digest:
@@ -20,7 +36,7 @@ jobs:
 
       - name: Restore AI bot state from ai-bot-state branch
         # Same restore as the weekly report — the digest reads
-        # paper_ledger.json / journal.jsonl from data/ai_bot.
+        # paper_ledger.json / journal.jsonl / digest_sent.txt from data/ai_bot.
         run: |
           mkdir -p data/ai_bot
           if git ls-remote --exit-code --heads origin ai-bot-state >/dev/null 2>&1; then
@@ -42,6 +58,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Send daily Telegram digest
+        # Also a no-op most times (the kicker fires on every wakeup): when
+        # this day's report is already marked delivered the script logs it
+        # and exits 0 without sending. Late recovery is a feature — a report
+        # that never went out gets delivered on the next wakeup.
+        # `--check-due` (exit 0 = due, 3 = already sent) is the same guard as
+        # an operator tool: python scripts/ai_daily_digest.py --check-due
         env:
           # AI_ prefix so the main bot's TELEGRAM_* secrets stay untouched.
           TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
@@ -50,35 +72,44 @@ jobs:
 
       - name: Persist digest marker to ai-bot-state branch
         # The digest writes digest_sent.txt after a CONFIRMED send; the
-        # idempotence guard reads it on the next trigger. Persisting it
-        # means the 2026-09-13 "false NO-WAKEUPS alarm" (a manual test
-        # run tripping the scheduled send) can never happen again.
+        # idempotence guard reads it (and GitHub's cron reliability problems
+        # no longer matter, because a late re-run is a quiet no-op).
         if: always()
         env:
           STATE_BRANCH: ai-bot-state
         run: |
           set -e
           if [ ! -f data/ai_bot/digest_sent.txt ]; then
-            echo "No digest marker (send failed or dry-run) — nothing to persist"
+            echo "No digest marker (send failed, skipped, or dry-run) — nothing to persist"
             exit 0
           fi
-          rm -rf /tmp/aibotstate
-          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
-            git fetch --depth=1 origin "$STATE_BRANCH"
-            git worktree add /tmp/aibotstate "origin/$STATE_BRANCH"
-          else
-            git worktree add --orphan /tmp/aibotstate
-          fi
-          mkdir -p /tmp/aibotstate/data/ai_bot
-          cp data/ai_bot/digest_sent.txt /tmp/aibotstate/data/ai_bot/
-          cd /tmp/aibotstate
-          git add data/ai_bot/digest_sent.txt
-          if git diff --cached --quiet; then
-            echo "Marker unchanged — nothing to persist"
-            exit 0
-          fi
-          git -c user.name="ai-bot-state-persister" \
-              -c user.email="actions@users.noreply.github.com" \
-              commit -m "digest marker: ${{ github.run_number }}"
-          git push origin "HEAD:$STATE_BRANCH"
-          echo "Digest marker persisted"
+          # The state branch is shared with the trading workflow: retry the
+          # push a few times so a concurrent state commit can't silently drop
+          # the marker (a lost marker means a duplicate digest tomorrow).
+          for attempt in 1 2 3; do
+            rm -rf /tmp/aibotstate
+            if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+              git fetch --depth=1 origin "$STATE_BRANCH"
+              git worktree add /tmp/aibotstate "origin/$STATE_BRANCH"
+            else
+              git worktree add --orphan /tmp/aibotstate
+            fi
+            mkdir -p /tmp/aibotstate/data/ai_bot
+            cp data/ai_bot/digest_sent.txt /tmp/aibotstate/data/ai_bot/digest_sent.txt
+            git -C /tmp/aibotstate add data/ai_bot/digest_sent.txt
+            if git -C /tmp/aibotstate diff --cached --quiet; then
+              echo "Marker unchanged — nothing to persist"
+              exit 0
+            fi
+            git -C /tmp/aibotstate -c user.name="ai-bot-state-persister" \
+                -c user.email="actions@users.noreply.github.com" \
+                commit -m "digest marker: ${{ github.run_number }}"
+            if git -C /tmp/aibotstate push origin "HEAD:$STATE_BRANCH"; then
+              echo "Digest marker persisted (attempt $attempt)"
+              exit 0
+            fi
+            echo "Persist attempt $attempt failed — retrying in 5s"
+            sleep 5
+          done
+          echo "ERROR: could not persist the digest marker after 3 attempts"
+          exit 1

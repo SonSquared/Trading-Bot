@@ -12,28 +12,31 @@ on:
       - ".github/workflows/ai_bot.yml"
   # 6 wakeups/day (00/06/08/14/20/23 UTC), each fired TWICE (:02 and :32)
   # because GitHub free-tier cron drops slots wholesale (verified on the
-  # main bot workflow). scripts/ai_bot_gate.py skips a firing that lands
-  # within 45 minutes of the last journaled wakeup, so the redundant slot
-  # costs ~15s of quota instead of a duplicate trade decision.
+  # main bot workflow). scripts/ai_bot_gate.py is SLOT-BASED: a firing whose
+  # slot is already served exits immediately without running a wakeup, so
+  # redundant triggers (and the ~20-min workflow_run mesh below) cost ~15s
+  # instead of extra trade decisions.
   schedule:
     - cron: '2 0,6,8,14,20,23 * * *'
     - cron: '32 0,6,8,14,20,23 * * *'
   workflow_dispatch:  # manual trigger from the Actions tab
   workflow_run:
     # SELF-HEALING CHAIN: GitHub's cron silently drops slots (proven
-    # 2026-09-13: the 06/08 UTC wakeups never fired; one arrived 4h late).
-    # Other AI-suite workflows' completions kick the next wakeup, turning
-    # a dropped slot into a delayed one. GitHub ignores SELF-referencing
-    # workflow_run (this workflow can't kick itself — proven on the
-    # poller), so the kickers are the OTHER suite members: the hourly
-    # health patrol (crons proven reliable), the Telegram poller, and
-    # the digest. scripts/ai_bot_gate.py makes each kicked run safe: it
-    # runs the wakeup immediately when the journal is stale, otherwise
-    # sleeps (as the relay) until the next scheduled slot.
+    # 2026-09-13: the 06/08 UTC wakeups never fired; the "hourly" patrol
+    # itself only runs ~6x/day). Other AI-suite workflows' completions kick
+    # the next wakeup, turning a dropped slot into a delayed one. GitHub
+    # ignores SELF-referencing workflow_run (proven on the poller), so the
+    # kickers are OTHER suite members. The Telegram poller is the heartbeat:
+    # each ~20-min generation ends by kicking a wakeup check, which is what
+    # keeps the 6 slots firing despite thinned cron. The gate ignores kicks
+    # that arrive between slots, so the heartbeat no longer creates extra
+    # wakeups (it did: 22-25/day instead of 6, until 2026-09-16).
+    #
+    # NOTE: "AI Bot Daily Digest" is deliberately NOT a kicker here — the
+    # digest is kicked BY this workflow, and a mutual pair would spin.
     workflows:
       - "AI Bot Telegram Poller"
       - "AI Bot Health Check"
-      - "AI Bot Daily Digest"
       - "AI Bot Weekly Report"
       - "Bot Health Check"
     types: [completed]
@@ -67,11 +70,9 @@ jobs:
   run-bot:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    # The gate can act as a RELAY: when the journal is fresh it sleeps
-    # (in 30-min chunks) until the next scheduled slot, so a dropped cron
-    # slot is recovered on time. Worst relay wait is ~5h15m (largest
-    # schedule gap minus the 45-min gate window) — GitHub's hard job cap
-    # is 360 minutes, and that covers it with margin.
+    # The gate may RELAY (sleep up to 10 min) toward a slot that is about to
+    # come due, so wakeups stay punctual. Everything else is SKIP or a short
+    # wakeup run; 360 min is GitHub's hard cap and leaves ample margin.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -99,14 +100,14 @@ jobs:
             echo "No ai-bot-state branch yet — first run starts fresh"
           fi
 
-      - name: Schedule gate (self-scheduling relay)
+      - name: Schedule gate (slot-based)
         id: gate
-        # Runs BEFORE pip setup. Journal stale -> run NOW (on-time wakeup
-        # or catch-up after dropped slots). Journal fresh -> this step
-        # BECOMES the relay: it sleeps until the next scheduled slot, so
-        # the next wakeup fires on time even if every cron slot is
-        # dropped. The concurrency group queues overlapping firings and
-        # their gate checks then see fresh state — no duplicate wakeups.
+        # Runs BEFORE pip setup. Writes run=true|false to $GITHUB_OUTPUT:
+        #   slot due & unserved -> true  (on-time wakeup or catch-up)
+        #   slot served, next far -> false (redundant kick, no wakeup)
+        #   slot served, next near -> sleeps to it, then re-decides
+        # This is what holds the bot to its 6 scheduled decisions/day even
+        # though the hardware heartbeat fires every ~20 minutes.
         run: python scripts/ai_bot_gate.py
 
       - name: Set up Python
@@ -119,6 +120,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run one AI wakeup
+        # Only when the gate says a slot is actually due. A skipped firing
+        # must never reach the AI or the exchange.
+        if: steps.gate.outputs.run == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
