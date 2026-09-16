@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260916_015320",
+  "wakeup_id": "20260916_025516",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Market shows a strong bearish trend with EMA alignment and negative MACD across key pairs. RSI is near oversold levels, but without a clear reversal pattern or volume confirmation, staying flat on new entries is prudent. Current open BTC long position remains within acceptable risk limits.",
-    "reasoning": "Both BTC and ETH are in a bearish trend with EMAs stacked negatively (EMA9 < EMA21 < EMA50) and strong ADX values indicating trend continuation. RSI is around 33-35 but momentum hasn't shifted bullish yet. Confidence is below 60 for any new setups, so no new actions are taken."
+    "risk_assessment": "Strong bearish trend on 1h with high ADX (40.1 BTC, 35.1 ETH). Very low volume (0.19x BTC, 0.05x ETH). Portfolio heat is low at 5.0%.",
+    "reasoning": "Both BTC and ETH remain in defined downtrends with EMA 9 < 21 < 50 and ADX > 35. Extremely low volume ratios suggest lack of institutional participation and risk of low-liquidity choppiness. No high-probability trend-following entry signals are present (confidence < 60). Maintaining existing positions and holding cash."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-16T01:54:10.711153+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-16T02:55:45.613875+00:00"
 }
