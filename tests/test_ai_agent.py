@@ -1209,6 +1209,60 @@ class TestWeeklyReport:
         assert "dry-run" in result.output
 
 
+class TestNotifierHtmlFallback:
+    """A message must never be lost because Telegram's HTML parser rejected
+    interpolated AI text.
+
+    REGRESSION (2026-09-16): market_outlook and ai_reasoning frequently
+    contain bare '<' / '>' ("EMA 9 < EMA 21", "ADX > 28"). Every notifier
+    message is sent with parse_mode=HTML, so Telegram answered 400
+    "can't parse entities" and the message was dropped — the daily digest
+    failed its send step for exactly this reason while local dry-runs (which
+    never touch the API) looked perfect.
+    """
+
+    def _notifier(self):
+        from trading_system.bot.telegram_notifier import TelegramNotifier
+
+        return TelegramNotifier(bot_token="t", chat_id="c", enabled=True)
+
+    def test_html_rejection_retries_as_plain_text(self, monkeypatch):
+        n = self._notifier()
+        calls: list[str] = []
+
+        def fake_attempt(text, parse_mode):
+            calls.append(parse_mode)
+            return len(calls) > 1  # HTML rejected -> plain succeeds
+
+        monkeypatch.setattr(n, "_attempt_send", fake_attempt)
+        assert n.send_message("EMA 9 < EMA 21, ADX > 28") is True
+        assert calls == ["HTML", ""]
+
+    def test_both_modes_failing_still_returns_false(self, monkeypatch):
+        n = self._notifier()
+        seen: list[str] = []
+
+        def fake_attempt(text, parse_mode):
+            seen.append(parse_mode)
+            return False
+
+        monkeypatch.setattr(n, "_attempt_send", fake_attempt)
+        assert n.send_message("x") is False
+        assert seen == ["HTML", ""]  # tried hard, reported failure
+
+    def test_plain_retry_omits_the_parse_mode_field(self, monkeypatch):
+        # Telegram rejects parse_mode="" outright, so it must be absent.
+        n = self._notifier()
+        seen: dict = {}
+        monkeypatch.setattr(
+            n, "_send_via_curl", lambda payload: seen.update(payload) or True)
+        assert n._attempt_send("text", "") is True
+        assert "parse_mode" not in seen
+        seen.clear()
+        assert n._attempt_send("text", "HTML") is True
+        assert seen["parse_mode"] == "HTML"
+
+
 class TestNotifierWeeklyAndTest:
     """notify_weekly_summary + send_test_message fail-safe behavior."""
 

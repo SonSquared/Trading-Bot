@@ -27,16 +27,43 @@ class TelegramNotifier:
         self.base_url = self.BASE_URL.format(token=bot_token) if bot_token else ""
 
     def _send_message(self, text: str, parse_mode: str = "HTML") -> bool:
-        """Send a message via Telegram with retry."""
+        """Send a message via Telegram, falling back to plain text.
+
+        HTML is the default because most messages use <b> markup. But
+        AI- and exchange-written text is interpolated into reports and
+        alerts, and it routinely contains bare '<' / '>' / '&' (e.g.
+        "EMA 9 < EMA 21", "ADX > 28"). Telegram's HTML parser rejects those
+        with 400 "can't parse entities", which used to DROP the message
+        entirely — the 2026-09-16 digest failed exactly this way while
+        every local dry-run looked fine.
+
+        So an HTML attempt that fails is retried ONCE without parse_mode:
+        a message is never lost to a formatting detail.
+        """
         if not self.enabled or not self.base_url or not self.chat_id:
             return False
 
+        if self._attempt_send(text, parse_mode):
+            return True
+        if parse_mode:
+            logger.warning(
+                "telegram_html_rejected_retrying_as_plain_text",
+                parse_mode=parse_mode,
+            )
+            if self._attempt_send(text, ""):
+                return True
+        return False
+
+    def _attempt_send(self, text: str, parse_mode: str) -> bool:
+        """One send attempt. parse_mode="" omits the field entirely
+        (Telegram rejects an empty parse_mode value)."""
         payload = {
             "chat_id": self.chat_id,
             "text": text,
-            "parse_mode": parse_mode,
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
 
         # Try curl first (more reliable on Windows/SSL issues)
         try:
@@ -56,7 +83,11 @@ class TelegramNotifier:
                 logger.info("telegram_sent_requests")
                 return True
             else:
-                logger.warning("telegram_send_failed", status=resp.status_code, text=resp.text)
+                logger.warning(
+                    "telegram_send_failed",
+                    status=resp.status_code,
+                    text=resp.text[:300],
+                )
                 return False
         except Exception as e:
             logger.error("telegram_error", error=str(e))
@@ -64,8 +95,8 @@ class TelegramNotifier:
 
     def _send_via_curl(self, payload: dict) -> bool:
         """Send via curl subprocess with retry (works around SSL timeout on some Windows setups)."""
-        import subprocess
         import json as _json
+        import subprocess
         import time as _time
 
         url = f"{self.base_url}/sendMessage"
@@ -141,7 +172,7 @@ class TelegramNotifier:
         mode: str = "paper",
     ) -> bool:
         """Send trade close notification with P&L."""
-        emoji = "+" if pnl_pct >= 0 else ""
+        # No emoji prefix: {pnl_pct:+.2f}% already carries the sign.
         mode_tag = "[PAPER]" if mode == "paper" else "[LIVE]"
 
         msg = (
