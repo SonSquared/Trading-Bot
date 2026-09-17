@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260917_081116",
+  "wakeup_id": "20260917_140046",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low trading volume across pairs; ADX indicates weak trend momentum with both BTC and ETH trading near upper Bollinger Bands and overbought Stochastic levels.",
-    "reasoning": "Existing BTC long position is performing well and holding above entry. ETH is approaching immediate resistance at $2,454-$2,457 with Stochastic K/D overbought (88.9/90.8) and showing signs of a bearish cross. Given the extremely thin volume and mixed EMA alignments, initiating new positions carries poor risk-reward. Preserving capital and maintaining current position without changes."
+    "risk_assessment": "Low trading volume across pairs. ETH/USDT is approaching upper Bollinger Band resistance with an RSI of 67.7, while BTC/USDT exhibits a weak trend (ADX 14.4). Current BTC long position remains stable in profit.",
+    "reasoning": "No high-probability setups identified meeting the 60+ confidence threshold. ETH/USDT shows a moderate bullish trend but offers poor risk/reward entering near the upper Bollinger Band ($2,472.02). BTC/USDT momentum is weak and already represented in the portfolio. Maintaining existing positions and standing by."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-17T08:11:57.809223+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-17T14:01:58.929409+00:00"
 }
