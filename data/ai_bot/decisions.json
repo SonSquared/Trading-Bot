@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260917_140046",
+  "wakeup_id": "20260917_203220",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low trading volume across pairs. ETH/USDT is approaching upper Bollinger Band resistance with an RSI of 67.7, while BTC/USDT exhibits a weak trend (ADX 14.4). Current BTC long position remains stable in profit.",
-    "reasoning": "No high-probability setups identified meeting the 60+ confidence threshold. ETH/USDT shows a moderate bullish trend but offers poor risk/reward entering near the upper Bollinger Band ($2,472.02). BTC/USDT momentum is weak and already represented in the portfolio. Maintaining existing positions and standing by."
+    "risk_assessment": "Portfolio heat is low at 5.0% with one open BTC position currently in profit. Low market volume increases risk of false breakouts.",
+    "reasoning": "Both BTC and ETH show bullish EMA alignments but suffer from extremely low trading volume (0.03x and 0.28x volume ratios) and negative MACD histogram momentum. BTC's weak ADX (13.3) indicates a lacking trend. Maintaining existing BTC long position without taking new trades as signal confidence is below the 60 threshold."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-17T14:01:58.929409+00:00"
+  "decided_at": "2026-09-17T20:33:27.821955+00:00"
 }
