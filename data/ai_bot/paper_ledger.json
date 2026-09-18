@@ -1,19 +1,8 @@
 {
-  "cash": 9981.540012103767,
+  "cash": 10013.067953544365,
   "start_equity": 10000.0,
-  "peak_equity": 10010.09988009301,
-  "positions": {
-    "BTC/USDT:USDT": {
-      "side": "buy",
-      "entry_price": 75949.6,
-      "amount": 0.006571324639525875,
-      "size_usd": 499.08947784213444,
-      "stop_loss_pct": 2.5,
-      "take_profit_pct": 5.0,
-      "entry_time": "2026-09-15T15:07:00.723491+00:00",
-      "high_pnl_pct": 0.0
-    }
-  },
+  "peak_equity": 10013.067953544365,
+  "positions": {},
   "closed_trades": [
     {
       "pair": "BTC/USDT:USDT",
@@ -29,6 +18,26 @@
       "reason": "stop_loss triggered",
       "entry_time": "2026-09-14T14:00:59.849991+00:00",
       "close_time": "2026-09-15T08:00:46.783523+00:00"
+    },
+    {
+      "pair": "BTC/USDT:USDT",
+      "side": "close",
+      "position_side": "buy",
+      "entry_price": 75949.6,
+      "exit_price": 80787.8,
+      "amount": 0.006571324639525875,
+      "size_usd": 499.0895,
+      "gross_pnl": 31.7934,
+      "entry_fee": 0.2495,
+      "exit_fee": 0.2654,
+      "fees": 0.515,
+      "net_pnl": 31.2784,
+      "cash_delta": 31.5279,
+      "pnl_pct": 6.3703,
+      "pnl_pct_net": 6.2671,
+      "reason": "take_profit triggered",
+      "entry_time": "2026-09-15T15:07:00.723491+00:00",
+      "close_time": "2026-09-18T14:29:42.159497+00:00"
     }
   ]
 }

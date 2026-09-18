@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260918_094255",
+  "wakeup_id": "20260918_142940",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Moderate risk of short-term pullback due to overbought RSI and Stochastic indicators across BTC and ETH near upper Bollinger Bands.",
-    "reasoning": "Both BTC and ETH exhibit strong bullish trends across EMAs and ADX, but short-term momentum indicators are heavily overbought (BTC RSI 72.9, ETH RSI 75.2) with prices trading right against upper Bollinger Band limits. Since we already hold an open BTC long position from $75,949.60 currently in profit, opening additional positions at local highs offers an unfavorable risk-reward profile. Waiting for a consolidation or pullback toward the 9/21 EMAs before entering new positions."
+    "risk_assessment": "BTC and ETH are displaying strong bullish momentum (ADX 36.5), but both assets are severely overbought on the 1h timeframe (RSI 88.6 for BTC, 83.8 for ETH) and trading above upper Bollinger Bands near 7d highs. High risk of short-term pullback towards dynamic support (EMA 9/21).",
+    "reasoning": "While trend-following indicators remain strong, entering long positions at current resistance levels with extreme overbought RSI values presents poor risk/reward. Waiting for a consolidation or minor pullback to test EMA support levels prior to entering long positions."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-18T09:47:55.558372+00:00"
+  "decided_at": "2026-09-18T14:49:51.887985+00:00"
 }
