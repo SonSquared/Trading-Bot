@@ -9,7 +9,8 @@
       "strategy": "Donchian_Breakout",
       "fees_paid": 0.0234468287570826,
       "funding_paid": 0.026796375722380115,
-      "last_funding_time": "2026-09-18T00:30:20.060275+00:00"
+      "last_funding_time": "2026-09-18T00:30:20.060275+00:00",
+      "high_pnl": 0.8609634213621724
     }
   },
   "total_trades": 3,
@@ -22,13 +23,13 @@
   "signal_history": {},
   "last_daily_alert_date": "2026-09-18",
   "last_candle_seen": {
-    "BTC_USDT_USDT": "2026-09-17 20:00:00+00:00",
-    "ETH_USDT_USDT": "2026-09-17 20:00:00+00:00"
+    "BTC_USDT_USDT": "2026-09-18 00:00:00+00:00",
+    "ETH_USDT_USDT": "2026-09-18 00:00:00+00:00"
   },
-  "last_equity_marked": 95.20536451171648,
+  "last_equity_marked": 95.94618149662001,
   "last_prices": {
-    "BTC_USDT_USDT": 76335.6,
-    "ETH_USDT_USDT": 2441.15
+    "BTC_USDT_USDT": 77772.6,
+    "ETH_USDT_USDT": 2495.88
   },
-  "last_run_at": "2026-09-18T00:30:31.745890+00:00"
+  "last_run_at": "2026-09-18T07:29:35.765527+00:00"
 }
