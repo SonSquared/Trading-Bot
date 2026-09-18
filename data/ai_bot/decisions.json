@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260918_000043",
+  "wakeup_id": "20260918_062452",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Portfolio heat is low at 5.0% with minimal drawdown (0.2%). Market volume is near zero and trend strength is weak (BTC ADX 10.4). Existing BTC long position remains safely within risk parameters.",
-    "reasoning": "Both BTC and ETH exhibit neutral momentum (RSI ~49-52, negative MACD histograms) combined with extremely low volume ratios (0.00x to 0.05x) and weak ADX values. There is no clear high-probability setup to open new positions or adjust existing ones. Confidence for new trades is below the required 60 threshold."
+    "risk_assessment": "Both BTC and ETH are trading near upper Bollinger Bands with RSI above 70 and overbought Stochastics on low volume, increasing short-term pullback risk.",
+    "reasoning": "Existing BTC long position is in profit. Both BTC and ETH show overbought momentum indicators (RSI > 70, Stoch > 85) near 24h highs with low relative volume, presenting an unfavorable risk-reward profile for adding new long positions. Awaiting a pullback or consolidation before opening new trades."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-18T00:01:12.846825+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-18T06:25:04.340008+00:00"
 }
