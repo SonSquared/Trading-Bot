@@ -1,9 +1,9 @@
 {
-  "last_wakeup": "20260917_230045",
+  "last_wakeup": "20260918_000043",
   "last_actions": [],
   "last_outlook": "neutral",
   "peak_equity": 10010.09988009301,
-  "day": "2026-09-17",
-  "day_start_equity": 9984.49973672141,
-  "notes": "Wakeup 20260917_230045: AI proposed 0, 0 approved, 0 executed, 0 SL/TP triggers fired. Outlook: neutral. Equity: $9,984.55."
+  "day": "2026-09-18",
+  "day_start_equity": 9984.64102020116,
+  "notes": "Wakeup 20260918_000043: AI proposed 0, 0 approved, 0 executed, 0 SL/TP triggers fired. Outlook: neutral. Equity: $9,984.64."
 }
