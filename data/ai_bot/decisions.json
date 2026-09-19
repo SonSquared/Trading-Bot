@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260919_140039",
+  "wakeup_id": "20260919_203616",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Low volatility and momentum divergence near range highs; zero reported volume suggests awaiting confirmation before entering.",
-    "reasoning": "Both BTC and ETH maintain strong higher-timeframe bullish EMA alignment and high ADX readings. However, RSI is bordering overbought levels (~69-70) and MACD histograms are negative, indicating near-term momentum deceleration right below 24h highs. With negligible volume and risk of consolidation or mean-reversion pullbacks, entering new breakout longs presents unfavorable risk-reward at current levels."
+    "risk_assessment": "Low short-term volatility with strong higher-timeframe trend (ADX > 50). Momentum indicators (MACD histogram negative, falling Stochastics) indicate an ongoing intraday consolidation.",
+    "reasoning": "Both BTC and ETH maintain strong structural bullish alignments (EMA 9 > EMA 21 > EMA 50 with ADX > 50). However, both pairs are currently experiencing a minor pullback with prices below EMA 9 and negative MACD histograms. Stochastic oscillators have not yet turned up from support levels. Remaining patient for a confirmed bounce or momentum stabilization before initiating new long positions."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-19T14:00:56.854204+00:00"
+  "decided_at": "2026-09-19T20:36:43.242574+00:00"
 }
