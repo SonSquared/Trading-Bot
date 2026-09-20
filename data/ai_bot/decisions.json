@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260919_230043",
+  "wakeup_id": "20260920_000045",
   "decision": {
     "actions": [],
     "market_outlook": "neutral-bullish",
-    "risk_assessment": "Low volatility consolidation with negligible trading volume. Risk of chop/whipsaw is elevated during low-volume periods.",
-    "reasoning": "Both BTC and ETH maintain an overarching bullish EMA structure (EMA 9 > EMA 21 > EMA 50) with strong ADX readings, but short-term momentum shows ongoing pullbacks with negative MACD histograms and prices pinned below EMA 9. Combined with near-zero trading volume, risk-reward does not warrant entering new positions until volume returns and momentum confirms a bullish continuation."
+    "risk_assessment": "Low volume across BTC and ETH with negative MACD histogram indicating short-term pullback in a strong higher-timeframe uptrend (ADX > 40). Risk of short-term choppy consolidation.",
+    "reasoning": "Both BTC and ETH maintain a bullish EMA alignment (EMA9 > EMA21 > EMA50) and high ADX values (~44), confirming a strong underlying trend. However, volume ratios are currently near zero (0.00x - 0.04x) and MACD histograms are negative, indicating momentum is lacking in the short term. Confidence for a long entry is below 60 due to low volume confirmation and active consolidation near the 21 EMA. Remaining in cash until momentum aligns."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-19T23:00:53.011692+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-20T00:01:25.972081+00:00"
 }
