@@ -1,8 +1,19 @@
 {
-  "cash": 10013.067953544365,
+  "cash": 10012.667430826223,
   "start_equity": 10000.0,
   "peak_equity": 10013.067953544365,
-  "positions": {},
+  "positions": {
+    "ETH/USDT:USDT": {
+      "side": "buy",
+      "entry_price": 2623.59,
+      "amount": 0.3053241688996944,
+      "size_usd": 801.0454362835492,
+      "stop_loss_pct": 2.0,
+      "take_profit_pct": 3.5,
+      "entry_time": "2026-09-20T21:31:10.382051+00:00",
+      "high_pnl_pct": 0.0
+    }
+  },
   "closed_trades": [
     {
       "pair": "BTC/USDT:USDT",

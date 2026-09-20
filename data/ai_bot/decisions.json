@@ -1,11 +1,21 @@
 {
-  "wakeup_id": "20260920_160108",
+  "wakeup_id": "20260920_213050",
   "decision": {
-    "actions": [],
-    "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volume ratios with compressed volatility and mixed EMA structure signal choppy consolidation.",
-    "reasoning": "Both BTC and ETH are displaying mixed EMA trends (EMA 9 below EMA 21) accompanied by extremely low trading volumes (volume ratio < 0.10x). Momentum oscillators (RSI neutral at 55-56, Stochastic nearing overbought) lack sufficient directional edge. In alignment with trend-following criteria, sitting out until volume and clear trend alignment return."
+    "actions": [
+      {
+        "pair": "ETH/USDT:USDT",
+        "side": "long",
+        "size_pct": 8.0,
+        "stop_loss_pct": 2.0,
+        "take_profit_pct": 3.5,
+        "confidence": 70.0,
+        "reasoning": "Strong bullish EMA alignment (9>21>50) supported by ADX at 31.9 and elevated volume ratio of 3.30x."
+      }
+    ],
+    "market_outlook": "bullish",
+    "risk_assessment": "Low portfolio heat at 0%, minimal drawdown, neutral funding rates across majors providing favorable entry conditions.",
+    "reasoning": "ETH displays solid bullish momentum with high volume confirmation and trend strength, maintaining prices above key moving averages with low downside volatility."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-20T16:02:20.454230+00:00"
+  "decided_at": "2026-09-20T21:31:10.381735+00:00"
 }
