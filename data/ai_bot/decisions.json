@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260920_061156",
+  "wakeup_id": "20260920_111024",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low trading volume on both BTC and ETH, with price testing lower Bollinger Bands and 24h support levels in a mixed trend environment.",
-    "reasoning": "Both BTC and ETH display oversold Stochastic indicators near 24h support levels, but volume is extremely low (volume ratios around 0.08x-0.09x) and MACD remains bearish. Lacking clear trend alignment and volume confirmation, confidence for entering a long or short trade is below the required 60 threshold."
+    "risk_assessment": "Low trading volume across major pairs with price consolidating near support levels. Potential for choppy price action.",
+    "reasoning": "Both BTC and ETH display low volume ratios (0.06x and 0.31x respectively) along with mixed EMA alignment. While Stochastic indicators show oversold conditions, MACD remains negative without clear bullish reversal volume or momentum. Confidence to enter a position is below 60%, warranting a stay-on-side approach."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-20T06:12:24.082943+00:00"
+  "decided_at": "2026-09-20T11:11:14.445963+00:00"
 }
