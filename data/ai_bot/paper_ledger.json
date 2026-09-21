@@ -1,29 +1,8 @@
 {
-  "cash": 10012.266243866741,
+  "cash": 10079.748905356122,
   "start_equity": 10000.0,
-  "peak_equity": 10063.143764549404,
-  "positions": {
-    "ETH/USDT:USDT": {
-      "side": "buy",
-      "entry_price": 2623.59,
-      "amount": 0.3053241688996944,
-      "size_usd": 801.0454362835492,
-      "stop_loss_pct": 2.0,
-      "take_profit_pct": 3.5,
-      "entry_time": "2026-09-20T21:31:10.382051+00:00",
-      "high_pnl_pct": 0.0
-    },
-    "BTC/USDT:USDT": {
-      "side": "buy",
-      "entry_price": 81683.7,
-      "amount": 0.009822937978601788,
-      "size_usd": 802.3739189627148,
-      "stop_loss_pct": 1.8,
-      "take_profit_pct": 3.6,
-      "entry_time": "2026-09-21T00:15:51.257032+00:00",
-      "high_pnl_pct": 0.0
-    }
-  },
+  "peak_equity": 10079.748905356122,
+  "positions": {},
   "closed_trades": [
     {
       "pair": "BTC/USDT:USDT",
@@ -59,6 +38,46 @@
       "reason": "take_profit triggered",
       "entry_time": "2026-09-15T15:07:00.723491+00:00",
       "close_time": "2026-09-18T14:29:42.159497+00:00"
+    },
+    {
+      "pair": "ETH/USDT:USDT",
+      "side": "close",
+      "position_side": "buy",
+      "entry_price": 2623.59,
+      "exit_price": 2727.12,
+      "amount": 0.3053241688996944,
+      "size_usd": 801.0454,
+      "gross_pnl": 31.6102,
+      "entry_fee": 0.4005,
+      "exit_fee": 0.4163,
+      "fees": 0.8169,
+      "net_pnl": 30.7934,
+      "cash_delta": 31.1939,
+      "pnl_pct": 3.9461,
+      "pnl_pct_net": 3.8441,
+      "reason": "take_profit triggered",
+      "entry_time": "2026-09-20T21:31:10.382051+00:00",
+      "close_time": "2026-09-21T14:20:50.262596+00:00"
+    },
+    {
+      "pair": "BTC/USDT:USDT",
+      "side": "close",
+      "position_side": "buy",
+      "entry_price": 81683.7,
+      "exit_price": 85420.7,
+      "amount": 0.009822937978601788,
+      "size_usd": 802.3739,
+      "gross_pnl": 36.7083,
+      "entry_fee": 0.4012,
+      "exit_fee": 0.4195,
+      "fees": 0.8207,
+      "net_pnl": 35.8876,
+      "cash_delta": 36.2888,
+      "pnl_pct": 4.575,
+      "pnl_pct_net": 4.4727,
+      "reason": "take_profit triggered",
+      "entry_time": "2026-09-21T00:15:51.257032+00:00",
+      "close_time": "2026-09-21T14:20:50.263059+00:00"
     }
   ]
 }

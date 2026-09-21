@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260921_104003",
+  "wakeup_id": "20260921_142047",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Market remains in a strong bullish trend with ADX above 30 on both assets, but short-term momentum is overbought with BTC RSI at 75.6 and prices testing upper Bollinger Bands. Current portfolio heat is moderate at 15.9% with 0% drawdown.",
-    "reasoning": "Both eligible pairs (BTC and ETH) already have active, profitable long positions. Adding further exposure while prices are extended near 24h highs and overbought conditions would offer poor risk-reward. Prudent strategy is to let existing winners ride without entering new positions."
+    "risk_assessment": "High momentum metrics (BTC RSI at 83.5, Stoch at 94.0) suggest overbought conditions near major resistance/24h highs, elevating short-term pullback risk.",
+    "reasoning": "While macro trend structure is strongly bullish (EMA stack bullish, ADX > 45 on both pairs), entering long at current price levels carries a poor risk-reward ratio due to extreme overbought RSI values and low volume ratios. Awaiting a pullback toward dynamic support (EMA 9 or BB Middle) before looking for entry signals."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-21T10:40:20.371166+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-21T14:21:36.878405+00:00"
 }
