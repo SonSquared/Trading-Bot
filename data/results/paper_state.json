@@ -1,5 +1,5 @@
 {
-  "cash": 64.34603859847853,
+  "cash": 64.34257287870636,
   "positions": {
     "BTC_USDT_USDT": {
       "side": -1,
@@ -8,26 +8,27 @@
       "entry_time": "2026-09-21T13:02:51.780934+00:00",
       "strategy": "RSI_Reversion",
       "fees_paid": 0.024260038405150983,
-      "funding_paid": 0.0
+      "funding_paid": 0.003465719772164426,
+      "last_funding_time": "2026-09-21T19:35:58.174880+00:00"
     }
   },
   "total_trades": 5,
   "wins": 3,
   "losses": 2,
-  "total_pnl": 2.0032363201227765,
+  "total_pnl": 1.9997706003506122,
   "realized_pnl": 2.2364040974146047,
   "peak_equity": 98.8142531645284,
   "max_drawdown": 0.03031284285453983,
   "signal_history": {},
   "last_daily_alert_date": "2026-09-21",
   "last_candle_seen": {
-    "BTC_USDT_USDT": "2026-09-21 08:00:00+00:00",
-    "ETH_USDT_USDT": "2026-09-21 08:00:00+00:00"
+    "BTC_USDT_USDT": "2026-09-21 12:00:00+00:00",
+    "ETH_USDT_USDT": "2026-09-21 12:00:00+00:00"
   },
-  "last_equity_marked": 98.8142531645284,
+  "last_equity_marked": 98.26279880156264,
   "last_prices": {
-    "ETH_USDT_USDT": 2740.74,
-    "BTC_USDT_USDT": 85330.4
+    "BTC_USDT_USDT": 86672.3,
+    "ETH_USDT_USDT": 2769.49
   },
-  "last_run_at": "2026-09-21T13:02:56.420862+00:00"
+  "last_run_at": "2026-09-21T19:36:14.888579+00:00"
 }
