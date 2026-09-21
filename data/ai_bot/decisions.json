@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260921_142047",
+  "wakeup_id": "20260921_200049",
   "decision": {
     "actions": [],
-    "market_outlook": "bullish",
-    "risk_assessment": "High momentum metrics (BTC RSI at 83.5, Stoch at 94.0) suggest overbought conditions near major resistance/24h highs, elevating short-term pullback risk.",
-    "reasoning": "While macro trend structure is strongly bullish (EMA stack bullish, ADX > 45 on both pairs), entering long at current price levels carries a poor risk-reward ratio due to extreme overbought RSI values and low volume ratios. Awaiting a pullback toward dynamic support (EMA 9 or BB Middle) before looking for entry signals."
+    "market_outlook": "neutral",
+    "risk_assessment": "High risk of mean reversion or pullback due to extreme overbought conditions (BTC RSI 86, ETH RSI 75) and diminishing volume at local resistance.",
+    "reasoning": "Both BTC and ETH exhibit strong bullish trends with high ADX (>55), but momentum indicators are severely extended in overbought territory (Stochastics >90, RSI >74). Entering longs at current 7-day highs with zero volume presents unfavorable risk-reward. Awaiting a healthy pullback toward EMA 21 or key support levels before initiating new positions."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-21T14:21:36.878405+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-21T20:01:08.163130+00:00"
 }
