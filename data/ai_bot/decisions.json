@@ -1,21 +1,21 @@
 {
-  "wakeup_id": "20260920_213050",
+  "wakeup_id": "20260921_001434",
   "decision": {
     "actions": [
       {
-        "pair": "ETH/USDT:USDT",
+        "pair": "BTC/USDT:USDT",
         "side": "long",
         "size_pct": 8.0,
-        "stop_loss_pct": 2.0,
-        "take_profit_pct": 3.5,
+        "stop_loss_pct": 1.8,
+        "take_profit_pct": 3.6,
         "confidence": 70.0,
-        "reasoning": "Strong bullish EMA alignment (9>21>50) supported by ADX at 31.9 and elevated volume ratio of 3.30x."
+        "reasoning": "Bullish alignment across EMA 9/21/50, strong MACD histogram, and expanding upper Bollinger Band with supporting volume."
       }
     ],
     "market_outlook": "bullish",
-    "risk_assessment": "Low portfolio heat at 0%, minimal drawdown, neutral funding rates across majors providing favorable entry conditions.",
-    "reasoning": "ETH displays solid bullish momentum with high volume confirmation and trend strength, maintaining prices above key moving averages with low downside volatility."
+    "risk_assessment": "Portfolio heat remains well within limit at 16% total exposure across 2 positions. Zero drawdown state allows selective trend-following trades on high liquidity pairs.",
+    "reasoning": "BTC maintains healthy trend continuation signals on the 1h timeframe. Opening a long position with 8% exposure and 1.8% stop-loss limits maximum trade risk to 0.144% of total equity."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-20T21:31:10.381735+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-21T00:15:51.256547+00:00"
 }
