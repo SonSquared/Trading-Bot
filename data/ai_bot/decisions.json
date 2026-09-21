@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260921_060046",
+  "wakeup_id": "20260921_104003",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Low volume across both pairs during early hours. Existing long positions in BTC and ETH are well-positioned with strong EMA trend alignment and moderate/strong ADX. Portfolio heat is low (16.0%) and drawdown is negligible (0.1%).",
-    "reasoning": "Both tradable pairs already have open long positions performing in line with the bullish market structure. Extremely low relative volume (0.03x for BTC, 0.11x for ETH) indicates a lack of fresh expansion impulse, making it prudent to hold existing positions without adding exposure."
+    "risk_assessment": "Market remains in a strong bullish trend with ADX above 30 on both assets, but short-term momentum is overbought with BTC RSI at 75.6 and prices testing upper Bollinger Bands. Current portfolio heat is moderate at 15.9% with 0% drawdown.",
+    "reasoning": "Both eligible pairs (BTC and ETH) already have active, profitable long positions. Adding further exposure while prices are extended near 24h highs and overbought conditions would offer poor risk-reward. Prudent strategy is to let existing winners ride without entering new positions."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-21T06:01:25.745705+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-21T10:40:20.371166+00:00"
 }
