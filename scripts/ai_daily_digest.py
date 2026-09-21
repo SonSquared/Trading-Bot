@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 
-from trading_system.bot.telegram_notifier import TelegramNotifier
+from trading_system.bot.telegram_notifier import TelegramNotifier, clip
 
 # Records the last day whose digest was actually delivered. A SUCCESSFUL
 # send writes the reported day; a re-trigger for the same day exits quietly.
@@ -67,6 +67,10 @@ DEFAULT_SLOTS: tuple[tuple[int, int], ...] = (
 # slot. Windows never overlap (the closest slots are 1h apart).
 SLOT_GRACE_MINUTES = 180
 SLOT_EARLY_TOLERANCE_MINUTES = 2
+
+# A wakeup that missed the grace window can still have SERVED the slot as a
+# late catch-up (the gate runs one catch-up per unserved slot, however late
+# GitHub delivers it). Anything before the last slot's grace end counts.
 
 CHECK_DUE_OK = 0
 CHECK_DUE_ALREADY_SENT = 3
@@ -99,38 +103,78 @@ def slot_report(
     entries: list[dict],
     day: str,
     slots: list[tuple[int, int]],
-) -> tuple[list[str], list[str]]:
-    """Which of ``day``'s schedule slots produced a wakeup? -> (ran, missing).
+) -> tuple[list[str], list[str], list[str]]:
+    """Which of ``day``'s schedule slots produced a wakeup?
 
-    Slot-based, not entry-based: a catch-up wakeup is credited to the slot it
-    was meant for. Matching is 1:1 (greedy, nearest unfilled slot) so one
-    wakeup can never cover two slots — otherwise a 08:30 wakeup would mark
-    both 06:00 and 08:00 as served and hide a genuine miss.
+    Returns three label lists (in schedule order):
+        ran         — a wakeup ran within the grace window of the slot
+        served_late — nothing in the window, but a later wakeup (before the
+                      day's last slot + grace) served the slot as catch-up
+        never_fired — nothing at all
+
+    Rationale (2026-09-21 audit): GitHub delivered the 08:02 cron ~3h late;
+    the gate correctly ran the 08:00 wakeup at 11:11 and skipped further
+    kicks. But 11:11 sits outside the 180-min grace, so the digest called
+    the slot "never fired" and hid the recovery. Late is worth knowing;
+    missed is an outage — the digest now says which happened.
+
+    Matching is 1:1 (greedy, nearest unfilled slot) so one wakeup can never
+    cover two slots — otherwise a 08:30 wakeup would mark both 06:00 and
+    08:00 as served and hide a genuine miss.
     """
     labels = [f"{h:02d}:{m:02d}" for h, m in slots]
     base = _parse_ts(f"{day}T00:00:00+00:00")
     if base is None:
-        return [], labels
+        return [], [], labels
     slot_dts = [base + timedelta(hours=h, minutes=m) for h, m in slots]
     stamps = sorted(
         t for t in (_parse_ts(e.get("timestamp")) for e in entries) if t
     )
     early = timedelta(minutes=SLOT_EARLY_TOLERANCE_MINUTES)
     grace = timedelta(minutes=SLOT_GRACE_MINUTES)
-    taken: set[int] = set()
-    for t in stamps:
+
+    # Pass 1 — in-window matches: each wakeup takes its NEAREST slot whose
+    # window contains it. Stamp-major on purpose: with a 180-min grace and
+    # 1h slot spacing the windows overlap, and slot-major iteration would
+    # let 06:00 steal the 08:30 wakeup that belongs to 08:00.
+    in_window: dict[int, int] = {}   # slot idx -> stamp idx
+    stamp_slot: dict[int, int] = {}  # stamp idx -> slot idx
+    for ti, t in enumerate(stamps):
         best: int | None = None
         best_gap = None
-        for i, slot in enumerate(slot_dts):
-            if i in taken or not (slot - early <= t <= slot + grace):
+        for si, slot in enumerate(slot_dts):
+            if si in in_window or not (slot - early <= t <= slot + grace):
                 continue
             gap = abs((t - slot).total_seconds())
             if best_gap is None or gap < best_gap:
-                best, best_gap = i, gap
+                best, best_gap = si, gap
         if best is not None:
-            taken.add(best)
+            in_window[best] = ti
+            stamp_slot[ti] = best
+
+    # Pass 2 — late catch-up: a leftover stamp before the last slot's grace
+    # end serves its nearest unfilled earlier-or-equal slot (1:1 still).
+    last_slot_end = slot_dts[-1] + grace if slot_dts else base
+    served_late: set[int] = set()
+    for ti, t in enumerate(stamps):
+        if ti in stamp_slot or t > last_slot_end:
+            continue
+        best: int | None = None
+        best_gap = None
+        for si, slot in enumerate(slot_dts):
+            if si in in_window or si in served_late or t < slot - early:
+                continue
+            gap = (t - slot).total_seconds()
+            if best_gap is None or gap < best_gap:
+                best, best_gap = si, gap
+        if best is not None:
+            served_late.add(best)
+            stamp_slot[ti] = best
+
+    taken = set(in_window) | served_late
     return (
-        [labels[i] for i in sorted(taken)],
+        [labels[i] for i in sorted(in_window)],
+        [labels[i] for i in sorted(served_late)],
         [labels[i] for i in range(len(labels)) if i not in taken],
     )
 
@@ -197,7 +241,7 @@ def summarize_day(
 
     positions = ledger.get("positions", {}) or {}
 
-    ran_slots, missing_slots = slot_report(journal, day, slots)
+    ran_slots, late_slots, missing_slots = slot_report(journal, day, slots)
 
     # Idempotence guard: did this day's digest already get DELIVERED? The
     # marker file lives in the same data dir and persists on the state
@@ -215,6 +259,7 @@ def summarize_day(
         "wakeups": wakeups,
         "expected_wakeups": len(slots),
         "slots_ran": ran_slots,
+        "slots_served_late": late_slots,
         "slots_missing": missing_slots,
         "failed": len(failed),
         "errors": errors,
@@ -254,10 +299,11 @@ def format_digest(s: dict) -> str:
 
     expected = int(s.get("expected_wakeups", len(DEFAULT_SLOTS)))
     ran = len(s.get("slots_ran") or [])
+    late = list(s.get("slots_served_late") or [])
     missing = list(s.get("slots_missing") or [])
     failed = int(s.get("failed", 0))
 
-    if s["wakeups"] == 0 and ran == 0:
+    if s["wakeups"] == 0 and ran == 0 and not late:
         return (
             f"AI BOT DAILY DIGEST — {s['day']}\n"
             f"{'=' * 30}\n"
@@ -270,14 +316,20 @@ def format_digest(s: dict) -> str:
     problems = []
     if failed:
         problems.append(f"{failed} FAILED")
+    if late:
+        shown = ", ".join(f"{m} UTC" for m in late[:4])
+        more = f" (+{len(late) - 4} more)" if len(late) > 4 else ""
+        problems.append(f"{len(late)} ran late: {shown}{more}")
     if missing:
         shown = ", ".join(f"{m} UTC" for m in missing[:4])
         more = f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""
         problems.append(f"{len(missing)} never fired: {shown}{more}")
 
     if problems:
+        icon = "✅" if not failed and not missing else "⚠️"
         head = (
-            f"⚠️ Wakeups: {ran}/{expected} slots ran — " + " | ".join(problems)
+            f"{icon} Wakeups: {ran + len(late)}/{expected} slots ran — "
+            + " | ".join(problems)
         )
     else:
         head = f"✅ Wakeups: {ran}/{expected} slots ran, all ok"
@@ -321,7 +373,7 @@ def format_digest(s: dict) -> str:
     if s["outlook"]:
         lines.append(f"AI outlook: {s['outlook']}")
     if s["reasoning"]:
-        text = " ".join(s["reasoning"].split())[:200]
+        text = clip(s["reasoning"], 200)
         lines.append(f'AI said: "{text}"')
 
     stamp = _utc_now().strftime("%b %d, %H:%M UTC")

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 
-from trading_system.bot.telegram_notifier import TelegramNotifier
+from trading_system.bot.telegram_notifier import TelegramNotifier, clip
 
 
 def _load_ledger(data_dir: Path) -> dict:
@@ -186,7 +186,7 @@ def main(config: str, dry_run: bool, days: int) -> None:
         names = ", ".join(p["pair"] for p in r["open_positions"])
         click.echo(f"  Open:          {names}")
     for note in r["ai_notes"][:3]:
-        click.echo(f"  AI note:       {note[:150]}")
+        click.echo(f"  AI note:       {clip(note, 150)}")
 
     if dry_run:
         click.echo("(dry-run: Telegram send skipped)")

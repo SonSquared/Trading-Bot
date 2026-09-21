@@ -26,6 +26,16 @@ permissions:
   # and the marker never reached the cloud — leaving the anti-duplicate guard
   # inert. Fixed 2026-09-16.
 
+# One digest delivery at a time, ever. The kicker fires on EVERY wakeup
+# completion and GitHub batches delayed crons, so several digest runs can
+# start in the same minute. The marker alone can't stop that race (runs 2
+# and 3 restore state before run 1's push lands): on 2026-09-17 the 17/9
+# digest was delivered THREE times (23:02, 23:03, 23:03). This group
+# serializes the deliveries; runs 2+ then see the marker and exit quietly.
+concurrency:
+  group: ai-daily-digest
+  cancel-in-progress: false
+
 jobs:
   daily-digest:
     runs-on: ubuntu-latest

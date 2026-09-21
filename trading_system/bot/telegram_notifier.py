@@ -15,6 +15,24 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def clip(text: str, limit: int) -> str:
+    """Clip ``text`` to ``limit`` chars at a word boundary.
+
+    A hard slice cuts mid-word — the 2026-09-21 weekly report shipped
+    "RSI neutral at 55-5" (was "55-58"), and digests have ended on "Existing
+    B" (was "Existing BTC long..."). Clipping at the last whitespace keeps
+    every word whole; an ellipsis marks the cut so nothing looks complete
+    that isn't.
+    """
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    head, _, _ = cut.rpartition(" ")
+    trimmed = head if head else cut
+    return trimmed.rstrip(" ,;:." ) + "…"
+
+
 class TelegramNotifier:
     """Send clean notifications via Telegram Bot API."""
 
@@ -297,7 +315,7 @@ class TelegramNotifier:
             msg += "\nAI NOTES:\n"
             seen: set[str] = set()
             for note in ai_notes[:6]:
-                text = (note or "").strip().replace("\n", " ")[:180]
+                text = clip(note, 180)
                 if text and text not in seen:
                     seen.add(text)
                     msg += f"  - {text}\n"

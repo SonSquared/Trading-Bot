@@ -1324,6 +1324,97 @@ class TestNotifierWeeklyAndTest:
         assert n.send_test_message() is True
         assert "Telegram alerts are working" in captured["text"]
 
+
+class TestTelegramClip:
+    """clip() — report truncation must never cut mid-word (2026-09-21:
+    the weekly report shipped "RSI neutral at 55-5" for "55-58")."""
+
+    def test_short_text_passes_through(self):
+        from trading_system.bot.telegram_notifier import clip
+
+        assert clip("short note", 180) == "short note"
+
+    def test_whitespace_collapsed(self):
+        from trading_system.bot.telegram_notifier import clip
+
+        assert clip("a\n  b   c", 180) == "a b c"
+
+    def test_cuts_at_word_boundary_with_ellipsis(self):
+        from trading_system.bot.telegram_notifier import clip
+
+        out = clip("RSI neutral at 55-58 and volume extremely low today", 30)
+        assert out == "RSI neutral at 55-58 and…"
+
+    def test_exact_length_untouched(self):
+        from trading_system.bot.telegram_notifier import clip
+
+        text = "x" * 40
+        assert clip(text, 40) == text
+
+    def test_hard_slice_would_break_token_clip_does_not(self):
+        """The exact 55-5 hazard: a hard slice at the limit lands inside
+        '55-58'; clip() must back off to the word boundary instead."""
+        from trading_system.bot.telegram_notifier import clip
+
+        text = "RSI neutral at 55-58 and volume is extremely low today"
+        limit = text.index("55-58") + 4  # lands mid-token -> "55-5"
+        out = clip(text, limit)
+        assert out.endswith("…")
+        assert "55-5…" not in out
+        assert out.startswith("RSI neutral at")
+
+    def test_weekly_note_no_midword_cut(self, monkeypatch):
+        from trading_system.bot.telegram_notifier import TelegramNotifier
+
+        n = TelegramNotifier("token", "chat", enabled=True)
+        captured = {}
+
+        def fake_send(text, parse_mode="HTML"):
+            captured["text"] = text
+            return True
+
+        monkeypatch.setattr(n, "_send_message", fake_send)
+        note = ("Both BTC and ETH are displaying mixed EMA trends accompanied "
+                "by extremely low trading volumes (volume ratio below 0.10x). "
+                "Momentum oscillators show RSI neutral at 55-58 and MACD flat, "
+                "so directional conviction is absent across both major pairs.")
+        n.notify_weekly_summary(
+            equity=10000, start_equity=10000, week_pnl=0, week_pnl_pct=0,
+            week_trades=0, week_wins=0, best_trade="", worst_trade="",
+            total_trades=0, total_win_rate=0, wakeups=0, failed_wakeups=0,
+            ai_notes=[note], open_positions=[],
+        )
+        body = [ln for ln in captured["text"].splitlines()
+                if ln.startswith("  - ")][0]
+        assert body[4:].endswith("…")  # long note is marked as clipped
+        content = body[4:].rstrip("…")
+        note_tokens = set(note.split())
+        # Every word shown must be a COMPLETE word from the source note —
+        # the shipped bug printed "55-5" for "55-58".
+        assert content and all(tok in note_tokens for tok in content.split())
+        assert "55-58" in content
+
+
+class TestDigestWorkflow:
+    """ai_daily_digest.yml pins: one delivery per day, ever."""
+
+    def test_serialized_delivery(self):
+        # The kicker fires on every wakeup completion; without a concurrency
+        # group three runs raced the marker and delivered the 17/9 digest
+        # three times (23:02, 23:03, 23:03). Serialized, runs 2+ see the
+        # marker and exit quietly.
+        d = _wf_yaml(".github/workflows/ai_daily_digest.yml")
+        c = d["concurrency"]
+        assert c["group"] == "ai-daily-digest"
+        assert c["cancel-in-progress"] is False  # queue, never kill the sender
+        assert d["permissions"]["contents"] == "write"  # marker persist
+
+    def test_kicked_by_every_wakeup(self):
+        d = _wf_yaml(".github/workflows/ai_daily_digest.yml")
+        wr = d["on"]["workflow_run"]
+        assert "AI Trading Bot" in set(wr["workflows"])
+        assert wr["types"] == ["completed"]
+
     def test_send_message_wrapper(self, monkeypatch):
         """Public send_message passes text verbatim (used by report scripts)."""
         from trading_system.bot.telegram_notifier import TelegramNotifier
@@ -1432,6 +1523,58 @@ class TestDailyDigest:
         s = summarize_day(d, now=self.NOW)
         assert s["slots_ran"] == ["08:00"]
         assert "06:00" in s["slots_missing"]
+
+    def test_late_catchup_is_reported_not_hidden(self, tmp_path):
+        """The 2026-09-20 bug: GitHub delivered the 08:02 cron ~3h late;
+        the gate correctly ran the 08:00 wakeup at 11:11, but 11:11 sat
+        outside the grace window so the digest said "1 never fired" —
+        hiding the recovery and crying wolf. A late catch-up must be
+        reported as LATE, never as a miss."""
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-20T00:01:27+00:00"),
+            self._entry("2026-09-20T06:12:25+00:00"),
+            self._entry("2026-09-20T11:11:15+00:00"),  # the late 08:00 catch-up
+            self._entry("2026-09-20T16:02:21+00:00"),
+            self._entry("2026-09-20T21:31:12+00:00"),
+            # Real journal: the 23:00 slot was served by Sep 21's 00:15
+            # wakeup (75 min after the slot — inside its window).
+            self._entry("2026-09-21T00:15:52+00:00"),
+        ])
+        now = datetime(2026, 9, 21, 0, 16, tzinfo=timezone.utc)  # after 23:00 slot
+        s = summarize_day(d, now=now)
+        assert s["day"] == "2026-09-20"
+        assert s["slots_served_late"] == ["08:00"]
+        assert s["slots_missing"] == []
+        assert len(s["slots_ran"]) == 5
+        msg = format_digest(s)
+        assert "✅ Wakeups: 6/6 slots ran" in msg
+        assert "1 ran late: 08:00 UTC" in msg
+        assert "never fired" not in msg
+
+    def test_genuine_miss_still_shouted(self, tmp_path):
+        """Contrast with the late-catchup case: with NO wakeup at all for
+        the 08:00 slot (and none for 14:00's window either), the digest
+        must still say "never fired" — late is worth knowing, missed is
+        an outage."""
+        from scripts.ai_daily_digest import format_digest, summarize_day
+
+        d = self._write(tmp_path, [
+            self._entry("2026-09-20T00:01:27+00:00"),
+            self._entry("2026-09-20T06:12:25+00:00"),
+            self._entry("2026-09-20T16:02:21+00:00"),  # in-window catch-up for 14:00
+            self._entry("2026-09-20T21:31:12+00:00"),
+            self._entry("2026-09-21T00:15:52+00:00"),  # serves the 23:00 slot
+        ])
+        now = datetime(2026, 9, 21, 0, 16, tzinfo=timezone.utc)  # after 23:00 slot
+        s = summarize_day(d, now=now)
+        assert s["slots_served_late"] == []
+        assert s["slots_missing"] == ["08:00"]
+        assert len(s["slots_ran"]) == 5
+        msg = format_digest(s)
+        assert "⚠️ Wakeups: 5/6 slots ran" in msg
+        assert "1 never fired: 08:00 UTC" in msg
 
     def test_success_failure_mix_surfaces_error(self, tmp_path):
         """A slot whose wakeup FAILED still counts as the slot having run —
