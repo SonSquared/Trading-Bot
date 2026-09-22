@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260922_000044",
+  "wakeup_id": "20260922_060048",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Strong macro uptrend (ADX > 60 on both pairs), but short-term indicators show overbought conditions (BTC RSI 77.8) with waning volume and stochastic bearish crossovers near multi-day highs.",
-    "reasoning": "Both BTC and ETH are in clear bullish EMA alignments, but currently trading extended near 7-day highs with RSI overbought on BTC and low volume participation. Entering longs here poses an unfavorable risk/reward profile. Waiting for a healthy retracement toward EMA 21 support before entering trend-continuation positions."
+    "risk_assessment": "Strong trend intact with ADX above 47 for both BTC and ETH. However, short-term momentum is in a pullback phase with negative MACD histograms and minimal current volume.",
+    "reasoning": "While macro trend structures remain firmly bullish with stacked EMAs, short-term indicators (Stochastic oversold, MACD signal line crossing above MACD) indicate an active short-term retracement. Waiting for momentum confirmation (bullish MACD histogram turn or volume expansion) before taking new long positions."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-09-22T00:01:08.653934+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-22T06:02:19.917655+00:00"
 }
