@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 import requests
 import structlog
 
+from trading_system.bot.perf_stats import summarize
+
 logger = structlog.get_logger(__name__)
 
 
@@ -288,8 +290,9 @@ class TelegramNotifier:
         failed_wakeups: int,
         ai_notes: list[str],
         open_positions: list[dict],
+        perf: dict | None = None,
     ) -> bool:
-        """Send the Sunday report: week P&L, win rate, and the AI's own notes."""
+        """Send the Sunday report: week P&L, rolling performance, AI notes."""
         total_ret = ((equity - start_equity) / start_equity * 100) if start_equity else 0.0
         msg = f"AI BOT WEEKLY REPORT\n{'='*30}\n"
         msg += f"Equity: ${equity:,.2f} ({total_ret:+.1f}% all-time)\n"
@@ -311,6 +314,14 @@ class TelegramNotifier:
                 pnl = pos.get("unrealized_pnl", 0)
                 msg += f"  {pos.get('pair', '?')} {side} ${pnl:+,.2f}\n"
 
+        # Rolling review: win rate / expectancy / profit factor / drawdown /
+        # R:R and per-slot attribution. Rendered by perf_stats so the Telegram
+        # message and the stdout report can never disagree.
+        if perf:
+            msg += "\nPERFORMANCE (rolling)\n"
+            for line in summarize(perf):
+                msg += f"  {line}\n"
+
         if ai_notes:
             msg += "\nAI NOTES:\n"
             seen: set[str] = set()
@@ -323,6 +334,18 @@ class TelegramNotifier:
                     break
 
         msg += f"\n{datetime.now(timezone.utc).strftime('%b %d, %H:%M UTC')} | Weekly"
+
+        # Telegram rejects anything over 4096 chars — and the plain-text retry
+        # would be rejected identically, so an overlong report would simply
+        # never arrive (a silent failure). Drop the least load-bearing section
+        # first (the AI notes) and SAY SO; the final slice is a last resort for
+        # absurd interpolated text. The numbers are never dropped silently.
+        if len(msg) > 4000:
+            if "\nAI NOTES:" in msg:
+                msg = msg.split("\nAI NOTES:")[0].rstrip()
+                msg += "\n(AI notes trimmed to fit Telegram's message limit)\n"
+            if len(msg) > 4000:
+                msg = msg[:4000].rsplit("\n", 1)[0] + "\n(report trimmed)\n"
         return self._send_message(msg)
 
     def send_message(self, text: str) -> bool:

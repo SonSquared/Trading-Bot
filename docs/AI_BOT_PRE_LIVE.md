@@ -6,6 +6,10 @@ run **zero times**. This document is an honest audit of that path as of
 2026-09-13: what is verified in code (**GREEN**), what is workable but
 risky (**YELLOW**), and what blocks real money (**RED**).
 
+**Re-reviewed 2026-09-22** against a week of live paper data — see
+[the dated section at the end](#re-review--2026-09-22-one-week-of-real-paper-evidence)
+for the regraded RED/YELLOW/GREEN table and the updated go-live gate.
+
 The three locks (config `mode: live`, CLI `--live`,
 `AI_BOT_LIVE_CONFIRMED=1`) gate *entry* into live mode. They say nothing
 about whether live mode is *safe* once entered. This page does.
@@ -95,3 +99,74 @@ drawdown halt, and no-silent-failure journaling are all real and tested
 (R1), and one operational footgun (R4). Close the REDs, rehearse on
 testnet, let paper build evidence — then live with money you can afford
 to lose.
+
+---
+
+# Re-review — 2026-09-22 (one week of real paper evidence)
+
+**Fresh eyes, real data.** Every line below was re-graded against the cloud
+journal, the paper ledger, the entry records and the Actions run history for
+**2026-09-14 → 09-22** — not against the code's intentions. Totals at review
+time: **4 closed trades, 3 wins (75%), +$80.25 net (+0.80%), realized max
+drawdown 0.18%, 0 failed wakeups, ~50 decisions, equity $10,079.75.**
+
+## What the week promoted (new GREEN)
+
+| # | Now GREEN | Evidence |
+|---|---|---|
+| G9 | Reports tell the truth about themselves | The digest distinguishes ran / **ran late** / never fired and was verified against the same journal twice; the weekly report now carries rolling stats **and** a ledger check that flags P&L that does not reconcile with cash |
+| G10 | The watchdog actually catches silent death | It paged during the real 09-13 model outage, and the digest independently named the dropped 08:00 slot on 09-20 instead of showing a green tick |
+| G11 | Model-retirement resilience | Google retired every pinned flash name (404) and the engine now discovers the live model from the API — **0 model failures in the last 6 days** |
+| G12 | Money math is net of both fees | +6.27% / +3.84% / +4.47% wins and a −1.72% stop-out all reproduce from the ledger to the cent; a −1.72% alert and its $ figure describe the same thing |
+| G13 | The AI does trade, and respects its box | 4 entries / ~50 decisions (8%), every one inside the 2% risk / 10% size / R:R≥1.5 rules; 3 take-profits and 1 exchange-style stop trigger |
+
+G1–G8 stand unchanged (the decision layer held: no rule was ever bypassed in
+production).
+
+## Regraded YELLOW
+
+| # | Item | Was | Now | Evidence / why it is not GREEN yet |
+|---|---|---|---|---|
+| Y1 | Live peak-equity lags one wakeup | YELLOW | **YELLOW** | Still untested — no live run has ever happened |
+| Y2 | `consecutive_losses` always 0 in live | YELLOW | **YELLOW** | Unchanged in code |
+| Y3 | Paper fills overstate live fills | YELLOW | **YELLOW** | Reinforced this week: paper models the taker fee but zero slippage, and a legacy record was found quoting P&L $0.50 above actual cash — fee accounting had gaps |
+| Y4 | Model outage mid-position | YELLOW | **YELLOW** | No outage in 6 days, but exchange-side SL/TP is still the only protection when the LLM is down |
+| Y5 | AI discipline / trade frequency | YELLOW | **YELLOW (improving)** | No longer "never trades": 8% of decisions opened a position. 4 trades is still far too small a sample to call the calibration right |
+| Y6 | **Scheduler punctuality** (new) | — | **YELLOW** | Real defect found: the 08:00 slot ran **+108 / +126 / +160 min late** (missed outright on 09-20) and 14:00 slipped up to +172 min, because the poller heartbeat died for 3-4h at a time (its continuity rested on cron). Fixed 09-22: 30-min relay window, pre-slot cron deliveries, poller self-relaunch via `workflow_dispatch`. **Needs ≥7 days of observed on-time slots** before live — a late wakeup means a position is managed late |
+| Y7 | **P&L ↔ cash reconciliation** (new) | — | **YELLOW** | The weekly report now flags any drift (currently $0.50, one legacy 09-14 record). Live must start from a clean `data_dir` so this never carries over |
+
+## Regraded RED (all still open — verified in code today)
+
+| # | Blocker | Status 2026-09-22 |
+|---|---|---|
+| R1 | Failed protective-order placement leaves a naked position | **OPEN.** `ai_agent.py` still only writes `logger.error("protective_orders_missing", ...)` — no Telegram alert, no `errors` entry in the journal, no block on further entries. A live fill whose SL/TP failed would be silently unprotected |
+| R2 | Live execution path has zero real runs | **OPEN.** No testnet rehearsal has happened (`bot.sandbox: false`, no `BINANCE_TESTNET_*` keys). Amount rounding and the ccxt position-size field are still unverified against a real exchange |
+| R3 | Leverage is never set by the bot | **OPEN.** `set_leverage()` exists in `exchange.py` but the AI bot never calls it (only the main bot does). Whatever leverage is set on the account applies to every AI position |
+| R4 | Shared `data_dir` seeds live state from paper | **OPEN (mitigable).** `_build_agent(data_dir_override=...)` exists but is not exposed as a CLI flag; the clean path is a separate `configs/ai_bot_live.yaml` with its own `data_dir` |
+| R5 | Key hygiene | **OPEN.** No evidence of a trading-only, IP-whitelisted sub-account |
+| R6 | Paper evidence gate | **OPEN: 1 of 4 criteria met.** 1 week (needs ≥4), 4 closed trades (needs ≥30), positive net P&L ✅, realized max DD 0.18% ✅ |
+| R7 | No documented kill switch | **OPEN.** Still no AI-bot runbook with a rehearsed cancel-all + flatten procedure |
+
+## Go-live gate (updated)
+
+- [ ] R1–R7 all closed
+- [ ] Paper: **≥ 4 weeks** AND **≥ 30 closed trades** AND positive net P&L AND realized max drawdown < 10%  
+      *(today: 1 week / 4 trades / +$80.25 / 0.18%)*
+- [ ] **≥ 7 consecutive days with every slot on time** (no slot more than ~15 min late) — new,
+      from the 08:00/14:00 lateness found on 09-22
+- [ ] Testnet rehearsal complete, on the same machine class that will run live
+- [ ] Live `data_dir` created fresh, paper history untouched, `git status` clean
+- [ ] Kill switch rehearsed once, for real, on Testnet
+- [ ] Binance sub-account: trading permission only, IP-whitelisted, keys never in code or logs
+- [ ] You can afford to lose the entire live balance — literally, not figuratively
+
+## Bottom line, 2026-09-22
+
+The week moved this system from "a bot that has never traded" to "a bot with a
+verifiable 4-trade record, honest reporting and a self-healing heartbeat" — the
+decision layer is now backed by evidence, not just tests. What has **not** moved
+is the execution layer: **R1, R2 and R3 are unchanged**, and those are exactly
+the three that can lose money silently. The next real milestone is not more
+paper weeks — it is the **Testnet rehearsal**, which is the only thing that can
+close R2 and prove R1/R3 are dead. Paper continues meanwhile; it needs ~26 more
+closed trades and ~3 more weeks to satisfy the gate above.

@@ -10,6 +10,14 @@ Context (2026-09-16 audit of the cloud journal + Actions history):
   AI-suite workflows completing (workflow_run mesh) — it runs far more often
   than 6x/day. That part is deliberate and load-bearing.
 
+  2026-09-22 punctuality audit (journal, 09-14..09-21): the 08:00 slot was
+  +2m, +3m, +2m, then +11m, +108m, +126m, MISSED, +160m as the mesh heartbeat
+  died for hours at a stretch (09-20: no bot run 07:47-11:12; 09-21: none
+  06:38-10:39). GitHub delivered only ~5 of 12 scheduled firings per day. Two
+  fixes followed: this gate now relays over a window wider than the heartbeat
+  interval (above), and the poller heartbeat no longer depends on cron (it
+  relaunches itself via workflow_dispatch — see ai_poller.yml).
+
   The previous gate treated "journal older than 45 min" as "run a wakeup
   now". Under a mesh that fires every ~20 min, that fired a wakeup every
   time the journal aged past 45 min: the journal shows 22 wakeups on
@@ -26,8 +34,11 @@ This gate is therefore tied to the SCHEDULE, not to journal age:
         -> SKIP. This firing is redundant (a mesh kick between slots);
            exit immediately, no wakeup, no LLM call.
     that slot is served, next slot within RELAY_WINDOW
-        -> RELAY: sleep to the slot, then re-evaluate (-> RUN). This keeps
-           the wakeup punctual when a kick happens to land just before one.
+        -> RELAY: sleep to the slot, then re-evaluate (-> RUN). This is what
+           makes the schedule punctual: because the window (30 min) is wider
+           than the heartbeat interval (~5-20 min), a kick can land anywhere
+           in the half hour before a slot and the wakeup still fires exactly
+           at the slot instead of drifting or being missed.
 
 Result: exactly one wakeup per schedule slot per day, no matter how many
 times the workflow is triggered. A slot nobody triggered is NOT papered
@@ -66,7 +77,16 @@ SERVE_TOLERANCE_SECONDS = float(os.environ.get("AI_BOT_GATE_TOLERANCE", "120"))
 # Only sleep to the next slot when it is this close. Further out, a skipped
 # firing is cheaper and equally correct (the mesh will kick us again nearer
 # the slot). Keeps every run short instead of holding a runner for hours.
-RELAY_WINDOW_SECONDS = float(os.environ.get("AI_BOT_GATE_RELAY_WINDOW", "600"))
+#
+# 2026-09-22: raised 10 -> 30 min. This is the single knob that decides
+# whether the 08:00 wakeup lands at 08:00 or two hours late. The mesh
+# heartbeat (the Telegram poller relaunching itself) arrives every ~5-20 min;
+# with a 10-min window a kick landing 12+ min before a slot was skipped and
+# the NEXT kick often arrived after the slot — which is exactly how the 08:00
+# slot ran +108/+126/+160 min late (or not at all) on 09-18..09-21. A window
+# comfortably wider than the heartbeat interval means any kick in the half
+# hour before a slot sleeps to it and fires it on time.
+RELAY_WINDOW_SECONDS = float(os.environ.get("AI_BOT_GATE_RELAY_WINDOW", "1800"))
 
 # Max single sleep chunk: keeps the job inside its timeout and re-checks
 # the journal frequently.

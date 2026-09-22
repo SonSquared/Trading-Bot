@@ -1,10 +1,20 @@
 name: AI Bot Telegram Poller
 # Always-on command responder: /status etc. answered within seconds, not
-# at the next wakeup. Continuity does NOT depend on GitHub's cron
-# scheduler (which silently dropped this workflow's slots for 70+
-# minutes on 2026-09-13): each generation RELAUNCHES ITSELF on
-# completion via workflow_run, and the trading wakeup/digest completions
-# kick the chain too. The crons stay only as a harmless backup.
+# at the next wakeup.
+#
+# Continuity (revised 2026-09-22): each generation RELAUNCHES THE NEXT ONE
+# via workflow_dispatch at the end of the job. That is the only self-chain
+# GitHub actually honours — a workflow that lists ITSELF under workflow_run
+# is ignored (proven here: run #2 never fired after run #1), and this repo's
+# cron is dropped wholesale (only ~5 of 12 scheduled firings landed on
+# 09-20/21; the poller died 07:47->11:12 and again 06:38->10:39, which is why
+# the 08:00 wakeup ran up to 160 min late). workflow_dispatch from
+# GITHUB_TOKEN is the documented exception to the "token events don't
+# trigger workflows" rule, so the heartbeat no longer depends on cron: the
+# crons below are now backups, not the mechanism.
+#
+# Off switch: disable this workflow in the Actions tab — the chain stops
+# (a pending dispatch is refused once the workflow is disabled).
 on:
   schedule:
     # Backup only — four explicit lines, :07/:22/:37/:52, off the trading
@@ -22,7 +32,9 @@ on:
     # ignores self-referencing workflow_run triggers entirely (proven:
     # run #2 never fired after run #1), so self-chaining silently did
     # nothing. Continuity comes from the four backup crons above plus
-    # the AI Trading Bot / digest completions below.
+    # the AI Trading Bot / digest completions below — and, since
+    # 2026-09-22, from the explicit workflow_dispatch relaunch at the end
+    # of every generation (the part that actually guarantees continuity).
     workflows:
       - "AI Trading Bot"
       - "AI Bot Daily Digest"
@@ -31,6 +43,7 @@ on:
 
 permissions:
   contents: write  # the offset persist pushes to the ai-bot-state branch
+  actions: write   # self-relaunch: dispatching the next poller generation
 
 # The KEY line: a new generation CANCELS the previous one and starts
 # fresh (checkout, poller, restore) — this is what makes 15-min crons
@@ -140,3 +153,18 @@ jobs:
               commit -m "poller offset: ${{ github.run_number }}"
           git push origin "HEAD:$STATE_BRANCH"
           echo "Offset persisted"
+
+      - name: Relaunch the next generation (cron-independent heartbeat)
+        # LAST step on purpose: the dispatch creates a new run in the same
+        # concurrency group, and cancel-in-progress would kill this job if
+        # it still had work left. Runs on success AND failure (a generation
+        # that dies must not take the heartbeat down with it), but NOT when
+        # a human cancels the run — cancelling must be able to stop the
+        # chain. If the dispatch fails, the four backup crons still cover us.
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run ai_poller.yml --ref "${GITHUB_REF_NAME:-main}" \
+            && echo "Next poller generation dispatched" \
+            || echo "WARNING: relaunch dispatch failed — backup crons still cover this"

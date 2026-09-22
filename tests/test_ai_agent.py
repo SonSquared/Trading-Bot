@@ -1003,6 +1003,42 @@ class TestGate:
         assert wait == pytest.approx(5 * 60, abs=1)
         assert wait <= mod.RELAY_WINDOW_SECONDS
 
+    def test_kick_inside_the_relay_window_fires_the_slot_on_time(self):
+        """REGRESSION (2026-09-18..21): the 08:00 slot ran +108/+126/+160 min
+        late and was missed outright on 09-20. Cause: the relay window was
+        10 min, so a heartbeat kick landing 12+ min before a slot was SKIPPED
+        and the next kick often arrived after it. The window is now wider than
+        the ~20-min heartbeat, so a kick anywhere in the half hour before a
+        slot sleeps to it and fires it exactly at slot time."""
+        from datetime import timedelta
+        mod = self._mod()
+        slots = [(6, 0), (8, 0)]
+        last = datetime(2026, 9, 21, 6, 1, tzinfo=timezone.utc)  # 06:00 served
+        slot = datetime(2026, 9, 21, 8, 0, tzinfo=timezone.utc)
+        for minutes_before in (25, 12, 5):
+            action, wait = mod.decide(slot - timedelta(minutes=minutes_before), last, slots)
+            assert action == mod.RELAY, f"{minutes_before} min early must relay"
+            assert wait == pytest.approx(minutes_before * 60, abs=1)
+
+    def test_kick_far_before_a_slot_still_skips(self):
+        """The window is bounded on purpose: a kick hours early stays a cheap
+        SKIP instead of holding a runner (and the concurrency group) for
+        hours — cron firings at :02/:12/:22 of a slot hour are exactly this."""
+        mod = self._mod()
+        slots = [(6, 0), (8, 0)]
+        last = datetime(2026, 9, 21, 6, 1, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 21, 6, 30, tzinfo=timezone.utc)  # 90 min early
+        assert mod.decide(now, last, slots) == (mod.SKIP, 0.0)
+
+    def test_relay_window_exceeds_the_heartbeat_and_stays_bounded(self):
+        """Design invariant, not a magic number: the relay window must be
+        wider than the ~20-min mesh heartbeat that feeds the gate (or the
+        08:00 lateness returns), and still small enough that a relay cannot
+        approach the job timeout."""
+        mod = self._mod()
+        assert mod.RELAY_WINDOW_SECONDS > 20 * 60
+        assert mod.RELAY_WINDOW_SECONDS <= 60 * 60
+
     def test_wakeup_a_hair_before_the_slot_counts_as_serving_it(self):
         mod = self._mod()
         slots = [(14, 0), (20, 0)]
@@ -1083,6 +1119,220 @@ class TestGate:
         assert mod.main() == 0
 
 
+class TestPerfStats:
+    """Rolling performance review (trading_system/bot/perf_stats.py).
+
+    Fixtures mirror the real paper ledger (2026-09-14..09-21): 4 closed
+    trades, one -1.72% stop-out and three take-profit wins, +$80.25 net.
+    """
+
+    def _t(self, net, close, entry=None, pct=None, pair="BTC/USDT:USDT"):
+        trade = {"pair": pair, "net_pnl": net, "close_time": close}
+        if entry is not None:
+            trade["entry_time"] = entry
+        if pct is not None:
+            trade["pnl_pct_net"] = pct
+        return trade
+
+    def _paper_trades(self):
+        return [
+            self._t(-17.7104, "2026-09-15T08:00:46+00:00",
+                    "2026-09-14T14:00:59+00:00", -1.7219),
+            self._t(31.2784, "2026-09-18T14:29:42+00:00",
+                    "2026-09-15T15:07:00+00:00", 6.2671),
+            self._t(30.7934, "2026-09-21T14:20:50+00:00",
+                    "2026-09-20T21:31:10+00:00", 3.8441, "ETH/USDT:USDT"),
+            self._t(35.8876, "2026-09-21T14:20:50+00:00",
+                    "2026-09-21T00:15:51+00:00", 4.4727),
+        ]
+
+    def test_win_rate_profit_factor_expectancy_and_rr(self):
+        from trading_system.bot.perf_stats import compute_metrics
+
+        m = compute_metrics(self._paper_trades())
+        assert (m["trades"], m["wins"], m["losses"]) == (4, 3, 1)
+        assert m["win_rate"] == pytest.approx(75.0)
+        assert m["net_pnl"] == pytest.approx(80.2489, abs=0.01)
+        assert m["gross_profit"] == pytest.approx(97.9594, abs=0.01)
+        assert m["profit_factor"] == pytest.approx(97.9594 / 17.7104, abs=0.01)
+        assert m["expectancy"] == pytest.approx(80.2489 / 4, abs=0.01)
+        assert m["avg_win"] == pytest.approx(97.9594 / 3, abs=0.01)
+        assert m["avg_loss"] == pytest.approx(17.7104, abs=0.01)
+        assert m["realized_rr"] == pytest.approx((97.9594 / 3) / 17.7104, abs=0.01)
+
+    def test_profit_factor_is_none_until_a_loss_exists(self):
+        """"PF inf" on a 2-trade sample reads as a result; None reads as data
+        we do not have yet — which is the truth."""
+        from trading_system.bot.perf_stats import compute_metrics
+
+        m = compute_metrics([self._t(10.0, "2026-09-21T00:00:00+00:00")])
+        assert m["profit_factor"] is None
+        assert m["realized_rr"] is None
+        assert m["win_rate"] == pytest.approx(100.0)
+
+    def test_streaks_in_close_order(self):
+        from trading_system.bot.perf_stats import compute_metrics
+
+        m = compute_metrics(self._paper_trades())  # loss then three wins
+        assert m["max_loss_streak"] == 1
+        assert m["max_win_streak"] == 3
+        assert m["current_streak"] == 3
+
+    def test_max_drawdown_is_peak_to_trough(self):
+        from trading_system.bot.perf_stats import drawdown, equity_curve
+
+        trades = [
+            self._t(-100.0, "2026-09-01T00:00:00+00:00"),
+            self._t(-50.0, "2026-09-02T00:00:00+00:00"),
+            self._t(80.0, "2026-09-03T00:00:00+00:00"),
+        ]
+        dd = drawdown(equity_curve(trades, 10000.0))
+        assert dd["peak"] == pytest.approx(10000.0)
+        assert dd["max_dd"] == pytest.approx(150.0)      # 10,000 -> 9,850
+        assert dd["max_dd_pct"] == pytest.approx(1.5)
+        assert dd["current_dd"] == pytest.approx(70.0)   # 9,930 vs peak
+        assert dd["current_dd_pct"] == pytest.approx(0.7)
+
+    def test_curve_orders_by_close_time_not_list_order(self):
+        from trading_system.bot.perf_stats import equity_curve
+
+        trades = [
+            self._t(10.0, "2026-09-03T00:00:00+00:00"),
+            self._t(-5.0, "2026-09-01T00:00:00+00:00"),
+        ]
+        curve = equity_curve(trades, 1000.0)
+        # First point is the starting equity, then the closes in time order.
+        assert [round(equity, 2) for _, equity in curve] == [1000.0, 995.0, 1005.0]
+
+    def test_slot_attribution_credits_the_slot_the_wakeup_served(self):
+        """The 09-20 trade opened by the 11:11 catch-up for the dropped 08:00
+        slot belongs to 08:00 — not to 14:00, which is nearer in clock time."""
+        from trading_system.bot.perf_stats import attribute_slot, parse_ts
+
+        wakeups = [
+            parse_ts("2026-09-20T06:12:00+00:00"),
+            parse_ts("2026-09-20T11:11:00+00:00"),
+        ]
+        assert attribute_slot(parse_ts("2026-09-20T11:11:30+00:00"), wakeups) == "08:00"
+
+    def test_slot_attribution_uses_the_opening_wakeup_not_the_clock(self):
+        from trading_system.bot.perf_stats import attribute_slot, parse_ts
+
+        wakeups = [parse_ts("2026-09-21T00:15:00+00:00")]  # 00:00 slot, ran late
+        assert attribute_slot(parse_ts("2026-09-21T00:15:51+00:00"), wakeups) == "00:00"
+
+    def test_slot_attribution_falls_back_to_clock_without_a_journal(self):
+        from trading_system.bot.perf_stats import attribute_slot, parse_ts
+
+        assert attribute_slot(parse_ts("2026-09-15T15:07:00+00:00"), None) == "14:00"
+
+    def test_slot_breakdown_lists_every_slot_even_with_no_trades(self):
+        """A slot that never trades must still appear — "06:00 never earns" is
+        exactly the finding the review is for."""
+        from trading_system.bot.perf_stats import slot_breakdown
+
+        journal = [
+            {"timestamp": "2026-09-21T00:15:51+00:00"},
+            {"timestamp": "2026-09-21T00:16:00+00:00"},
+        ]
+        rows = slot_breakdown(self._paper_trades(), journal)
+        assert [r["slot"] for r in rows] == [
+            "00:00", "06:00", "08:00", "14:00", "20:00", "23:00"]
+        by_slot = {r["slot"]: r for r in rows}
+        assert by_slot["14:00"]["trades"] == 2     # 09-14 open + 09-15 catch-up
+        assert by_slot["20:00"]["trades"] == 1     # ETH long
+        assert by_slot["00:00"]["trades"] == 1
+        assert by_slot["06:00"]["trades"] == 0
+        assert by_slot["00:00"]["wakeups"] == 2
+
+    def test_planned_rr_comes_from_the_entry_records(self):
+        from trading_system.bot.perf_stats import planned_stats
+
+        p = planned_stats([
+            {"stop_loss_pct": 1.5, "take_profit_pct": 2.5, "confidence": 68.0},
+            {"stop_loss_pct": 2.0, "take_profit_pct": 4.0, "confidence": 72.0},
+        ])
+        assert p["avg_planned_rr"] == pytest.approx((2.5 / 1.5 + 4.0 / 2.0) / 2)
+        assert p["avg_confidence"] == pytest.approx(70.0)
+        assert planned_stats(None)["avg_planned_rr"] is None
+
+    def test_windows_and_trend_split_the_history(self):
+        from trading_system.bot.perf_stats import build_perf, parse_ts
+
+        perf = build_perf(
+            self._paper_trades(), start_equity=10000.0,
+            now=parse_ts("2026-09-22T04:00:00+00:00"),
+        )
+        assert set(perf["windows"]) == {"7d", "30d", "all"}
+        assert perf["windows"]["7d"]["trades"] == 4
+        assert perf["windows"]["all"]["trades"] == 4
+        # The previous 7-day window is empty — the trend block must report that
+        # rather than divide by zero or pretend the sample is comparable.
+        assert perf["trend"]["prev_trades"] == 0
+        assert perf["trend"]["net_pnl_delta"] == pytest.approx(80.2489, abs=0.01)
+
+    def test_legacy_trade_without_close_time_counts_all_time_only(self):
+        from trading_system.bot.perf_stats import build_perf, parse_ts
+
+        legacy = {"pair": "BTC/USDT:USDT", "net_pnl": 5.0}
+        perf = build_perf(
+            [legacy], start_equity=1000.0,
+            now=parse_ts("2026-09-22T00:00:00+00:00"),
+        )
+        assert perf["windows"]["all"]["trades"] == 1
+        assert perf["windows"]["7d"]["trades"] == 0
+        assert perf["drawdown"]["current_dd"] == 0.0
+
+    def test_empty_history_never_crashes(self):
+        from trading_system.bot.perf_stats import build_perf, summarize
+
+        perf = build_perf([], journal=[], opens=[], start_equity=0.0)
+        assert perf["windows"]["all"]["win_rate"] == 0.0
+        assert perf["drawdown"]["max_dd_pct"] == 0.0
+        assert "Slots: no closed trades yet" in "\n".join(summarize(perf))
+
+    def test_ledger_drift_is_reported_not_swallowed(self):
+        """Real finding from cloud data (2026-09-22): the 09-14 record was
+        written before net-at-both-fees accounting, so quoted P&L sits $0.50
+        above realized cash. The review must SAY so — an unreconciled P&L is
+        exactly the kind of quiet lie this bot is not allowed to tell."""
+        from trading_system.bot.perf_stats import build_perf, parse_ts, summarize
+
+        legacy = self._t(-17.7104, "2026-09-15T08:00:46+00:00",
+                         "2026-09-14T14:00:59+00:00", -1.7219)
+        perf = build_perf(
+            [legacy], start_equity=10000.0,
+            now=parse_ts("2026-09-22T04:00:00+00:00"),
+            # Cash also paid the $0.50 entry fee at open, which the legacy
+            # record's net_pnl never included.
+            ledger_equity=9982.2896 - 0.50,
+        )
+        assert perf["audit"]["drift"] == pytest.approx(0.5001, abs=0.01)
+        assert "Ledger check" in "\n".join(summarize(perf))
+        # With no ledger figure supplied there is nothing to check against —
+        # and no invented warning.
+        silent = build_perf([legacy], start_equity=10000.0,
+                            now=parse_ts("2026-09-22T04:00:00+00:00"))
+        assert silent["audit"] is None
+        assert "Ledger check" not in "\n".join(summarize(silent))
+
+    def test_summarize_lines_fit_a_phone_screen(self):
+        from trading_system.bot.perf_stats import build_perf, parse_ts, summarize
+
+        perf = build_perf(
+            self._paper_trades(), start_equity=10000.0,
+            now=parse_ts("2026-09-22T04:00:00+00:00"),
+            opens=[{"stop_loss_pct": 1.5, "take_profit_pct": 2.5, "confidence": 68}],
+        )
+        lines = summarize(perf)
+        text = "\n".join(lines)
+        assert "Drawdown:" in text
+        assert "Slots:" in text
+        assert "Planned: R:R" in text
+        assert "Trend (7d vs prev)" in text
+        assert all(len(line) <= 120 for line in lines)
+
+
 class TestWeeklyReport:
     """Sunday report math (scripts/ai_weekly_report.py::build_report)."""
 
@@ -1137,6 +1387,45 @@ class TestWeeklyReport:
         assert "ETH" in r["worst_trade"]
         assert r["equity"] == 10200.0
         assert r["week_pnl_pct"] == pytest.approx(0.3)
+
+    def test_report_carries_rolling_performance(self, tmp_path):
+        """build_report must expose the rolling perf block the report (and the
+        Telegram message) render from the same continuity files."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        ledger = {
+            # cash == start + net of both trades, so the reconciliation check
+            # is silent here (its own test covers the drift case).
+            "cash": 10018.0,
+            "start_equity": 10000.0,
+            "closed_trades": [
+                {"pair": "BTC/USDT:USDT", "net_pnl": 35.0, "pnl_pct_net": 4.4,
+                 "entry_time": (now - timedelta(hours=30)).isoformat(),
+                 "close_time": (now - timedelta(hours=29)).isoformat()},
+                {"pair": "ETH/USDT:USDT", "net_pnl": -17.0, "pnl_pct_net": -1.7,
+                 "entry_time": (now - timedelta(hours=20)).isoformat(),
+                 "close_time": (now - timedelta(hours=19)).isoformat()},
+            ],
+        }
+        data_dir = self._write(tmp_path, ledger=ledger)
+        (data_dir / "trades.jsonl").write_text(json.dumps({
+            "pair": "BTC/USDT:USDT", "side": "long", "price": 78000.0,
+            "stop_loss_pct": 1.5, "take_profit_pct": 2.5, "confidence": 68.0,
+            "executed": True, "timestamp": "2026-09-14T14:00:59+00:00",
+        }) + "\n")
+
+        r = self._mod().build_report(data_dir, days=7)
+        perf = r["perf"]
+        assert perf["windows"]["7d"]["trades"] == 2
+        assert perf["windows"]["7d"]["win_rate"] == pytest.approx(50.0)
+        assert perf["planned"]["entries"] == 1
+        assert perf["planned"]["avg_planned_rr"] == pytest.approx(2.5 / 1.5)
+        assert len(perf["slots"]) == 6  # every slot listed, traded or not
+        assert perf["audit"]["drift"] == pytest.approx(0.0, abs=0.01)
+        from trading_system.bot.perf_stats import summarize
+
+        assert "Ledger check" not in "\n".join(summarize(perf))
 
     def test_notes_newest_first_and_deduped(self, tmp_path):
         from datetime import datetime, timedelta, timezone
@@ -1207,6 +1496,8 @@ class TestWeeklyReport:
         assert "WEEKLY REPORT" in result.output
         assert "$10,050.00" in result.output
         assert "dry-run" in result.output
+        assert "PERFORMANCE (rolling)" in result.output
+        assert "Drawdown:" in result.output
 
 
 class TestNotifierHtmlFallback:
@@ -1309,6 +1600,59 @@ class TestNotifierWeeklyAndTest:
         assert t.count("note one") == 1   # deduped, empty strings skipped
         assert "note two" in t
         assert "BTC/USDT:USDT LONG" in t
+
+    def test_weekly_summary_includes_rolling_performance(self, monkeypatch):
+        """The Sunday report must carry the rolling stats (win rate,
+        drawdown, R:R, per-slot), not just the last 7 days' P&L."""
+        from trading_system.bot.perf_stats import build_perf, parse_ts
+        from trading_system.bot.telegram_notifier import TelegramNotifier
+
+        perf = build_perf(
+            [{"pair": "BTC/USDT:USDT", "net_pnl": 31.2784,
+              "pnl_pct_net": 6.2671,
+              "entry_time": "2026-09-15T15:07:00+00:00",
+              "close_time": "2026-09-18T14:29:42+00:00"}],
+            start_equity=10000.0, now=parse_ts("2026-09-22T04:00:00+00:00"),
+        )
+        n = TelegramNotifier("token", "chat", enabled=True)
+        captured = {}
+
+        def fake_send(text, parse_mode="HTML"):
+            captured["text"] = text
+            return True
+
+        monkeypatch.setattr(n, "_send_message", fake_send)
+        kwargs = self._weekly_kwargs()
+        kwargs["perf"] = perf
+        assert n.notify_weekly_summary(**kwargs) is True
+        text = captured["text"]
+        assert "PERFORMANCE (rolling)" in text
+        assert "Drawdown:" in text
+        assert "Slots:" in text
+        # The old sections still ship — perf ADDS to the report.
+        assert "$10,450.00" in text and "AI NOTES:" in text
+
+    def test_overlong_weekly_message_trims_and_says_so(self, monkeypatch):
+        """Telegram's hard limit is 4096 chars; an overlong report would be
+        rejected on BOTH the HTML and the plain-text attempt, i.e. silently
+        never arrive. Trim the notes first, keep the numbers, say what was cut."""
+        from trading_system.bot.telegram_notifier import TelegramNotifier
+
+        n = TelegramNotifier("token", "chat", enabled=True)
+        captured = {}
+
+        def fake_send(text, parse_mode="HTML"):
+            captured["text"] = text
+            return True
+
+        monkeypatch.setattr(n, "_send_message", fake_send)
+        kwargs = self._weekly_kwargs()
+        kwargs["best_trade"] = "BTC " + "x" * 5000
+        assert n.notify_weekly_summary(**kwargs) is True
+        text = captured["text"]
+        assert len(text) <= 4096
+        assert "trimmed" in text
+        assert "$10,450.00" in text  # the numbers survive the trim
 
     def test_test_message_content(self, monkeypatch):
         from trading_system.bot.telegram_notifier import TelegramNotifier
@@ -1953,6 +2297,45 @@ class TestPollerWorkflow:
         steps = d["jobs"]["run-bot"]["steps"]
         wake = [s for s in steps if "Run one AI wakeup" in str(s.get("name", ""))]
         assert wake and wake[0]["if"] == "steps.gate.outputs.run == 'true'"
+
+    def test_preslot_crons_keep_the_wakeup_punctual(self):
+        """Re-timed 2026-09-22. GitHub delivered only ~5 of 12 scheduled
+        firings/day, so the old :02/:32 lines could never reliably land inside
+        the gate's relay window — which is why 08:00 drifted hours late. The
+        schedule now fires :32/:42/:52 of the hour BEFORE each slot (28/18/8
+        min early) so a delivered firing relays to the slot and fires it on
+        time even with the mesh heartbeat dead."""
+        d = _wf_yaml(".github/workflows/ai_bot.yml")
+        crons = [c["cron"] for c in d["on"]["schedule"]]
+        minutes, hours = set(), set()
+        for cron in crons:
+            minute_field, hour_field, *_ = cron.split()
+            minutes |= {int(m) for m in minute_field.split(",")}
+            hours |= {int(h) for h in hour_field.split(",") if h != "*"}
+        assert {0, 6, 8, 14, 20, 23} <= hours, "every slot hour must still fire"
+        for slot_hour in (6, 8, 14, 20):
+            assert slot_hour - 1 in hours, (
+                f"no pre-slot deliveries before {slot_hour:02d}:00"
+            )
+        assert {32, 42, 52} <= minutes, "pre-slot minutes must fall in the relay window"
+
+    def test_poller_relaunches_itself_without_cron(self):
+        """The heartbeat must not depend on GitHub's cron: it was dropped for
+        4h on 09-20 (07:47->11:12) and 09-21 (06:38->10:39), which is what made
+        the 08:00 wakeup late/missed. A workflow cannot kick itself via
+        workflow_run (GitHub ignores self-references — proven here), but a
+        workflow_dispatch from GITHUB_TOKEN IS honoured, so each generation now
+        dispatches the next one as its LAST step."""
+        d = _wf_yaml(".github/workflows/ai_poller.yml")
+        assert d["permissions"]["actions"] == "write"
+        steps = d["jobs"]["poll"]["steps"]
+        last = steps[-1]
+        assert "Relaunch" in str(last.get("name", ""))
+        assert "gh workflow run ai_poller.yml" in last["run"]
+        # Last on purpose: the dispatch starts a run in the same concurrency
+        # group (cancel-in-progress), so a later step could be killed by it.
+        # Not on cancel, though — cancelling must be able to stop the chain.
+        assert "cancelled()" in str(last.get("if", ""))
 
     def test_health_check_recheck_window(self):
         """The watchdog waits for the self-healing chain before staying red."""

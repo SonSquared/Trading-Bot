@@ -23,7 +23,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 
+from trading_system.bot.perf_stats import build_perf, summarize
 from trading_system.bot.telegram_notifier import TelegramNotifier, clip
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    """Load a JSONL continuity file, skipping corrupt lines (never blocks)."""
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        for line in path.read_text().strip().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    return rows
 
 
 def _load_ledger(data_dir: Path) -> dict:
@@ -124,7 +143,28 @@ def build_report(data_dir: Path, days: int = 7) -> dict:
         for pair, pos in positions.items()
     ]
 
+    # Rolling performance review (win rate / drawdown / R:R / per-slot). Built
+    # from the same continuity files, so every figure traces back to the ledger
+    # and journal. `trades.jsonl` supplies the entry records, which is where the
+    # PLANNED R:R (tp/sl the AI asked for) and its confidence live.
+    opens = [
+        t for t in _load_jsonl(data_dir / "trades.jsonl")
+        if t.get("side") in ("long", "short")
+    ]
+    perf = build_perf(
+        closed,
+        journal=journal,
+        opens=opens,
+        start_equity=start_equity,
+        now=now,
+        primary_days=days,
+        # The reported-P&L-vs-cash reconciliation only makes sense with no
+        # positions open (otherwise cash is not realized equity yet).
+        ledger_equity=float(ledger.get("cash", 0)) if not positions else None,
+    )
+
     return {
+        "perf": perf,
         "equity": equity,
         "start_equity": start_equity,
         "week_pnl": week_pnl,
@@ -185,6 +225,9 @@ def main(config: str, dry_run: bool, days: int) -> None:
     if r["open_positions"]:
         names = ", ".join(p["pair"] for p in r["open_positions"])
         click.echo(f"  Open:          {names}")
+    click.echo("  PERFORMANCE (rolling)")
+    for line in summarize(r["perf"]):
+        click.echo(f"    {line}")
     for note in r["ai_notes"][:3]:
         click.echo(f"  AI note:       {clip(note, 150)}")
 
@@ -222,6 +265,7 @@ def main(config: str, dry_run: bool, days: int) -> None:
         failed_wakeups=r["failed_wakeups"],
         ai_notes=r["ai_notes"],
         open_positions=r["open_positions"],
+        perf=r["perf"],
     )
 
     if not sent:

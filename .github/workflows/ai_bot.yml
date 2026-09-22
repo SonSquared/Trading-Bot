@@ -10,15 +10,25 @@ on:
       - "scripts/ai_bot_gate.py"
       - "tests/test_ai_agent.py"
       - ".github/workflows/ai_bot.yml"
-  # 6 wakeups/day (00/06/08/14/20/23 UTC), each fired TWICE (:02 and :32)
-  # because GitHub free-tier cron drops slots wholesale (verified on the
-  # main bot workflow). scripts/ai_bot_gate.py is SLOT-BASED: a firing whose
-  # slot is already served exits immediately without running a wakeup, so
-  # redundant triggers (and the ~20-min workflow_run mesh below) cost ~15s
-  # instead of extra trade decisions.
+  # 6 wakeups/day (00/06/08/14/20/23 UTC). scripts/ai_bot_gate.py is
+  # SLOT-BASED: a firing whose slot is already served exits immediately
+  # without running a wakeup, so redundant triggers (and the ~20-min
+  # workflow_run mesh below) cost ~15s instead of extra trade decisions.
+  #
+  # Re-timed 2026-09-22 after the 08:00 slot ran +108/+126/+160 min late (or
+  # not at all) for four days: GitHub delivered only ~5 of 12 scheduled
+  # firings/day, so the old :02/:32 lines alone could not keep the schedule.
+  # The gate now relays over a 30-min window (wider than the ~5-20 min
+  # heartbeat), which makes the PRE-SLOT lines below the punctuality
+  # mechanism: a firing at 07:32/07:42/07:52 sleeps to 08:00 and fires it
+  # exactly on time. Slot-hour lines are the intended firing + catch-up.
   schedule:
-    - cron: '2 0,6,8,14,20,23 * * *'
-    - cron: '32 0,6,8,14,20,23 * * *'
+    # Slot hours — first firing serves the slot, later ones are catch-ups.
+    - cron: '2,12,22,32,42,52 0,6,8,14,20,23 * * *'
+    # Pre-slot hours — land inside the 30-min relay window of the next slot
+    # (:32/:42/:52 are 28/18/8 min before it). 23:xx is already covered by
+    # the line above, which is what makes the 00:00 slot punctual.
+    - cron: '32,42,52 5,7,13,19,22 * * *'
   workflow_dispatch:  # manual trigger from the Actions tab
   workflow_run:
     # SELF-HEALING CHAIN: GitHub's cron silently drops slots (proven
@@ -28,9 +38,10 @@ on:
     # ignores SELF-referencing workflow_run (proven on the poller), so the
     # kickers are OTHER suite members. The Telegram poller is the heartbeat:
     # each ~20-min generation ends by kicking a wakeup check, which is what
-    # keeps the 6 slots firing despite thinned cron. The gate ignores kicks
-    # that arrive between slots, so the heartbeat no longer creates extra
-    # wakeups (it did: 22-25/day instead of 6, until 2026-09-16).
+    # keeps the 6 slots firing despite thinned cron. As of 2026-09-22 that
+    # heartbeat no longer depends on cron either — the poller relaunches
+    # itself via workflow_dispatch (see ai_poller.yml), so this mesh is the
+    # load-bearing trigger and the crons above are the backup.
     #
     # NOTE: "AI Bot Daily Digest" is deliberately NOT a kicker here — the
     # digest is kicked BY this workflow, and a mutual pair would spin.
@@ -70,9 +81,11 @@ jobs:
   run-bot:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    # The gate may RELAY (sleep up to 10 min) toward a slot that is about to
-    # come due, so wakeups stay punctual. Everything else is SKIP or a short
-    # wakeup run; 360 min is GitHub's hard cap and leaves ample margin.
+    # The gate may RELAY (sleep up to 30 min) toward a slot that is about to
+    # come due — that is the punctuality mechanism, so wakeups fire at their
+    # slot time rather than whenever a trigger happens to land. Everything
+    # else is SKIP or a short wakeup run; 360 min is GitHub's hard cap and
+    # leaves ample margin.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
