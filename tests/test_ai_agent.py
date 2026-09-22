@@ -1073,6 +1073,78 @@ class TestGate:
         assert [(w.hour, w.minute) for w in wakeups] == [
             (0, 0), (6, 0), (8, 0), (14, 0), (20, 0), (23, 0)]
 
+    def test_full_day_on_time_despite_dropped_crons_and_a_gap(self):
+        """End-to-end punctuality replay (2026-09-22).
+
+        Two real defects fed this: GitHub delivered only ~5 of 12 scheduled
+        firings/day, and the poller heartbeat died for 3-4h at a stretch (its
+        continuity rested on cron). With the 30-min relay window, pre-slot
+        cron deliveries and a live heartbeat (now guaranteed by the poller's
+        workflow_dispatch self-relaunch), EVERY slot must land within 15
+        minutes of its time. Pre-fix reality: +108 / +126 / +160 min late, and
+        the 08:00 slot missed outright on 09-20.
+        """
+        from datetime import timedelta
+        mod = self._mod()
+        slots = [(0, 0), (6, 0), (8, 0), (14, 0), (20, 0), (23, 0)]
+        day = datetime(2026, 9, 22, 0, 0, tzinfo=timezone.utc)
+
+        triggers: list[datetime] = []
+        t = day
+        while t < day + timedelta(days=1):
+            # Heartbeat (the poller): every 15 min, with one 45-min dead patch
+            # to stand in for a GitHub hiccup.
+            if t.minute % 15 == 7 and not (t.hour == 12 and t.minute < 45):
+                triggers.append(t)
+            # Slot-hour crons — every other firing dropped, as GitHub does.
+            if t.hour in (0, 6, 8, 14, 20, 23) and t.minute in (2, 12, 22, 32, 42, 52):
+                if t.minute % 20 == 2:
+                    triggers.append(t)
+            # Pre-slot crons — 2 of the 3 minutes delivered, so a single lucky
+            # delivery still has to carry the slot.
+            if t.hour in (5, 7, 13, 19, 22) and t.minute in (32, 42, 52):
+                if t.minute != 42:
+                    triggers.append(t)
+            t += timedelta(minutes=1)
+        triggers.sort()
+
+        last = day - timedelta(hours=1)  # 23:00 (yesterday) is served
+        wakeups: list[datetime] = []
+        relaying_until: datetime | None = None
+        for now in triggers:
+            # The workflow's concurrency group runs ONE job at a time: triggers
+            # arriving while a relay sleeps cannot execute — they queue, then
+            # find the slot already served.
+            if relaying_until is not None and now < relaying_until:
+                continue
+            action, wait = mod.decide(now, last, slots)
+            if action == mod.RUN:
+                wakeups.append(now)
+                last = now
+            elif action == mod.RELAY:
+                # A relay sleeps to the slot and fires it there.
+                relaying_until = now + timedelta(seconds=wait)
+                last = relaying_until
+                wakeups.append(last)
+
+        # 6 slots served inside the day (the trailing relay also fires the
+        # NEXT day's 00:00 on time, which is the boundary case that used to be
+        # skipped — asserted separately below).
+        in_day = [w for w in wakeups if w < day + timedelta(days=1)]
+        assert len(in_day) == 6, f"expected 6 wakeups, got {[w.hour for w in in_day]}"
+        for hour, _ in slots:
+            slot_dt = day.replace(hour=hour, minute=0)
+            lateness = [
+                (w - slot_dt).total_seconds() / 60
+                for w in in_day
+                if 0 <= (w - slot_dt).total_seconds() <= 15 * 60
+            ]
+            assert lateness, (
+                f"slot {hour:02d}:00 not served within 15 min "
+                f"(wakeups at {[w.strftime('%H:%M') for w in wakeups]})"
+            )
+        assert day + timedelta(days=1) in wakeups, "the midnight boundary was missed"
+
     def test_relay_sleeps_then_runs(self, tmp_path, monkeypatch):
         """main() relays only when the next slot is close, then runs."""
         from datetime import timedelta
