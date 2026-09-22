@@ -1,5 +1,5 @@
 {
-  "last_wakeup": "20260922_095533",
+  "last_wakeup": "20260922_145009",
   "last_actions": [
     {
       "pair": "BTC/USDT:USDT",
@@ -18,5 +18,5 @@
   "peak_equity": 10080.081145969756,
   "day": "2026-09-22",
   "day_start_equity": 10079.748905356122,
-  "notes": "Wakeup 20260922_095533: AI proposed 2, 2 approved, 2 executed, 0 SL/TP triggers fired. Outlook: bullish. Equity: $10,080.08."
+  "notes": "Wakeup 20260922_145009 FAILED: AI engine failed: Failed to get AI decision after trying 6 model(s) x2 attempts \u2014 last: gemini-3.8-flash: Error code: 503 - [{'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}]"
 }
