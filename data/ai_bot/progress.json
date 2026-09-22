@@ -1,9 +1,22 @@
 {
-  "last_wakeup": "20260922_060048",
-  "last_actions": [],
+  "last_wakeup": "20260922_095533",
+  "last_actions": [
+    {
+      "pair": "BTC/USDT:USDT",
+      "side": "long",
+      "confidence": 70.0,
+      "executed": true
+    },
+    {
+      "pair": "ETH/USDT:USDT",
+      "side": "long",
+      "confidence": 65.0,
+      "executed": true
+    }
+  ],
   "last_outlook": "bullish",
-  "peak_equity": 10079.748905356122,
+  "peak_equity": 10080.081145969756,
   "day": "2026-09-22",
   "day_start_equity": 10079.748905356122,
-  "notes": "Wakeup 20260922_060048: AI proposed 0, 0 approved, 0 executed, 0 SL/TP triggers fired. Outlook: bullish. Equity: $10,079.75."
+  "notes": "Wakeup 20260922_095533: AI proposed 2, 2 approved, 2 executed, 0 SL/TP triggers fired. Outlook: bullish. Equity: $10,080.08."
 }

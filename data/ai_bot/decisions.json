@@ -1,11 +1,30 @@
 {
-  "wakeup_id": "20260922_060048",
+  "wakeup_id": "20260922_095533",
   "decision": {
-    "actions": [],
+    "actions": [
+      {
+        "pair": "BTC/USDT:USDT",
+        "side": "long",
+        "size_pct": 5.0,
+        "stop_loss_pct": 2.5,
+        "take_profit_pct": 5.0,
+        "confidence": 70.0,
+        "reasoning": "Strong bullish EMA alignment with ADX at 45.1 indicating solid trend continuity and Stochastic rebounding from oversold."
+      },
+      {
+        "pair": "ETH/USDT:USDT",
+        "side": "long",
+        "size_pct": 5.0,
+        "stop_loss_pct": 2.5,
+        "take_profit_pct": 5.0,
+        "confidence": 65.0,
+        "reasoning": "Bullish EMA structure on 1h, price holding above middle Bollinger Band with strong ADX trend confirmation."
+      }
+    ],
     "market_outlook": "bullish",
-    "risk_assessment": "Strong trend intact with ADX above 47 for both BTC and ETH. However, short-term momentum is in a pullback phase with negative MACD histograms and minimal current volume.",
-    "reasoning": "While macro trend structures remain firmly bullish with stacked EMAs, short-term indicators (Stochastic oversold, MACD signal line crossing above MACD) indicate an active short-term retracement. Waiting for momentum confirmation (bullish MACD histogram turn or volume expansion) before taking new long positions."
+    "risk_assessment": "Low risk profile with zero open positions, strong trend alignment on major pairs, and moderate volatility.",
+    "reasoning": "Both BTC and ETH exhibit strong bullish EMA alignment (EMA9 > EMA21 > EMA50) alongside high ADX values indicating sustained trend momentum. Stochastic indicators are recovering from lower ranges, offering favorable entry points with defined risk-reward parameters."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-22T06:02:19.917655+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-09-22T10:01:15.922410+00:00"
 }
