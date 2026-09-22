@@ -50,3 +50,4 @@
 {"timestamp": "2026-09-21T13:02:51.780943+00:00", "pair": "BTC_USDT_USDT", "action": "OPEN_SHORT", "price": 84867.62308, "size_usd": 34.65719772164426, "fee": 0.01732859886082213, "slippage": 0.006931439544328853, "strategy": "RSI_Reversion", "cash_after": 64.34603859847853, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-21T19:35:58.175176+00:00", "action": "FUND", "pair": "*", "funding": 0.003465719772164426, "cash_after": 64.34257287870636, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-22T05:10:38.739400+00:00", "action": "FUND", "pair": "*", "funding": 0.003465719772164426, "cash_after": 64.3391071589342, "note": "schedule-gate-ack"}
+{"timestamp": "2026-09-22T11:52:25.085152+00:00", "action": "FUND", "pair": "*", "funding": 0.003465719772164426, "cash_after": 64.33564143916203, "note": "schedule-gate-ack"}
