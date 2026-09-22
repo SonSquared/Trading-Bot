@@ -484,10 +484,18 @@ def summarize(perf: dict) -> list[str]:
 
     trend = perf.get("trend") or {}
     if trend:
-        lines.append(
-            f"Trend ({trend['window_days']}d vs prev): "
-            f"win {trend['win_rate_delta']:+.0f}pp | "
-            f"exp {trend['expectancy_delta']:+,.2f} | "
-            f"net {trend['net_pnl_delta']:+,.2f}"
-        )
+        if not trend.get("prev_trades"):
+            # A delta measured against an empty window is not a trend: it would
+            # print "win +75pp" when the truth is "nothing to compare yet".
+            lines.append(
+                f"Trend: no closed trades in the previous "
+                f"{trend['window_days']}d — nothing to compare yet"
+            )
+        else:
+            lines.append(
+                f"Trend ({trend['window_days']}d vs prev): "
+                f"win {trend['win_rate_delta']:+.0f}pp | "
+                f"exp {trend['expectancy_delta']:+,.2f} | "
+                f"net {trend['net_pnl_delta']:+,.2f}"
+            )
     return lines

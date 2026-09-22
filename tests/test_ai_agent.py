@@ -1401,8 +1401,37 @@ class TestPerfStats:
         assert "Drawdown:" in text
         assert "Slots:" in text
         assert "Planned: R:R" in text
-        assert "Trend (7d vs prev)" in text
+        assert "Trend" in text
         assert all(len(line) <= 120 for line in lines)
+
+    def test_trend_needs_a_previous_window_to_mean_anything(self):
+        """A "delta" measured against an empty window is not a trend.
+
+        Cloud reality (2026-09-22): the previous 7 days held zero closed
+        trades, so the naive delta printed "win +75pp" — reading as a huge
+        improvement when the truth was that there was nothing to compare
+        against. The report must say that instead of quoting arithmetic at
+        the user.
+        """
+        from trading_system.bot.perf_stats import build_perf, parse_ts, summarize
+
+        now = parse_ts("2026-09-22T04:00:00+00:00")
+        empty_prev = build_perf(self._paper_trades(), start_equity=10000.0, now=now)
+        text = "\n".join(summarize(empty_prev))
+        assert "nothing to compare yet" in text
+        assert "+75pp" not in text
+        assert "Trend (7d vs prev)" not in text
+
+        # With a real prior-window trade the delta line comes back.
+        prior = self._t(-5.0, "2026-09-10T14:30:00+00:00",
+                        "2026-09-09T14:00:00+00:00", -0.5)
+        with_prev = build_perf(
+            self._paper_trades() + [prior], start_equity=10000.0, now=now,
+        )
+        assert with_prev["trend"]["prev_trades"] == 1
+        text2 = "\n".join(summarize(with_prev))
+        assert "Trend (7d vs prev)" in text2
+        assert "nothing to compare yet" not in text2
 
 
 class TestWeeklyReport:
