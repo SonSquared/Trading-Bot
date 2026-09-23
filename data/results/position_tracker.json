@@ -1,11 +1,15 @@
 {
-  "last_update": "2026-09-23T13:44:04.322050+00:00",
+  "last_update": "2026-09-23T18:28:09.437982+00:00",
   "position_data": {},
   "price_history": {
     "ETH_USDT_USDT": [
       {
         "time": "2026-09-23T13:44:04.466322+00:00",
         "price": 2718.94
+      },
+      {
+        "time": "2026-09-23T18:28:09.496414+00:00",
+        "price": 2661.33
       }
     ],
     "BTC_USDT_USDT": [
@@ -31,5 +35,5 @@
       }
     ]
   },
-  "last_price_alert_ETH_USDT_USDT": "2026-09-18T17:44:56.466043+00:00"
+  "last_price_alert_ETH_USDT_USDT": "2026-09-23T18:28:09.496414+00:00"
 }
