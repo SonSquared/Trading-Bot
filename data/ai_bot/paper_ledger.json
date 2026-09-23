@@ -1,29 +1,8 @@
 {
-  "cash": 10079.244917910855,
+  "cash": 10048.516435529587,
   "start_equity": 10000.0,
   "peak_equity": 10083.05017415602,
-  "positions": {
-    "BTC/USDT:USDT": {
-      "side": "buy",
-      "entry_price": 86160.7,
-      "amount": 0.0058493889356493875,
-      "size_usd": 503.98744526780615,
-      "stop_loss_pct": 2.5,
-      "take_profit_pct": 5.0,
-      "entry_time": "2026-09-22T10:01:15.922805+00:00",
-      "high_pnl_pct": 0.0
-    },
-    "ETH/USDT:USDT": {
-      "side": "buy",
-      "entry_price": 2749.52,
-      "amount": 0.1833001561246349,
-      "size_usd": 503.98744526780615,
-      "stop_loss_pct": 2.5,
-      "take_profit_pct": 5.0,
-      "entry_time": "2026-09-22T10:01:16.569715+00:00",
-      "high_pnl_pct": 0.0
-    }
-  },
+  "positions": {},
   "closed_trades": [
     {
       "pair": "BTC/USDT:USDT",
@@ -99,6 +78,46 @@
       "reason": "take_profit triggered",
       "entry_time": "2026-09-21T00:15:51.257032+00:00",
       "close_time": "2026-09-21T14:20:50.263059+00:00"
+    },
+    {
+      "pair": "BTC/USDT:USDT",
+      "side": "close",
+      "position_side": "buy",
+      "entry_price": 86160.7,
+      "exit_price": 83886.5,
+      "amount": 0.0058493889356493875,
+      "size_usd": 503.9874,
+      "gross_pnl": -13.3027,
+      "entry_fee": 0.252,
+      "exit_fee": 0.2453,
+      "fees": 0.4973,
+      "net_pnl": -13.8,
+      "cash_delta": -13.548,
+      "pnl_pct": -2.6395,
+      "pnl_pct_net": -2.7382,
+      "reason": "stop_loss triggered",
+      "entry_time": "2026-09-22T10:01:15.922805+00:00",
+      "close_time": "2026-09-23T16:53:48.015429+00:00"
+    },
+    {
+      "pair": "ETH/USDT:USDT",
+      "side": "close",
+      "position_side": "buy",
+      "entry_price": 2749.52,
+      "exit_price": 2657.12,
+      "amount": 0.1833001561246349,
+      "size_usd": 503.9874,
+      "gross_pnl": -16.9369,
+      "entry_fee": 0.252,
+      "exit_fee": 0.2435,
+      "fees": 0.4955,
+      "net_pnl": -17.4325,
+      "cash_delta": -17.1805,
+      "pnl_pct": -3.3606,
+      "pnl_pct_net": -3.4589,
+      "reason": "stop_loss triggered",
+      "entry_time": "2026-09-22T10:01:16.569715+00:00",
+      "close_time": "2026-09-23T16:53:48.016030+00:00"
     }
   ]
 }
