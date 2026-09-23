@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260922_230043",
+  "wakeup_id": "20260923_002830",
   "decision": {
     "actions": [],
     "market_outlook": "bullish",
-    "risk_assessment": "Current positions are stable with low volume conditions across major pairs. Maintaining existing exposure as portfolio heat is at 10.0% and no strong breakout signals warrant adding new risk at this moment.",
-    "reasoning": "Both BTC and ETH are in bullish EMA trends with neutral RSI and low volume ratios (0.00x). With 2 positions already open and total exposure at 10%, holding current positions without adding new risk is optimal until volatility or volume expands."
+    "risk_assessment": "Low volume across BTC and ETH with MACD histogram slightly negative despite bullish EMA structure. Already holding long positions in both tradable pairs with portfolio heat at 10.0%. Maintaining existing positions without adding risk.",
+    "reasoning": "Both BTC and ETH remain in bullish EMA alignment (EMA9 > EMA21 > EMA50) with strong ADX indicators. However, volume ratios are very low (0.11x on BTC, 0.23x on ETH) and MACD signals show minor consolidation. Since we already have open long positions in both available tradable pairs, no additional trades are required."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-22T23:01:54.398699+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-09-23T00:29:07.676387+00:00"
 }
