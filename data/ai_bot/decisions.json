@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260923_165344",
+  "wakeup_id": "20260923_201907",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Both BTC and ETH are in short-term bearish trends with EMAs stacked downwards, though RSI is heavily oversold. Momentum remains weak and volume is low/mixed, advising against catching falling knives.",
-    "reasoning": "Despite oversold RSI readings (22.4 on ETH and 26.3 on BTC), the overall trend is strongly bearish with EMAs aligned downwards and negative MACD histograms. Our strategy prefers trend following, and without confirmation of a trend reversal or stabilization, taking long positions based solely on oversold indicators carries too high of a risk. Remaining in cash."
+    "risk_assessment": "Market exhibits strong bearish momentum with ADX > 32 and prices below key EMAs. However, trading volume is severely dried up (0.08x - 0.13x) and RSI is nearing oversold territory close to local supports, posing elevated fakeout/whipsaw risk.",
+    "reasoning": "Both BTC and ETH remain in established short-term downtrends with negative MACD histograms and bearish EMA alignments. Despite the downward trend, extreme volume contraction and proximity to 24-hour lows make short entries unfavorable for risk/reward, while no clear reversal confluence exists for longs. Preserving capital with zero positions."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-23T16:56:00.996552+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-23T20:19:20.836151+00:00"
 }
