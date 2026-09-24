@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260924_200046",
+  "wakeup_id": "20260924_230050",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Critically low volume ratios (0.01x-0.02x) across BTC and ETH indicate minimal liquidity and lack of institutional participation. BTC exhibits an overall bearish EMA trend while ETH remains mixed.",
-    "reasoning": "BTC is showing a minor short-term bounce above EMA9/21 against a longer-term bearish EMA alignment (EMA9 < EMA21 < EMA50). ETH indicators are neutral to overbought with Stochastic above 80. Combined with virtually non-existent trading volume, signal quality is poor and confidence remains below 60. Staying in cash until volume and trend alignment improve."
+    "risk_assessment": "Low volatility and weak trend strength with negligible volume across both BTC and ETH.",
+    "reasoning": "Both BTC and ETH are consolidating with neutral RSI levels (~50) and mixed EMA alignments (EMA 9/21 above each other but below EMA 50). Lacking volume and directional momentum, no trades meet the required minimum confidence threshold (>= 60)."
   },
   "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-24T20:02:20.965386+00:00"
+  "decided_at": "2026-09-24T23:01:21.557290+00:00"
 }
