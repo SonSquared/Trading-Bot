@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260923_230049",
+  "wakeup_id": "20260924_000048",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Both BTC and ETH remain in established downtrends (ADX > 32, EMA 9 < 21 < 50), but zero recorded volume and consolidation near short-term support increase chop risk.",
-    "reasoning": "While the overarching trend is bearish, momentum indicators are hovering near neutral to oversold zones without clean continuation triggers. Zero trading volume across pairs suggests illiquid or stale feed conditions, warranting caution until volume confirms directional expansion."
+    "risk_assessment": "Persistent bearish EMA structure across BTC and ETH with strong ADX, but near-zero trading volume indicates illiquid or stalled conditions.",
+    "reasoning": "While trend indicators (EMA 9 < 21 < 50 and ADX > 32) indicate a prevailing downtrend, trading volume is completely flat (0.00x ratio) and momentum indicators are mixed (ETH MACD flattening, BTC RSI at 38). With two consecutive losses recorded, entering fresh positions without volume confirmation or a healthy pullback carries poor risk-reward. Preserving capital until market liquidity and directional momentum align."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-23T23:01:06.993541+00:00"
+  "decided_at": "2026-09-24T00:00:58.990181+00:00"
 }
