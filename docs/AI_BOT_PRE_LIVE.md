@@ -139,7 +139,7 @@ production).
 
 | # | Blocker | Status 2026-09-22 |
 |---|---|---|
-| R1 | Failed protective-order placement leaves a naked position | **OPEN.** `ai_agent.py` still only writes `logger.error("protective_orders_missing", ...)` — no Telegram alert, no `errors` entry in the journal, no block on further entries. A live fill whose SL/TP failed would be silently unprotected |
+| R1 | Failed protective-order placement leaves a naked position | **CLOSED 2026-09-25.** `protective_orders_missing` no longer exists: the stop is placed first and sized to the *filled* amount, and if it cannot be placed the position is flattened immediately (reduce-only market), recorded in `result["errors"]`, alerted on Telegram, and further entries are blocked for that wakeup. See [the 2026-09-25 (R1) re-review](#re-review--2026-09-25-r1-an-unprotected-live-position-is-now-impossible-by-construction) |
 | R2 | Live execution path has zero real runs | **OPEN.** No testnet rehearsal has happened (`bot.sandbox: false`, no `BINANCE_TESTNET_*` keys). Amount rounding and the ccxt position-size field are still unverified against a real exchange |
 | R3 | Leverage is never set by the bot | **OPEN.** `set_leverage()` exists in `exchange.py` but the AI bot never calls it (only the main bot does). Whatever leverage is set on the account applies to every AI position |
 | R4 | Shared `data_dir` seeds live state from paper | **OPEN (mitigable).** `_build_agent(data_dir_override=...)` exists but is not exposed as a CLI flag; the clean path is a separate `configs/ai_bot_live.yaml` with its own `data_dir` |
@@ -221,7 +221,8 @@ verified that it could.
 
 ## What this does NOT change
 
-R1–R7 are **unchanged and still open**. At $97 only **ETH** clears the floor; BTC
+R2–R7 are **unchanged and still open** (R1 closed later the same day — see the next
+section). At $97 only **ETH** clears the floor; BTC
 needs ~$166.67 of equity, so BTC entries are refused with that reason. The achievable
 scale is single-digit dollars per month, and the sample is still 6 trades — nothing
 here is evidence of a profitable edge, only that the account can now place a legal
@@ -229,7 +230,88 @@ order and that its numbers are finally about the right account.
 
 ## Go-live gate (2026-09-25 additions)
 
-- [ ] R1–**R8** all closed
+- [ ] R2–**R8** all closed (**R1** closed 2026-09-25)
 - [ ] `scripts/ai_venue_check.py` reports at least one tradable pair at the live equity
 - [ ] Live equity is the real balance and `bot.paper_starting_equity` matches it
 - [ ] Everything in the 2026-09-22 gate still applies
+
+---
+
+# Re-review — 2026-09-25 (R1: an unprotected live position is now impossible by construction)
+
+**The one defect that could wipe the account, closed.** R1 said: if the
+protective stop fails to place after a live fill, the code only logs
+`protective_orders_missing` and builds the trade anyway. At $10,000 that was a
+bug; at **$97** it is the entire loss budget standing open with no stop and no
+one told. The old code path no longer exists.
+
+## The invariant
+
+> **A live position may not exist without a confirmed protective stop, and
+every failure mode ends in ONE defined outcome — flatten, or refuse the entry.**
+
+| Failure mode | Defined outcome |
+|---|---|
+| Entry order not accepted / connection dropped | **Refuse** — nothing was opened. A dropped call is not trusted either: the position is read back, and if a fill is hiding behind the error it is adopted and protected |
+| Fill unconfirmed and no position visible | **Refuse** — nothing to protect |
+| Stop rejected or timed out | **Flatten** the filled size (reduce-only market), record, alert, block further entries this wakeup |
+| Stop AND flatten both rejected | **Emergency alert** — the only state we cannot repair is announced loudly, not swallowed |
+| Partial fill | Protective orders cover the **filled** size, never the request |
+| Partial fill below the venue minimum | The position cannot even carry a stop → **flatten and refuse** |
+| Take-profit rejected | **Keep** the (stop-protected) position, record + alert; the AI closes it next wakeup |
+| Close rejected / dropped | Bounded retry, then record + alert; **never** a journal entry for a close that did not happen |
+| Close only partially fills | Re-close the remainder; if it will not close, **leave the protective orders in place** so the remainder is not naked |
+
+Two supporting rules: the **stop is placed before the take-profit** (shortest
+possible naked window), and a failed protection **blocks further entries for the
+rest of that wakeup** — a venue that just refused a stop gets no more orders.
+Guard state is reset at the start of every wakeup, so a fault never leaks into
+the next one.
+
+## Evidence
+
+**21 unit tests** (`tests/test_ai_live_safety.py`) drive the real
+`_execute_open` / `_execute_close` / `run_wakeup` against a fault-injecting fake
+venue, one test per row of the table above. They run in CI on every AI-bot push.
+
+**14/14 hostile checks against the REAL `ExchangeInterface`** (a temporary
+driver, deleted after it ran; the permanent artifact is the test file). It
+connected to the live exchange for real market data and read the real venue
+filters, then injected a fault into every order call:
+
+```
+Live ETH price: $2,693.37
+LIVE ETH limits : min_notional=20.0 step=0.001 taker=0.05% source=exchange
+LIVE BTC limits : min_notional=50.0 step=0.001 taker=0.05% source=exchange
+$97, 30% size, 5% stop -> 0.01 ETH = $26.93
+  risk = $1.3465 (cap $1.94)  OK
+  round-trip taker cost = $0.0269
+
+[1]  real run_wakeup, healthy venue ..... entry executed, stop+tp attached;
+                                          journal carries live venue_limits
+                                          (source=exchange) and equity 97.0
+[2]  stop REJECTED ...................... refused, position flat, flatten
+                                          sized to the fill, alert w/ cost
+[3]  stop TIMED OUT (raised) ............ same outcome; 2nd entry blocked
+[4]  stop + flatten rejected ............ emergency alert fired
+[5]  partial fill below venue min ....... flattened and refused
+[6]  take-profit rejected ............... position kept WITH its stop
+[7]  entry connection drop, fill hiding . read back and protected
+[8]  close rejected repeatedly .......... retried, no phantom close,
+                                          stop left in place
+[9]  partial close ...................... remainder closed, orders retired
+[10] close only ever half-fills ......... no phantom close; protective
+                                          orders kept for the remainder
+RESULT: 14/14 checks passed
+```
+
+## What this does NOT change
+
+- **R2's "zero real runs" half stands.** This is fault injection against the
+  real interface, not a testnet rehearsal; no credential exists on this machine
+  and no order was placed on any exchange. The rehearsal is still what closes R2
+  and what confirms R1 against a real venue's order lifecycle.
+- **Nothing here is a profit claim.** The honesty numbers are unchanged: the
+  cost of refusing an entry is ~$0.027 of fees at $97, and the risk a protected
+  trade carries is $1.35 of a $1.94 cap.
+- R3–R8 remain open as listed.

@@ -197,7 +197,7 @@ estimate a win rate, and the same rules can give it back. Run
 2. `--live` flag on the CLI command
 3. `AI_BOT_LIVE_CONFIRMED=1` in `.env`
 
-...and real Binance keys with **trading permission only — never withdrawal**. Every live entry automatically gets a `STOP_MARKET` stop-loss and `TAKE_PROFIT_MARKET` order attached (reduce-only, mark-price protected). An AI position never sits naked.
+...and real Binance keys with **trading permission only — never withdrawal**. Every live entry automatically gets a `STOP_MARKET` stop-loss and `TAKE_PROFIT_MARKET` order attached (reduce-only, mark-price protected). An AI position never sits naked, and that is an enforced invariant rather than an intention: the stop is placed first, protective sizes are the *filled* size (never the requested one), and if the stop cannot be placed the entry is flattened immediately and further entries are blocked for that wakeup. A take-profit that fails is alerted but does not force a flatten — the stop is what bounds the loss. The close path retries, keeps the protective orders until the position is confirmed flat, and alerts instead of reporting a close that did not happen.
 
 **Recommended progression**: paper for at least 2–4 weeks → Binance testnet → live with money you can afford to lose. Testnet rehearsal is built in: set `bot.sandbox: true` in the config and put free testnet keys (`BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`, from [testnet.binancefuture.com](https://testnet.binancefuture.com)) in `.env` — same order flow as live, fake money.
 

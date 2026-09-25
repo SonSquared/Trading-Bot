@@ -57,6 +57,7 @@ from trading_system.bot.venue_limits import (
     min_legal_notional,
     order_problems,
     resolve_limits,
+    round_trip_fee,
 )
 
 logger = structlog.get_logger(__name__)
@@ -378,6 +379,14 @@ class AIAgent:
         # refuse must never be treated as fillable, in paper or live.
         self._limits: dict[str, MarketLimits] = {}
         self._venue_limits(self.pairs)
+
+        # Live-execution guard state, reset at the start of every wakeup. A
+        # protective-order failure is recorded here so it reaches the journal
+        # and Telegram instead of only the log, and blocks further entries
+        # until the next wakeup rather than firing more orders into a venue
+        # that just refused a stop.
+        self._execution_errors: list[str] = []
+        self._entries_blocked_reason: str | None = None
 
         if notifier is not None:
             self.notifier = notifier
@@ -853,6 +862,118 @@ class AIAgent:
 
     # ----- Trade execution -----
 
+    # ----- Live execution safety (R1) -----
+    #
+    # Invariant: a live position may not exist without a confirmed protective
+    # stop, and every failure mode ends in ONE defined outcome:
+    #
+    #   entry not accepted        -> refuse the entry (nothing was opened)
+    #   fill unconfirmed          -> refuse the entry (nothing to protect)
+    #   stop rejected / timed out -> flatten the filled size, then refuse
+    #   partial fill              -> protect the FILLED size, not the request
+    #   take-profit rejected      -> keep the (stop-protected) position, alert
+    #   close rejected / error    -> retry, then alert; never report a close
+    #                                that did not happen
+    #   flatten also rejected     -> emergency alert; position may be naked
+    #
+    # Every one of these is recorded in the journal's ``errors`` list and on
+    # Telegram, and the ones that leave the venue's answer in doubt block
+    # further entries for the rest of the wakeup.
+
+    def _record_live_failure(self, kind: str, message: str, **fields: Any) -> None:
+        """Record a live execution fault: log, journal error, Telegram alert.
+
+        A live fault that only reaches the log is invisible to the person
+        driving a $97 account, so all three sinks are written every time.
+        """
+        logger.error(kind, **fields)
+        self._execution_errors.append(message)
+        try:
+            self.notifier.notify_error(message, context=f"live {kind}")
+        except Exception as e:  # a notifier must never break execution
+            logger.warning("live_failure_notify_failed", error=str(e))
+
+    def _live_position_size(self, pair: str) -> float:
+        """Absolute size of any open position on ``pair`` (0.0 if none).
+
+        Used when the venue does not report how much of an entry actually
+        filled: the position itself is then the source of truth for what has
+        to be protected.
+        """
+        try:
+            positions = self.exchange.get_positions(pair)
+        except Exception as e:
+            logger.warning("live_position_read_failed", pair=pair, error=str(e)[:150])
+            return 0.0
+        for p in positions or []:
+            if p.get("pair") == pair:
+                try:
+                    return abs(float(p.get("size", 0) or 0))
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def _flatten(self, pair: str, entry_side: str, amount: float) -> dict | None:
+        """Reduce-only market order that closes ``amount`` of ``pair``.
+
+        The defined outcome for an unprotected live position: the only
+        position we are willing to hold is one with a confirmed stop, so an
+        entry whose stop failed is taken off immediately.
+        """
+        close_side = "sell" if entry_side == "buy" else "buy"
+        try:
+            return self.exchange.place_market_order(
+                pair, close_side, amount, reduce_only=True
+            )
+        except Exception as e:
+            logger.error("flatten_order_failed", pair=pair, error=str(e)[:200])
+            return None
+
+    def _fee_pct(self, pair: str) -> float:
+        limits = self._limits.get(pair)
+        return limits.taker_fee_pct if limits else PAPER_TAKER_FEE_PCT
+
+    def _abandon_unprotected_entry(
+        self, pair: str, entry_side: str, filled: float, filled_usd: float,
+        reason: str,
+    ) -> None:
+        """The ONE outcome for an entry we will not hold: flatten, then refuse.
+
+        Called when the position that just opened cannot be given a protective
+        stop. It is closed with a reduce-only market order; if even that is
+        rejected the operator gets an emergency alert, because a naked live
+        position is the one state this system must never sit in. Either way
+        further entries are blocked until the next wakeup.
+        """
+        flattened = self._flatten(pair, entry_side, filled)
+        self._entries_blocked_reason = f"{reason} ({pair})"
+        if flattened:
+            cost = round_trip_fee(filled_usd, self._fee_pct(pair))
+            self._record_live_failure(
+                "entry_flattened_unprotected",
+                f"live entry FLATTENED for {pair}: {reason}. The "
+                f"${filled_usd:,.2f} filled ({filled:g}) was closed immediately "
+                f"at a round-trip cost of ~${cost:.4f}. No position was left "
+                f"open. Further entries are blocked for this wakeup.",
+                pair=pair, size=filled, size_usd=filled_usd,
+            )
+            return
+        try:
+            self.notifier.notify_emergency_stop(
+                f"{pair} could not be protected AND could not be flattened \u2014 "
+                f"a NAKED position may be open. Close it manually now."
+            )
+        except Exception as e:
+            logger.warning("live_failure_notify_failed", error=str(e))
+        self._record_live_failure(
+            "entry_unprotected_unflattened",
+            f"CRITICAL: live {pair} entry has no protective stop and the "
+            f"flatten order was also rejected \u2014 a NAKED position may be "
+            f"open. Manual intervention required. Further entries are blocked "
+            f"for this wakeup. (Reason: {reason})",
+            pair=pair, size=filled, size_usd=filled_usd,
+        )
+
     def _execute_open(self, action: TradeAction, equity: float,
                       prices: dict[str, float]) -> dict | None:
         pair, order_side = action.pair, ORDER_SIDE[action.side]
@@ -924,34 +1045,117 @@ class AIAgent:
             return trade
 
         if self.mode == "live":
-            # One quantised quantity for the entry and both triggers: they must
-            # reduce exactly the position that was opened.
-            order = self.exchange.place_market_order(pair, order_side, qty)
-            if not order:
-                logger.error("order_failed", pair=pair, side=order_side)
-                return None
-            # Protective trigger orders — an AI position never sits naked.
-            sl_placed = self.exchange.place_stop_market_order(
-                pair, order_side, qty,
-                self._trigger_price(price, action.stop_loss_pct, action.side, is_stop=True),
-            )
-            tp_placed = self.exchange.place_take_profit_market_order(
-                pair, order_side, qty,
-                self._trigger_price(price, action.take_profit_pct, action.side, is_stop=False),
-            )
-            if not sl_placed or not tp_placed:
-                logger.error(
-                    "protective_orders_missing", pair=pair,
-                    stop_loss=sl_placed, take_profit=tp_placed,
+            if self._entries_blocked_reason:
+                logger.warning(
+                    "live_entry_blocked", pair=pair,
+                    reason=self._entries_blocked_reason,
                 )
+                return None
+
+            # One quantised quantity for the entry and both triggers: they must
+            # reduce exactly the position that was opened. A dropped connection
+            # can hide a fill, so a raised call is treated exactly like a
+            # refused one: the position is read back before anything is decided.
+            try:
+                order = self.exchange.place_market_order(pair, order_side, qty)
+            except Exception as e:
+                order = None
+                logger.error("entry_order_raised", pair=pair, error=str(e)[:200])
+
+            # The venue is the source of truth for how much actually filled.
+            # Protective orders must cover the FILLED size, never the request:
+            # a 60% fill with a full-size reduce-only stop is an order the
+            # venue either rejects or cannot fully honour.
+            filled = 0.0
+            if order:
+                try:
+                    filled = float(order.get("filled") or 0)
+                except (TypeError, ValueError):
+                    filled = 0.0
+            if filled <= 0:
+                filled = self._live_position_size(pair)
+            if limits is not None and filled > 0:
+                filled = floor_to_step(filled, limits.amount_step)
+            if filled <= 0:
+                self._record_live_failure(
+                    "order_failed" if order is None else "entry_fill_unconfirmed",
+                    f"live entry REFUSED for {pair}: the market order "
+                    f"{'was not accepted' if order is None else 'reported no fill'} "
+                    f"and no open position is visible, so no position was opened.",
+                    pair=pair, side=order_side,
+                )
+                return None
+
+            entry_price = float((order or {}).get("average_price") or price)
+            filled_usd = round(filled * entry_price, 2)
+
+            # A partial fill can land below the venue's own minimum — at $97
+            # that is easy, because a position is only ~$29. Then NO
+            # protective order can be placed for it at all, and the only
+            # honest outcome is to flatten and refuse the entry.
+            if limits is not None and order_problems(
+                limits, filled * entry_price, filled
+            ):
+                self._abandon_unprotected_entry(
+                    pair, order_side, filled, filled_usd,
+                    f"the filled size {filled:g} (${filled_usd:,.2f}) is below "
+                    f"the venue minimum ${limits.min_notional:,.2f} and cannot "
+                    f"carry a protective order",
+                )
+                return None
+
+            # The stop goes on FIRST and is the invariant. A live position may
+            # not exist without it, so nothing below this point can leave one
+            # open: a stop that fails to place is answered by flattening.
+            try:
+                sl_placed = self.exchange.place_stop_market_order(
+                    pair, order_side, filled,
+                    self._trigger_price(
+                        entry_price, action.stop_loss_pct, action.side, is_stop=True
+                    ),
+                )
+            except Exception as e:
+                sl_placed = None
+                logger.error("stop_place_raised", pair=pair, error=str(e)[:200])
+
+            if not sl_placed:
+                self._abandon_unprotected_entry(
+                    pair, order_side, filled, filled_usd,
+                    "the protective stop was not accepted by the venue",
+                )
+                return None
+
+            # Take-profit is best-effort: the STOP is what bounds the loss, so
+            # a missing TP is recorded and alerted but does not force a
+            # flatten \u2014 the position is still protected, and the AI can
+            # close it on its next wakeup.
+            try:
+                tp_placed = self.exchange.place_take_profit_market_order(
+                    pair, order_side, filled,
+                    self._trigger_price(
+                        entry_price, action.take_profit_pct, action.side, is_stop=False
+                    ),
+                )
+            except Exception as e:
+                tp_placed = None
+                logger.error("take_profit_place_raised", pair=pair, error=str(e)[:200])
+            if not tp_placed:
+                self._record_live_failure(
+                    "take_profit_missing",
+                    f"live {pair} entry is protected by its stop but the "
+                    f"take-profit was not accepted; the position will be "
+                    f"closed by the AI instead of at a target.",
+                    pair=pair, size=filled,
+                )
+
             trade = {
                 "pair": pair, "side": action.side,
-                "price": order.get("average_price", price),
-                "size_usd": round(size_usd, 2),
-                "amount": qty,
+                "price": entry_price,
+                "size_usd": filled_usd,
+                "amount": filled,
                 "venue_min_notional": limits.min_notional if limits else None,
-                "order_id": order.get("order_id"),
-                "stop_loss_order": sl_placed.get("order_id") if sl_placed else None,
+                "order_id": (order or {}).get("order_id"),
+                "stop_loss_order": sl_placed.get("order_id"),
                 "take_profit_order": tp_placed.get("order_id") if tp_placed else None,
                 "stop_loss_pct": action.stop_loss_pct,
                 "take_profit_pct": action.take_profit_pct,
@@ -962,8 +1166,8 @@ class AIAgent:
             }
             self._append_trade(trade)
             self.notifier.notify_trade_open(
-                pair=pair, side=order_side, price=price,
-                amount=size_usd, confidence=action.confidence,
+                pair=pair, side=order_side, price=entry_price,
+                amount=filled_usd, confidence=action.confidence,
                 strategy="ai_agent", mode="live",
             )
             return trade
@@ -1023,15 +1227,85 @@ class AIAgent:
             return trade
 
         if self.mode == "live":
-            order_side = "sell" if pos.get("side") == "long" else "buy"
-            amount = abs(float(pos.get("size", 0)))
+            close_side = "sell" if pos.get("side") == "long" else "buy"
+            amount = abs(float(pos.get("size", 0) or 0))
             if amount <= 0:
+                logger.info("close_no_size", pair=pair)
                 return None
-            order = self.exchange.place_market_order(pair, order_side, amount, reduce_only=True)
+
+            # A close is the safety-critical direction, so it is retried a
+            # bounded number of times instead of leaving the position open on
+            # one transient error.
+            order = None
+            for attempt in (1, 2, 3):
+                try:
+                    order = self.exchange.place_market_order(
+                        pair, close_side, amount, reduce_only=True
+                    )
+                except Exception as e:
+                    logger.error("close_order_raised", pair=pair,
+                                 attempt=attempt, error=str(e)[:200])
+                    order = None
+                if order:
+                    break
+                if attempt < 3:
+                    time.sleep(attempt)
             if not order:
-                logger.error("close_order_failed", pair=pair)
+                self._record_live_failure(
+                    "close_order_failed",
+                    f"live close FAILED for {pair} after 3 attempts: the "
+                    f"reduce-only market order was not accepted. The position "
+                    f"is still open and still protected by its stop.",
+                    pair=pair, amount=amount,
+                )
                 return None
-            # Best-effort cancel of leftover protective orders.
+
+            # A market close that did not take the whole position leaves a
+            # remainder whose stop must NOT be cancelled, or the remainder
+            # would be naked. Keep closing what the venue says is left, a
+            # bounded number of times: the order's OWN reported fill drives the
+            # loop, and a position read is used only when the venue reports no
+            # fill at all (a lagging read must not trigger a redundant order).
+            try:
+                filled = float(order.get("filled") or 0)
+            except (TypeError, ValueError):
+                filled = 0.0
+            remaining = amount if filled <= 0 else max(0.0, amount - filled)
+            attempts_left = 3
+            while remaining > amount * 0.01 and attempts_left > 0:
+                attempts_left -= 1
+                try:
+                    more = self.exchange.place_market_order(
+                        pair, close_side, remaining, reduce_only=True
+                    )
+                except Exception as e:
+                    logger.error("close_remainder_raised", pair=pair,
+                                 error=str(e)[:200])
+                    more = None
+                if not more:
+                    break
+                try:
+                    took = float(more.get("filled") or 0)
+                except (TypeError, ValueError):
+                    took = 0.0
+                if took > 0:
+                    remaining = max(0.0, remaining - took)
+                else:
+                    remaining = self._live_position_size(pair)
+                if attempts_left:
+                    time.sleep(1)
+
+            if remaining > amount * 0.01:
+                self._record_live_failure(
+                    "close_incomplete",
+                    f"live close INCOMPLETE for {pair}: ~{remaining:g} of the "
+                    f"position is still open. Its protective orders were left "
+                    f"in place, so the remainder is not naked.",
+                    pair=pair, remaining=remaining,
+                )
+                return None
+
+            # Confirmed flat: only now retire any leftover protective orders.
             try:
                 self.exchange.cancel_all_orders(pair)
             except Exception as e:
@@ -1100,6 +1374,12 @@ class AIAgent:
             "approved_actions": 0,
             "executed_trades": 0,
         }
+
+        # Live-execution guard state is per-wakeup: a fault that blocked
+        # entries last time must not silently persist, and must not be lost
+        # from the journal either.
+        self._execution_errors = []
+        self._entries_blocked_reason = None
 
         strategy = self._read_strategy()
         pairs = list(strategy.get("pairs", self.pairs))
@@ -1210,6 +1490,9 @@ class AIAgent:
 
             result["actions_taken"] = executed_trades
             result["executed_trades"] = len(executed_trades)
+            # Live safety faults (a stop that failed, a flatten, a refused
+            # close) belong in the journal's errors, not only in the log.
+            result["errors"].extend(self._execution_errors)
 
             # 6. Refresh account state after execution
             equity, positions, prices = self._get_equity_and_positions(pairs)
