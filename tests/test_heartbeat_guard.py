@@ -10,6 +10,10 @@ Two things are pinned here:
    the chain it repairs, holds the permissions it needs, and the poller does
    not kick it back (no mutual spin). The thresholds must stay outside the
    normal generation envelope, or the guard would cancel healthy generations.
+3. The GRACE RE-CHECK, which is what makes a killed generation recoverable by
+   the completion event that woke the guard instead of by a later cron: one
+   run must sleep the remaining grace, look again, and dispatch only if the
+   pulse is genuinely still dead.
 """
 
 from __future__ import annotations
@@ -37,13 +41,19 @@ def _hg():
 def _run(
     number: int, *, minutes_ago: float, status: str,
     conclusion: str | None = None, ended_after: float | None = None,
+    now: datetime = NOW,
 ) -> dict:
-    """A GitHub run record, shaped like the API's."""
-    created = NOW - timedelta(minutes=minutes_ago)
+    """A GitHub run record, shaped like the API's.
+
+    Tests that drive ``main()`` must pass ``now=datetime.now(timezone.utc)``:
+    main() timestamps its decision with the real clock, so a fixture pinned to
+    a fixed NOW would look hours dead to it.
+    """
+    created = now - timedelta(minutes=minutes_ago)
     if ended_after is None:
         ended = created + timedelta(minutes=21)
     else:
-        ended = NOW - timedelta(minutes=ended_after)
+        ended = now - timedelta(minutes=ended_after)
     return {
         "run_number": number,
         "created_at": created.isoformat().replace("+00:00", "Z"),
@@ -162,6 +172,137 @@ class TestThresholdOverrides:
         assert hg.main() == 0
         assert calls == ["x"]
         assert "forcing a repair" in capsys.readouterr().out
+
+
+class TestGraceRecheck:
+    """The hole this closes: a killed generation ends the chain, and the guard
+    is kicked by that very completion — but at that instant its replacement has
+    not appeared yet. Waiting for the NEXT trigger meant recovery depended on
+    crons that deliver ~25% of the time. One run must be enough."""
+
+    @staticmethod
+    def _wire(monkeypatch, hg, looks):
+        monkeypatch.setattr(hg, "REPO", "o/r")
+        monkeypatch.setattr(hg, "TOKEN", "t")
+        it = iter(looks)
+        monkeypatch.setattr(hg, "list_poller_runs", lambda *a, **k: next(it))
+        slept: list[float] = []
+        monkeypatch.setattr(hg, "_sleep", lambda s: slept.append(s))
+        dispatched: list[str] = []
+        monkeypatch.setattr(
+            hg, "dispatch_poller", lambda *_: dispatched.append("x") or True
+        )
+        alerted: list[str] = []
+        monkeypatch.setattr(hg, "alert", lambda text: alerted.append(text) or False)
+        return slept, dispatched, alerted
+
+    def test_killed_generation_is_repaired_without_another_cron(
+        self, monkeypatch, capsys
+    ):
+        hg = _hg()
+        now = datetime.now(timezone.utc)
+        killed = [_run(6, minutes_ago=6, status="completed",
+                       conclusion="cancelled", ended_after=0.1, now=now)]
+        slept, dispatched, alerted = self._wire(monkeypatch, hg, [killed, killed])
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py"])
+        assert hg.main() == 0
+        assert dispatched == ["x"], "one completion event must be enough"
+        assert slept and slept[0] <= hg.RECHECK_CAP_SECONDS
+        assert "after the grace" in capsys.readouterr().out
+        assert any("RECOVERED" in t for t in alerted)
+
+    def test_recheck_stands_down_when_the_relaunch_appears(self, monkeypatch, capsys):
+        hg = _hg()
+        now = datetime.now(timezone.utc)
+        killed = [_run(6, minutes_ago=6, status="completed",
+                       conclusion="cancelled", ended_after=0.1, now=now)]
+        successor = [_run(7, minutes_ago=0.5, status="in_progress", now=now),
+                     killed[0]]
+        slept, dispatched, _alerted = self._wire(monkeypatch, hg, [killed, successor])
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py"])
+        assert hg.main() == 0
+        assert dispatched == [], "a normal handoff must never be doubled up"
+        assert slept, "it should still have watched for it"
+        assert "after the grace: healthy" in capsys.readouterr().out
+
+    def test_dry_run_neither_sleeps_nor_dispatches(self, monkeypatch):
+        hg = _hg()
+        now = datetime.now(timezone.utc)
+        killed = [_run(6, minutes_ago=6, status="completed",
+                       conclusion="cancelled", ended_after=0.1, now=now)]
+        slept, dispatched, _alerted = self._wire(monkeypatch, hg, [killed])
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py", "--dry-run"])
+        assert hg.main() == 0
+        assert slept == [] and dispatched == []
+
+    def test_recheck_can_be_switched_off_for_rehearsals(self, monkeypatch):
+        hg = _hg()
+        now = datetime.now(timezone.utc)
+        killed = [_run(6, minutes_ago=6, status="completed",
+                       conclusion="cancelled", ended_after=0.1, now=now)]
+        slept, dispatched, _alerted = self._wire(monkeypatch, hg, [killed])
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py", "--no-recheck"])
+        assert hg.main() == 0
+        assert slept == [] and dispatched == []
+
+    def test_the_recheck_fits_inside_one_guard_run(self):
+        """Grace, cap and the job timeout must be consistent, or the guard is
+        killed mid-repair and the hole reopens."""
+        hg = _hg()
+        assert hg.GRACE_MINUTES * 60 + 5 <= hg.RECHECK_CAP_SECONDS
+        timeout = _load("ai_heartbeat_guard.yml")["jobs"]["guard"]["timeout-minutes"]
+        assert hg.RECHECK_CAP_SECONDS / 60 + 1 <= timeout
+
+
+class TestAlertQuieting:
+    """A runner shortage must not produce a Telegram message every ten minutes
+    — that cry-wolf pattern is what trains you to ignore the real alerts."""
+
+    @staticmethod
+    def _run_guard(monkeypatch, hg, minutes_ago: float) -> list[str]:
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(hg, "REPO", "o/r")
+        monkeypatch.setattr(hg, "TOKEN", "t")
+        monkeypatch.setattr(
+            hg, "list_poller_runs",
+            lambda *a, **k: [_run(9, minutes_ago=minutes_ago, status="queued", now=now)],
+        )
+        alerted: list[str] = []
+        monkeypatch.setattr(hg, "alert", lambda text: alerted.append(text) or False)
+        monkeypatch.setattr(hg, "dispatch_poller", lambda *_: False)
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py"])
+        assert hg.main() == 0
+        return alerted
+
+    def test_first_detection_alerts(self, monkeypatch):
+        hg = _hg()
+        alerted = self._run_guard(monkeypatch, hg, hg.STALE_MINUTES + 5)
+        assert len(alerted) == 1 and "DEGRADED" in alerted[0]
+
+    def test_persistent_shortage_stops_re_alerting(self, monkeypatch, capsys):
+        hg = _hg()
+        alerted = self._run_guard(
+            monkeypatch, hg, hg.STALE_MINUTES + hg.ALERT_QUIET_MINUTES + 20
+        )
+        assert alerted == []
+        assert "staying quiet" in capsys.readouterr().out
+
+    def test_quieted_shortage_still_dispatches_nothing(self, monkeypatch):
+        """Quiet must not become passive: the guard still never stacks runs."""
+        hg = _hg()
+        called: list[str] = []
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(hg, "REPO", "o/r")
+        monkeypatch.setattr(hg, "TOKEN", "t")
+        monkeypatch.setattr(
+            hg, "list_poller_runs",
+            lambda *a, **k: [_run(9, minutes_ago=200, status="queued", now=now)],
+        )
+        monkeypatch.setattr(hg, "dispatch_poller", lambda *_: called.append("x") or True)
+        monkeypatch.setattr(hg, "alert", lambda *_: False)
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py"])
+        assert hg.main() == 0
+        assert called == []
 
 
 class TestGuardEntryPoint:
@@ -315,3 +456,14 @@ class TestHeartbeatWiring:
         joined = _steps(wf)
         assert "ai_poller.yml" in joined
         assert "ai_heartbeat_guard.yml" in joined
+
+    def test_health_check_can_NAME_a_live_but_hung_generation(self):
+        """The watchdog's blind spot was a pulse that is alive but stuck. Its
+        hour-long journal threshold would not have fired for hours, so a hung
+        generation has to be named in the report itself."""
+        joined = _steps(_load("ai_health_check.yml"))
+        assert "HUNG" in joined
+        assert "in_progress" in joined
+        # ... while naming it in the alert is all it does: the repair stays with
+        # the guard, whose own triggers fire far more often than this patrol.
+        assert "createWorkflowDispatch" in joined

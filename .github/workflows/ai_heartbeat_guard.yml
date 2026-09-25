@@ -81,7 +81,11 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Long enough for a grace re-check (the run sleeps out the remaining
+    # GRACE_MINUTES and looks again, so a killed generation is repaired by the
+    # completion event that woke the guard rather than by a later cron), and
+    # still cheap: the common healthy path is a ~20s API read.
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
 
@@ -92,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
           AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
-          # Thresholds default to 40/10 min; overridable for a rehearsed
+          # Thresholds default to 40/3 min; overridable for a rehearsed
           # recovery test (see docs/AI_BOT_HEARTBEAT.md).
           AI_HEARTBEAT_STALE_MINUTES: ${{ inputs.stale_minutes }}
           HEARTBEAT_FORCE_DISPATCH: ${{ inputs.dispatch }}

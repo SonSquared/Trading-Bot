@@ -40,8 +40,25 @@ Reads the poller's run history and decides:
 
 Thresholds are deliberately outside the normal envelope: STALE_MINUTES (40)
 exceeds the poller job's own 30-minute timeout, so a legitimately long
-generation is never mistaken for a hung one, and GRACE_MINUTES (10) is far
-wider than the seconds it takes the relaunch dispatch to appear.
+generation is never mistaken for a hung one, and GRACE_MINUTES (3) is an order
+of magnitude wider than the seconds the relaunch dispatch takes to appear.
+
+WHY "wait" RE-CHECKS IN THE SAME RUN
+------------------------------------
+A generation that ends WITHOUT reaching its relaunch step — cancelled, lost
+runner, failed dispatch — is what breaks the chain, and the guard is kicked by
+exactly that event (poller ``workflow_run`` completed fires for cancellations
+too). At that instant the replacement legitimately does not exist yet, so the
+first look can only ever say "wait". Deferring to the NEXT guard trigger was the
+remaining hole: its own crons deliver only ~25% of their firings on this repo
+(13 of the last 100 poller runs were ``schedule``), which is the very
+unreliability the guard exists to remove. So the run sleeps out the remaining
+grace and looks again: one completion event is enough, and recovery is bounded
+by GRACE_MINUTES instead of by whether a cron lands.
+
+Bounded, and never a hot loop: a dispatch makes the next check see a young
+active generation, the poller does not kick this workflow back, and the poller
+keeps its own per-generation anti-tight-loop pad.
 
 NO HOT LOOPS. The poller does not kick this guard's workflow (only the reverse
 via dispatch), a dispatch makes the next check see a young active run, and the
@@ -61,6 +78,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,9 +112,19 @@ def _env_float(name: str, default: float) -> float:
 # An active generation older than this is not "slow", it is stuck: the job's
 # own timeout-minutes is 30, so anything past 40 is anomalous.
 STALE_MINUTES = _env_float("AI_HEARTBEAT_STALE_MINUTES", 40.0)
-# How long to allow between one generation ending and the next appearing.
-GRACE_MINUTES = _env_float("AI_HEARTBEAT_GRACE_MINUTES", 10.0)
+# How long to allow between one generation ending and the next appearing. The
+# relaunch dispatch shows up in seconds, so 3 min is already generous; keeping
+# it small is what lets ONE run sleep it out and re-check.
+GRACE_MINUTES = _env_float("AI_HEARTBEAT_GRACE_MINUTES", 3.0)
 LOOKBACK = int(os.environ.get("AI_HEARTBEAT_LOOKBACK", "20"))
+# A re-check sleeps at most this long, which must exceed GRACE_MINUTES * 60
+# (+ rounding) and stay well inside the guard job's own timeout-minutes.
+RECHECK_CAP_SECONDS = _env_float("AI_HEARTBEAT_RECHECK_CAP_SECONDS", 240.0)
+# A generation stuck ``queued`` past STALE_MINUTES alerts once. After this many
+# further minutes the guard goes quiet (the log still records it every run), so
+# a runner shortage cannot become a Telegram message every ten minutes — that
+# cry-wolf pattern is what trains you to ignore the real alerts.
+ALERT_QUIET_MINUTES = _env_float("AI_HEARTBEAT_ALERT_QUIET_MINUTES", 20.0)
 
 # GitHub run statuses that mean "a generation is or will be running".
 ACTIVE_STATUSES = {"in_progress", "queued", "requested", "waiting", "pending"}
@@ -276,6 +304,12 @@ def alert(text: str) -> bool:
         return False
 
 
+def _sleep(seconds: float) -> None:
+    """Sleep, isolated in one place so tests never actually wait."""
+    if seconds > 0:
+        time.sleep(seconds)
+
+
 def main() -> int:
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -294,6 +328,10 @@ def main() -> int:
         "--json", dest="as_json", action="store_true",
         help="Emit the decision as JSON",
     )
+    parser.add_argument(
+        "--no-recheck", action="store_true",
+        help="Do not sleep out the grace and re-check (rehearsals)",
+    )
     args = parser.parse_args()
 
     if not REPO or not TOKEN:
@@ -304,21 +342,64 @@ def main() -> int:
         )
         return 0
 
+    def refresh() -> dict:
+        return decide_heartbeat(datetime.now(timezone.utc), list_poller_runs(TOKEN))
+
     try:
-        runs = list_poller_runs(TOKEN)
+        decision = refresh()
     except RuntimeError as e:
         # Cannot see the pulse -> cannot honestly call it healthy.
         print(f"HEARTBEAT GUARD: {e}", file=sys.stderr)
         alert(f"⚠️ HEARTBEAT GUARD BLIND\n\n{e}\n\nNobody is watching the pulse.")
         return 1
 
-    decision = decide_heartbeat(datetime.now(timezone.utc), runs)
-    action, reason = decision["action"], decision["reason"]
-
     if args.as_json:
         print(json.dumps(decision, indent=2, default=str))
     else:
-        print(f"HEARTBEAT GUARD: {action} ({reason}) — {decision['detail']}")
+        print(
+            f"HEARTBEAT GUARD: {decision['action']} ({decision['reason']}) — "
+            f"{decision['detail']}"
+        )
+
+    # Sleep out the grace and look again, so the completion event that woke us
+    # is enough on its own (see the module docstring). Skipped in a dry run:
+    # a rehearsal reports, it does not spend minutes.
+    if decision["action"] == "wait" and not args.no_recheck and not args.dry_run:
+        remaining = max(0.0, GRACE_MINUTES - float(decision.get("age_minutes") or 0.0))
+        nap = min(remaining * 60.0 + 5.0, RECHECK_CAP_SECONDS)
+        print(
+            f"Re-checking in {nap:.0f}s — the relaunch gets "
+            f"GRACE_MINUTES={GRACE_MINUTES:g} to appear"
+        )
+        _sleep(nap)
+        try:
+            decision = refresh()
+        except RuntimeError as e:
+            print(f"HEARTBEAT GUARD: {e}", file=sys.stderr)
+            alert(f"⚠️ HEARTBEAT GUARD BLIND\n\n{e}\n\nNobody is watching the pulse.")
+            return 1
+        if decision["action"] == "wait":
+            # The grace has now been slept out and nothing is active, so this is
+            # not a slow handoff. Act on the fact rather than on the age
+            # arithmetic: ``age_minutes`` is rounded, so a re-check can
+            # otherwise land a second inside the window and exit cleanly —
+            # re-opening exactly the hole this run exists to close.
+            decision = {
+                "action": "dispatch",
+                "reason": "dead",
+                "run_number": decision.get("run_number"),
+                "age_minutes": decision.get("age_minutes"),
+                "detail": (
+                    f"{decision['detail']} — and still nothing active after "
+                    f"sleeping the grace out"
+                ),
+            }
+        print(
+            f"HEARTBEAT GUARD after the grace: {decision['action']} "
+            f"({decision['reason']}) — {decision['detail']}"
+        )
+
+    action = decision["action"]
 
     if args.dispatch:
         # Rehearsal: prove the repair path end to end against the live pulse
@@ -332,11 +413,22 @@ def main() -> int:
         return 0
 
     if action == "alert":
+        age = float(decision.get("age_minutes") or 0.0)
+        if age - STALE_MINUTES > ALERT_QUIET_MINUTES:
+            print(
+                f"(already alerted for this generation — {age:.0f} min old, "
+                f"{age - STALE_MINUTES:.0f} min past STALE_MINUTES — staying "
+                "quiet so a runner shortage is not a message every ten minutes)"
+            )
+            return 0
         alert(
             "⚠️ AI BOT HEARTBEAT DEGRADED\n\n"
             f"{decision['detail']}\n\n"
             "No action taken: dispatching again would stack queued runs. "
-            "This is usually a GitHub runner shortage and clears itself."
+            "This is usually a GitHub runner shortage and clears itself. "
+            "If it persists past "
+            f"{STALE_MINUTES + ALERT_QUIET_MINUTES:g} min the guard stops "
+            "re-alerting (the Actions tab still shows it)."
         )
         return 0
 

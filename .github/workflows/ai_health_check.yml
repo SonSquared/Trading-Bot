@@ -127,6 +127,7 @@ jobs:
             // generation counts as hung or dead, and what to do about it)
             // lives in one place, scripts/ai_heartbeat_guard.py.
             let pulse = 'unknown';
+            let pulseHung = false;
             try {
               const pr = await github.rest.actions.listWorkflowRuns({
                 owner: context.repo.owner, repo: context.repo.repo,
@@ -134,10 +135,21 @@ jobs:
               });
               const r = pr.data.workflow_runs[0];
               if (r) {
-                const ageMin = ((Date.now() - new Date(r.created_at)) / 60000).toFixed(0);
+                const ageMin = (Date.now() - new Date(r.created_at)) / 60000;
                 pulse = '#' + r.run_number + ' ' + r.status +
                   (r.conclusion ? '/' + r.conclusion : '') +
-                  ', started ' + ageMin + ' min ago';
+                  ', started ' + ageMin.toFixed(0) + ' min ago';
+                // A generation still running long after the poller job's own
+                // timeout-minutes (30) cannot be healthy: GitHub kills the job
+                // at that point. The 30 is that job's declared timeout — a fact
+                // of ai_poller.yml — NOT a policy threshold; the guard owns
+                // those (and repairs this case).
+                if (r.status === 'in_progress' && ageMin > 30) {
+                  pulseHung = true;
+                  pulse += ' — HUNG: in_progress past the poller job timeout, not slow';
+                } else if (['queued', 'pending', 'requested'].includes(r.status)) {
+                  pulse += ' — waiting for a runner';
+                }
               } else {
                 pulse = 'no poller generation has ever run';
               }
@@ -156,7 +168,14 @@ jobs:
               console.log('Guard kick failed: ' + e.message);
             }
 
-            await alert('AI BOT HEALTH ALERT', msg + '\n\nPulse: ' + pulse);
+            await alert(
+              pulseHung ? 'AI BOT HEALTH ALERT — PULSE HUNG' : 'AI BOT HEALTH ALERT',
+              msg + '\n\nPulse: ' + pulse +
+              (pulseHung
+                ? '\n\nThe heartbeat guard replaces a hung generation on its own; ' +
+                  'a Telegram \u201cHEARTBEAT RECOVERED\u201d follows when it does.'
+                : '')
+            );
 
             // SELF-HEAL WINDOW: the AI Trading Bot chain (workflow_run) is
             // kicked by this patrol's own completion path and by the alert
