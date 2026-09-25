@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260925_204339",
+  "wakeup_id": "20260925_230044",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volume and weak directional momentum (ADX < 15) on both pairs indicate market consolidation and range compression. Minimal directional edge.",
-    "reasoning": "BTC and ETH are both exhibiting flat price action around their respective 20-period moving averages with RSI near 50 and ADX readings well below 20 (BTC 14.5, ETH 11.0). Trading volume is severely depressed (under 0.20x average). In accordance with trend-following guidelines and the minimum confidence threshold, no trades are recommended during this chop phase."
+    "risk_assessment": "Extremely low volatility and volume across both BTC and ETH. ADX levels below 15 indicate an absence of any clear trend, creating high chop risk.",
+    "reasoning": "Both BTC and ETH are consolidating in extremely tight Bollinger bands with neutral RSI (~50) and flat moving averages. Without trend confirmation or volume expansion, opening a position poses an unfavorable risk/reward profile. Staying in cash until a directional breakout emerges."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-25T20:43:50.315265+00:00"
+  "decided_at": "2026-09-25T23:01:33.882746+00:00"
 }
