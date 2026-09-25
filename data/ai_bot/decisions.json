@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260925_060039",
+  "wakeup_id": "20260925_080047",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volatility, weak trends across both BTC and ETH with ADX below 20 and low volume. No clear directional momentum to justify taking a trade.",
-    "reasoning": "Both BTC and ETH are trading in tight ranges with neutral RSI (47.5 and 49.0) and weak ADX values (16.9 and 13.3). EMAs are showing a mild bearish alignment, but volume is essentially zero and momentum indicators lack conviction. Confidence is below the 60 threshold required to open a new position."
+    "risk_assessment": "Low volatility, weak trend with ADX below 20 on both BTC and ETH, and neutral RSI/MACD readings suggest a lack of clear directional momentum. Volume is extremely low. Best to remain on the sidelines.",
+    "reasoning": "Both BTC and ETH are exhibiting bearish EMA alignments (EMA9 < EMA21 < EMA50) but with extremely weak ADX (< 16) and neutral RSI values around 45. There is no clear trend or strong momentum trigger to justify taking a position. Confidence is below 60."
   },
   "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-25T06:01:17.280992+00:00"
+  "decided_at": "2026-09-25T08:01:45.720771+00:00"
 }
