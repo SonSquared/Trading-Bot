@@ -255,3 +255,58 @@ See **§7** for the results of exactly this rehearsal against the live pulse.
   the poller-completion trigger and repaired by the grace re-check in
   ~`GRACE_MINUTES`; a **hung** one is caught by whichever trigger fires next and
   replaced (which also cancels it).
+
+## 7. Verified in the cloud (2026-09-25)
+
+Everything in this section was exercised against the live pulse, not only in
+tests.
+
+### 7.1 A deliberately killed generation repairs itself in 7 seconds
+
+The chain was broken on purpose by cancelling the running generation — the
+documented way to stop the pulse, and precisely the "killed generation" case.
+
+| Time (UTC) | Event |
+|---|---|
+| 06:59:34 | both active generations cancelled by hand (API) |
+| 06:59:26 → 07:03:48 | #1451's job holds the run `in_progress` through its pad; `updated_at` frozen (§2.2) |
+| 07:03:52 | #1451 settles `completed/cancelled`, relaunch step **skipped** — the chain is now genuinely dead |
+| **07:03:54** | guard **#14** is created, `event=workflow_run` — kicked by that very completion, not by a cron |
+| 07:03:59 | poller **#1453** created, `event=workflow_dispatch` — the repair dispatch |
+
+Guard #14's own log, quoted from the run:
+
+```text
+GUARD: dispatch (dead) — no active generation and #1452 ended 4 min ago
+(cancelled) with nothing to replace it — the self-relaunch chain is broken
+Dispatched a fresh poller generation — the chain is recovering.
+```
+
+7 seconds from the dead run settling to a live successor, with no human and no
+cron. The 4.3 minutes before it were GitHub holding the cancelled run through an
+uninterruptible pad: nothing could have recovered inside that window, and the
+guard's job was to be there the instant it closed.
+
+### 7.2 The two states that look identical, told apart
+
+| Rehearsal (real cloud runs) | Result |
+|---|---|
+| guard against a young active generation | `healthy (active) — generation #1451 is pending (0 min old)` |
+| guard against a live long poll, **age rule disabled** (`stale_minutes=9999`) | `dispatch (hung) — generation #1453 is in_progress but has reported no step transition for 9 min (>= 8.72) — longer than the Telegram long poll can hold, so it is stuck, not polling` |
+| forced repair (`dispatch=true`) | produced poller generation #1448, `event=workflow_dispatch` |
+
+The second row is the point of §3.1: identical `status`, identical age question,
+and the freeze is what answers it. All three ran against the live pulse.
+
+### 7.3 What is still *not* proven
+
+* A freeze longer than `FROZEN_MINUTES` has never been observed in production, so
+  that rule has been rehearsed against a live generation and unit-tested with the
+  threshold pinned to the real poll window — but it has not yet fired for real.
+* The guard's crons still deliver a fraction of their firings. That no longer
+  matters for the two cases above (both event-driven), but a pulse that dies
+  *without* emitting a completion event would be waiting on them.
+* Observed and accepted: a repaired generation starts while the previous one is
+  still draining (the concurrency group serialises them), so the handoff is not
+  instantaneous — it is bounded by the poller's own anti-tight-loop pad, which is
+  what keeps this chain out of a hot loop.
