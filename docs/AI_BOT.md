@@ -70,9 +70,14 @@ python scripts/start_ai_bot.py next          Wait for & run the next scheduled w
 python scripts/start_ai_bot.py status        Equity, positions, win rate, last handoff
 python scripts/start_ai_bot.py journal [N]   Show the last N wakeup decisions
 python scripts/ai_venue_check.py             What this account size can legally trade
+python scripts/ai_backtest.py                Replay the mechanics over historical candles
 ```
 
 Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yaml`).
+
+`ai_backtest.py` is the evidence behind the mechanics (venue filters, fees, caps,
+stop geometry, cadence) — see **[AI_BOT_BACKTEST.md](AI_BOT_BACKTEST.md)**. It does
+**not** test the model's judgement, and says so in its own output.
 
 ---
 

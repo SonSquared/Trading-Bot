@@ -406,6 +406,47 @@ class TestWakeup:
         assert (agent.data_dir / "progress.json").exists()
         assert (agent.data_dir / "decisions.json").exists()
 
+    def test_journal_records_what_the_ai_proposed(self, tmp_path):
+        """Counts alone cannot be replayed; the raw calls are kept.
+
+        Without this the model's decisions exist only as "1 requested, 0
+        approved" — nothing downstream (a backtest, an audit, a review of what
+        the model actually said) can reconstruct them.
+        """
+        ex = FakeExchange()
+        eng = ScriptedEngine(TradingDecision(
+            actions=[make_action(confidence=80)],
+            market_outlook="bullish", risk_assessment="ok", reasoning="setup",
+        ))
+        agent = make_agent(tmp_path, ex, eng)
+        agent.run_wakeup()
+
+        entry = json.loads(
+            (agent.data_dir / "journal.jsonl").read_text().strip().splitlines()[-1]
+        )
+        proposed = entry["actions_proposed"]
+        assert len(proposed) == 1
+        assert proposed[0]["pair"] == "BTC/USDT:USDT"
+        assert proposed[0]["side"] == "long"
+        assert proposed[0]["stop_loss_pct"] == pytest.approx(3.0)
+        assert proposed[0]["reasoning"]
+
+    def test_a_refused_proposal_is_still_in_the_journal(self, tmp_path):
+        ex = FakeExchange()
+        eng = ScriptedEngine(TradingDecision(
+            actions=[make_action(confidence=10)],
+            market_outlook="bullish", risk_assessment="ok", reasoning="weak",
+        ))
+        agent = make_agent(tmp_path, ex, eng)
+        result = agent.run_wakeup()
+
+        entry = json.loads(
+            (agent.data_dir / "journal.jsonl").read_text().strip().splitlines()[-1]
+        )
+        assert result["executed_trades"] == 0
+        assert entry["actions_executed"] == 0
+        assert entry["actions_proposed"][0]["confidence"] == 10.0
+
     def test_ai_engine_failure_is_explicit_error(self, tmp_path):
         ex = FakeExchange()
         eng = ScriptedEngine(TradingDecision(

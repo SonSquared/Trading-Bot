@@ -35,7 +35,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 
@@ -102,8 +102,13 @@ DEFAULT_STRATEGY: dict[str, Any] = {
 }
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _utc_now_iso(now: datetime | None = None) -> str:
+    """ISO-8601 UTC timestamp, or ``now`` formatted when one is supplied.
+
+    The optional argument exists so a replay (the backtest harness) can write
+    simulated timestamps while every other call site is unchanged.
+    """
+    return (now or datetime.now(timezone.utc)).isoformat()
 
 
 def _read_json(path: Path) -> Any | None:
@@ -126,9 +131,13 @@ class PaperLedger:
     """
 
     def __init__(self, path: Path, starting_cash: float = DEFAULT_STARTING_EQUITY,
-                 taker_fee_pct: float = PAPER_TAKER_FEE_PCT):
+                 taker_fee_pct: float = PAPER_TAKER_FEE_PCT,
+                 clock: Callable[[], datetime] | None = None):
         self.path = path
         self.taker_fee_pct = taker_fee_pct
+        # Trade timestamps come from here. Default is the real clock; a replay
+        # injects simulated time so its records are reproducible.
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.data: dict[str, Any] = _read_json(path) if path.exists() else None
         if not isinstance(self.data, dict) or "cash" not in self.data:
             self.data = {
@@ -194,7 +203,7 @@ class PaperLedger:
             "size_usd": float(size_usd),
             "stop_loss_pct": float(stop_loss_pct),
             "take_profit_pct": float(take_profit_pct),
-            "entry_time": _utc_now_iso(),
+            "entry_time": _utc_now_iso(self._clock()),
             "high_pnl_pct": 0.0,
         }
         self._save()
@@ -242,7 +251,7 @@ class PaperLedger:
             "pnl_pct_net": round(net_pnl / size_usd * 100, 4) if size_usd else 0.0,
             "reason": reason,
             "entry_time": pos["entry_time"],
-            "close_time": _utc_now_iso(),
+            "close_time": _utc_now_iso(self._clock()),
         }
         self.data["closed_trades"].append(record)
         # Keep the file bounded.
@@ -333,6 +342,7 @@ class AIAgent:
         engine: AIEngine | None = None,       # injectable for tests
         ledger: PaperLedger | None = None,    # injectable for tests
         notifier: TelegramNotifier | None = None,
+        clock: Callable[[], datetime] | None = None,   # injectable for replays
     ):
         if mode not in {"paper", "live", "dry_run"}:
             raise ValueError(
@@ -343,6 +353,10 @@ class AIAgent:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
+        # Single source of "now" for this agent. Default is the real clock; a
+        # replay injects simulated time so wakeup ids, the daily rollover and
+        # every written timestamp are reproducible instead of wall-clock.
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
         bot_cfg = self.config.get("bot", {})
         if strategy_file:
@@ -371,6 +385,7 @@ class AIAgent:
             PaperLedger(
                 self.data_dir / "paper_ledger.json",
                 starting_cash=self.starting_equity,
+                clock=self._clock,
             )
             if mode == "paper" else None
         )
@@ -412,6 +427,15 @@ class AIAgent:
         self.journal_path = self.data_dir / "journal.jsonl"
         self.decisions_path = self.data_dir / "decisions.json"
         self.trades_path = self.data_dir / "trades.jsonl"
+
+    # ----- Clock -----
+
+    def _now(self) -> datetime:
+        """Current time for this agent (simulated during a replay)."""
+        return self._clock()
+
+    def _now_iso(self) -> str:
+        return self._now().isoformat()
 
     def _build_risk_manager(self) -> RiskManager:
         rcfg = self.config.get("risk", {})
@@ -652,7 +676,7 @@ class AIAgent:
         heat_pct = heat_usd / equity * 100 if equity > 0 else 0.0
 
         # Daily P&L: resets when the UTC date changes.
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = self._now().strftime("%Y-%m-%d")
         day = progress.get("day")
         day_start = progress.get("day_start_equity")
         if day != today or day_start is None:
@@ -1034,7 +1058,7 @@ class AIAgent:
                 "confidence": action.confidence,
                 "reasoning": action.reasoning,
                 "mode": "paper", "executed": True,
-                "timestamp": _utc_now_iso(),
+                "timestamp": self._now_iso(),
             }
             self._append_trade(trade)
             self.notifier.notify_trade_open(
@@ -1162,7 +1186,7 @@ class AIAgent:
                 "confidence": action.confidence,
                 "reasoning": action.reasoning,
                 "mode": "live", "executed": True,
-                "timestamp": _utc_now_iso(),
+                "timestamp": self._now_iso(),
             }
             self._append_trade(trade)
             self.notifier.notify_trade_open(
@@ -1214,7 +1238,7 @@ class AIAgent:
                 "reasoning": action.reasoning,
                 "confidence": action.confidence,
                 "mode": "paper", "executed": True,
-                "timestamp": _utc_now_iso(),
+                "timestamp": self._now_iso(),
             }
             self._append_trade(trade)
             self.notifier.notify_trade_close(
@@ -1317,7 +1341,7 @@ class AIAgent:
                 "reasoning": action.reasoning,
                 "confidence": action.confidence,
                 "mode": "live", "executed": True,
-                "timestamp": _utc_now_iso(),
+                "timestamp": self._now_iso(),
             }
             self._append_trade(trade)
             return trade
@@ -1338,7 +1362,7 @@ class AIAgent:
                 "entry_price": rec["entry_price"], "price": rec["exit_price"],
                 "net_pnl": rec["net_pnl"], "pnl_pct": rec["pnl_pct"],
                 "reason": rec["reason"], "mode": "paper",
-                "triggered": True, "timestamp": _utc_now_iso(),
+                "triggered": True, "timestamp": self._now_iso(),
             })
             self.notifier.notify_trade_close(
                 pair=rec["pair"], side=rec["position_side"],
@@ -1358,12 +1382,12 @@ class AIAgent:
         fails silently.
         """
         start_time = time.time()
-        wakeup_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        wakeup_id = self._now().strftime("%Y%m%d_%H%M%S")
         logger.info("wakeup_started", wakeup_id=wakeup_id, mode=self.mode)
 
         result: dict[str, Any] = {
             "wakeup_id": wakeup_id,
-            "timestamp": _utc_now_iso(),
+            "timestamp": self._now_iso(),
             "mode": self.mode,
             "status": "started",
             "actions_taken": [],
@@ -1511,7 +1535,7 @@ class AIAgent:
                 ],
                 "last_outlook": decision.market_outlook,
                 "peak_equity": snapshot["peak_equity"],
-                "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "day": self._now().strftime("%Y-%m-%d"),
                 "day_start_equity": snapshot["day_start_equity"],
                 "notes": (
                     f"Wakeup {wakeup_id}: AI proposed {len(decision.actions)}, "
@@ -1525,7 +1549,7 @@ class AIAgent:
             # 8. Journal (audit trail)
             self._append_journal({
                 "wakeup_id": wakeup_id,
-                "timestamp": _utc_now_iso(),
+                "timestamp": self._now_iso(),
                 "mode": self.mode,
                 "status": "success",
                 "account_scale": {
@@ -1544,6 +1568,21 @@ class AIAgent:
                 "actions_requested": len(decision.actions),
                 "actions_approved": len(approved),
                 "actions_executed": len(executed_trades),
+                # What the model actually proposed, kept for the audit trail.
+                # Counts alone make the model un-auditable after the fact: a
+                # decision that was rejected, or that never traded, leaves no
+                # other trace, so the calls could never be replayed offline.
+                "actions_proposed": [
+                    {
+                        "pair": a.pair, "side": a.side,
+                        "size_pct": a.size_pct,
+                        "stop_loss_pct": a.stop_loss_pct,
+                        "take_profit_pct": a.take_profit_pct,
+                        "confidence": a.confidence,
+                        "reasoning": a.reasoning,
+                    }
+                    for a in decision.actions
+                ],
                 "rejections": rejected,
                 "closed_triggers": result["closed_triggers"],
                 "equity": round(equity, 2),
@@ -1562,7 +1601,7 @@ class AIAgent:
             try:
                 self._append_journal({
                     "wakeup_id": wakeup_id,
-                    "timestamp": _utc_now_iso(),
+                    "timestamp": self._now_iso(),
                     "mode": self.mode,
                     "status": "error",
                     "errors": result["errors"],
