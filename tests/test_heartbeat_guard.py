@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,16 +42,22 @@ def _hg():
 def _run(
     number: int, *, minutes_ago: float, status: str,
     conclusion: str | None = None, ended_after: float | None = None,
-    now: datetime = NOW,
+    frozen_for: float | None = None, now: datetime = NOW,
 ) -> dict:
     """A GitHub run record, shaped like the API's.
+
+    ``updated_at`` is the run's last step transition. By default it is 21 min
+    after the start (a full Telegram long-poll generation, so the freeze is 0 at
+    a run's end); ``frozen_for`` sets it directly, in minutes before ``now``.
 
     Tests that drive ``main()`` must pass ``now=datetime.now(timezone.utc)``:
     main() timestamps its decision with the real clock, so a fixture pinned to
     a fixed NOW would look hours dead to it.
     """
     created = now - timedelta(minutes=minutes_ago)
-    if ended_after is None:
+    if frozen_for is not None:
+        ended = now - timedelta(minutes=frozen_for)
+    elif ended_after is None:
         ended = created + timedelta(minutes=21)
     else:
         ended = now - timedelta(minutes=ended_after)
@@ -74,6 +81,36 @@ class TestDecideHeartbeat:
         assert d["action"] == "dispatch"
         assert d["reason"] == "hung"
         assert "#7" in d["detail"] and "in_progress" in d["detail"]
+
+    def test_a_frozen_generation_is_hung_before_it_is_even_stale(self):
+        """updated_at freezing is normal during a long poll, but a freeze longer
+        than any step can last is engine-independent proof of a stuck run — and
+        it fires well before the age rule can. On 2026-09-25 a generation whose
+        job had been cancelled sat in_progress like this."""
+        d = _hg().decide_heartbeat(
+            NOW, [_run(42, minutes_ago=30, status="in_progress", frozen_for=26)]
+        )
+        assert d["action"] == "dispatch"
+        assert d["reason"] == "hung"
+        assert "step transition" in d["detail"]
+        assert d["frozen_minutes"] == 26.0
+
+    def test_a_long_poll_is_not_mistaken_for_a_freeze(self):
+        """The poll step holds for up to 20 min with NO transitions. That is a
+        healthy generation at work, and cancelling it would cost a live poll."""
+        d = _hg().decide_heartbeat(
+            NOW, [_run(43, minutes_ago=21, status="in_progress", frozen_for=20.8)]
+        )
+        assert d["action"] == "healthy"
+        assert "last step transition" in d["detail"]
+
+    def test_freeze_never_outranks_a_queued_runner_shortage(self):
+        """A pending run also has a frozen updated_at; dispatching at one would
+        only stack queued runs, so the alert policy must still win."""
+        d = _hg().decide_heartbeat(
+            NOW, [_run(44, minutes_ago=70, status="queued", frozen_for=60)]
+        )
+        assert d["action"] == "alert"
 
     def test_stale_queued_run_alerts_instead_of_stacking_more(self):
         """No runner is picking it up — dispatching again would only stack."""
@@ -440,12 +477,33 @@ class TestHeartbeatWiring:
         timeout = _load("ai_poller.yml")["jobs"]["poll"]["timeout-minutes"]
         assert hg.STALE_MINUTES > timeout
 
+    def test_frozen_threshold_sits_above_the_pollers_own_poll_window(self):
+        """The freeze signal must never fire during a legitimate long poll, so it
+        is measured against the real window (`--max-minutes`) with slack — and it
+        must stay below the age threshold, or the two rules are one rule."""
+        hg = _hg()
+        m = re.search(r"--max-minutes\s+(\d+)", _steps(_load("ai_poller.yml")))
+        assert m, "FROZEN_MINUTES is defined relative to the poll window"
+        window = float(m.group(1))
+        assert hg.FROZEN_MINUTES >= window + 4
+        assert hg.FROZEN_MINUTES < hg.STALE_MINUTES
+
     def test_recovery_path_can_be_rehearsed_from_the_workflow(self):
         """The inputs are what make §5 of the heartbeat doc runnable, so the
         recovery path is exercised for real rather than asserted."""
-        on = _load("ai_heartbeat_guard.yml")[True]
-        inputs = on["workflow_dispatch"]["inputs"]
-        assert {"stale_minutes", "dispatch", "dry_run"} <= set(inputs)
+        wf = _load("ai_heartbeat_guard.yml")
+        inputs = wf[True]["workflow_dispatch"]["inputs"]
+        assert {"stale_minutes", "frozen_minutes", "dispatch", "dry_run"} <= set(inputs)
+        # ... and each override must actually reach the script's environment, or
+        # the rehearsal would silently exercise nothing. (These live in `env:`,
+        # not in the `run:` payload `_steps` collects.)
+        envs = {
+            key
+            for job in wf["jobs"].values()
+            for step in job.get("steps", [])
+            for key in (step.get("env") or {})
+        }
+        assert {"AI_HEARTBEAT_STALE_MINUTES", "AI_HEARTBEAT_FROZEN_MINUTES"} <= envs
 
     def test_health_check_can_see_the_pulse(self):
         """It used to read only the journal, so a dead or hung pulse was

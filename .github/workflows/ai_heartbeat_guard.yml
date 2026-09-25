@@ -39,15 +39,23 @@ on:
   workflow_dispatch:
     # Manual run. The inputs exist so the RECOVERY PATH can be rehearsed for
     # real instead of assumed (see docs/AI_BOT_HEARTBEAT.md §5):
-    #   stale_minutes=1  -> the live generation is classified as hung, so a
-    #                       replacement is dispatched and the handoff is
-    #                       observed for real
-    #   dispatch=true    -> force a repair
-    #   dry_run=true     -> decide and report, change nothing
+    #   stale_minutes=1   -> the live generation is classified as hung by its
+    #                        AGE, so a replacement is dispatched and the
+    #                        handoff is observed for real
+    #   frozen_minutes=N  -> the same for the other hang signal: the live
+    #                        generation has reported no step transition for N
+    #                        minutes (set it just under the real freeze the
+    #                        live pulse is showing)
+    #   dispatch=true     -> force a repair
+    #   dry_run=true      -> decide and report, change nothing
     # Leaving them blank is the normal production behaviour.
     inputs:
       stale_minutes:
         description: "Rehearsal: override STALE_MINUTES (blank = 40)"
+        required: false
+        default: ""
+      frozen_minutes:
+        description: "Rehearsal: override FROZEN_MINUTES (blank = 25)"
         required: false
         default: ""
       dispatch:
@@ -99,6 +107,7 @@ jobs:
           # Thresholds default to 40/3 min; overridable for a rehearsed
           # recovery test (see docs/AI_BOT_HEARTBEAT.md).
           AI_HEARTBEAT_STALE_MINUTES: ${{ inputs.stale_minutes }}
+          AI_HEARTBEAT_FROZEN_MINUTES: ${{ inputs.frozen_minutes }}
           HEARTBEAT_FORCE_DISPATCH: ${{ inputs.dispatch }}
           HEARTBEAT_DRY_RUN: ${{ inputs.dry_run }}
         run: |

@@ -30,10 +30,13 @@ WHAT IT DOES
 Reads the poller's run history and decides:
 
   healthy   an active generation younger than STALE_MINUTES -> do nothing
-  dispatch  an active generation OLDER than STALE_MINUTES (a hung job),
-            or no active generation and the last one ended more than
-            GRACE_MINUTES ago (a dead chain) -> dispatch a fresh generation,
-            which also cancels the hung one and frees the concurrency group
+  dispatch  an active generation that is hung — either in_progress past
+            STALE_MINUTES (older than the poller job's own 30-minute timeout),
+            or in_progress with no step transition for FROZEN_MINUTES (> the
+            longest legitimate step, the 20-minute Telegram long poll) — or no
+            active generation and the last one ended more than GRACE_MINUTES
+            ago (a dead chain) -> dispatch a fresh generation, which also
+            cancels the hung one and frees the concurrency group
   alert     an active generation older than STALE_MINUTES but still ``queued``
             -> a runner shortage, not a hung job: dispatching would just stack
             more queued runs, so alert and wait for capacity
@@ -42,6 +45,19 @@ Thresholds are deliberately outside the normal envelope: STALE_MINUTES (40)
 exceeds the poller job's own 30-minute timeout, so a legitimately long
 generation is never mistaken for a hung one, and GRACE_MINUTES (3) is an order
 of magnitude wider than the seconds the relaunch dispatch takes to appear.
+
+WHY A FROZEN ``updated_at`` IS ALSO A HANG SIGNAL
+-------------------------------------------------
+``updated_at`` freezing is NORMAL: a step that blocks — the Telegram long poll
+— reports no transitions for up to 20 minutes. But a freeze LONGER than any
+step can legitimately last is engine-independent evidence of a stuck
+``in_progress`` run, and it does not depend on ``created_at`` at all. It exists
+because ``created_at`` alone can only fire at STALE_MINUTES, and because the
+Actions API can report a run as ``in_progress`` long after its job is gone:
+on 2026-09-25 a generation whose job had been CANCELLED sat ``in_progress`` with
+a frozen ``updated_at`` for 4.3 min while the runner finished an
+uninterruptible anti-tight-loop sleep before honouring the cancel. That
+generation was never coming back, and nothing about its age said so.
 
 WHY "wait" RE-CHECKS IN THE SAME RUN
 ------------------------------------
@@ -112,6 +128,14 @@ def _env_float(name: str, default: float) -> float:
 # An active generation older than this is not "slow", it is stuck: the job's
 # own timeout-minutes is 30, so anything past 40 is anomalous.
 STALE_MINUTES = _env_float("AI_HEARTBEAT_STALE_MINUTES", 40.0)
+# A run that is in_progress but has reported no step transition for longer than
+# the longest step can legitimately run is stuck, whatever created_at says. The
+# longest legitimate step is the poller's Telegram long poll (--max-minutes 20),
+# so this stays comfortably above it: freezing IS normal during a long poll, and
+# only a freeze longer than a poll can last is evidence. A test reads that
+# window from the real YAML; do not raise this above STALE_MINUTES, or the two
+# rules collapse into one.
+FROZEN_MINUTES = _env_float("AI_HEARTBEAT_FROZEN_MINUTES", 25.0)
 # How long to allow between one generation ending and the next appearing. The
 # relaunch dispatch shows up in seconds, so 3 min is already generous; keeping
 # it small is what lets ONE run sleep it out and re-check.
@@ -149,6 +173,7 @@ def decide_heartbeat(
     runs: list[dict],
     stale_minutes: float = STALE_MINUTES,
     grace_minutes: float = GRACE_MINUTES,
+    frozen_minutes: float = FROZEN_MINUTES,
 ) -> dict:
     """What to do about the pulse: a pure function so it can be tested.
 
@@ -163,33 +188,63 @@ def decide_heartbeat(
 
     if active:
         newest = active[0]
-        started = _parse_ts(newest.get("created_at"))
-        age = (now - started).total_seconds() / 60.0 if started else 0.0
         number = newest.get("run_number")
+        status = newest.get("status")
+        started = _parse_ts(newest.get("created_at"))
+        touched = _parse_ts(newest.get("updated_at")) or started
+        age = (now - started).total_seconds() / 60.0 if started else 0.0
+        frozen = (now - touched).total_seconds() / 60.0 if touched else 0.0
+
+        if status in RUNNING_STATUSES:
+            if frozen >= frozen_minutes and age < stale_minutes:
+                return {
+                    "action": "dispatch", "reason": "hung",
+                    "run_number": number, "age_minutes": round(age, 1),
+                    "frozen_minutes": round(frozen, 1),
+                    "detail": (
+                        f"generation #{number} is in_progress but has reported "
+                        f"no step transition for {frozen:.0f} min "
+                        f"(>= {frozen_minutes:g}) — longer than the Telegram "
+                        f"long poll can hold, so it is stuck, not polling"
+                    ),
+                }
+            if age >= stale_minutes:
+                return {
+                    "action": "dispatch", "reason": "hung",
+                    "run_number": number, "age_minutes": round(age, 1),
+                    "frozen_minutes": round(frozen, 1),
+                    "detail": (
+                        f"generation #{number} has been in_progress for "
+                        f"{age:.0f} min (>= {stale_minutes:g}); a job past its "
+                        f"30-min timeout is orphaned, not slow"
+                    ),
+                }
+            return {
+                "action": "healthy", "reason": "active",
+                "run_number": number, "age_minutes": round(age, 1),
+                "frozen_minutes": round(frozen, 1),
+                "detail": (
+                    f"generation #{number} is {status} "
+                    f"({age:.0f} min old, last step transition "
+                    f"{frozen:.0f} min ago)"
+                ),
+            }
         if age < stale_minutes:
             return {
                 "action": "healthy", "reason": "active",
                 "run_number": number, "age_minutes": round(age, 1),
+                "frozen_minutes": round(frozen, 1),
                 "detail": (
-                    f"generation #{number} is {newest.get('status')} "
+                    f"generation #{number} is {status} "
                     f"({age:.0f} min old)"
-                ),
-            }
-        if newest.get("status") in RUNNING_STATUSES:
-            return {
-                "action": "dispatch", "reason": "hung",
-                "run_number": number, "age_minutes": round(age, 1),
-                "detail": (
-                    f"generation #{number} has been in_progress for {age:.0f} min "
-                    f"(>= {stale_minutes:g}); a job past its 30-min timeout is "
-                    f"orphaned, not slow"
                 ),
             }
         return {
             "action": "alert", "reason": "queued",
             "run_number": number, "age_minutes": round(age, 1),
+            "frozen_minutes": round(frozen, 1),
             "detail": (
-                f"generation #{number} has been {newest.get('status')} for "
+                f"generation #{number} has been {status} for "
                 f"{age:.0f} min — no runner is picking it up. Dispatching again "
                 f"would only stack queued runs"
             ),

@@ -79,6 +79,31 @@ completion event.
   spacing, not a stall: it is what keeps the self-relaunch chain out of a hot
   loop. Do not "fix" it by removing the pad.
 
+### 2.2 A cancelled run can look exactly like a hang (measured)
+
+This was reproduced deliberately on 2026-09-25 (`#1451`, cancelled mid-flight at
+06:59:34Z to prove the repair):
+
+| Time (UTC) | What happened |
+|---|---|
+| 06:59:26 | the cancel lands *during* `pip install`; that step is `cancelled` |
+| 06:59:26 | step 7 "Poll Telegram" → **`skipped`**, it never runs at all |
+| 06:59:26 → **07:03:48** | step 8's anti-tight-loop pad runs to completion — GitHub honours a cancel only *after* an uninterruptible sleep |
+| 07:03:49 | step 10 "Relaunch" → **`skipped`** (the chain loses its link) |
+| 07:03:52 | the **run** finally settles `completed/cancelled` |
+
+For those 4.3 minutes the run was `in_progress` with `updated_at` frozen — the
+exact signature that gets reported as a stall — while its job was already dead
+and its relaunch was never going to happen. `created_at` said nothing about it,
+because the run was only 5 minutes old.
+
+**Consequences, both encoded in the guard:**
+
+* age alone is not enough to call a live-looking generation hung — so a frozen
+  `updated_at` past the longest legitimate step is its own signal (§3.1);
+* a *cancelled* generation is a normal event, not an emergency: the guard is
+  kicked by that completion and repairs it in seconds (§3.2).
+
 ## 3. The guard (`scripts/ai_heartbeat_guard.py`)
 
 Triggered **independently of the chain** by `.github/workflows/ai_heartbeat_guard.yml`
@@ -88,22 +113,40 @@ self-check on the guard itself). It reads the poller's run history and decides:
 | Situation | Action |
 |---|---|
 | an active generation younger than `STALE_MINUTES` | **healthy** — do nothing |
+| active, `in_progress`, no step transition for `FROZEN_MINUTES` (**stuck**) | **dispatch** a fresh generation |
 | active, `in_progress`, older than `STALE_MINUTES` (a **hung** job) | **dispatch** a fresh generation, which also cancels the hung one and frees the concurrency group |
 | active but still `queued`/`pending` past `STALE_MINUTES` | **alert only** — a runner shortage, not a hung job; dispatching would just stack queued runs |
 | nothing active, last run ended more than `GRACE_MINUTES` ago (**dead chain**) | **dispatch** |
 | nothing active, last run ended seconds ago | **wait** — sleep out the remaining grace, then look again (below) |
 
-Thresholds: `STALE_MINUTES = 40`, `GRACE_MINUTES = 3` and
+Thresholds: `STALE_MINUTES = 40`, `FROZEN_MINUTES = 25`, `GRACE_MINUTES = 3` and
 `ALERT_QUIET_MINUTES = 20`, all env-overridable (`AI_HEARTBEAT_STALE_MINUTES`,
-`AI_HEARTBEAT_GRACE_MINUTES`, `AI_HEARTBEAT_ALERT_QUIET_MINUTES`).
+`AI_HEARTBEAT_FROZEN_MINUTES`, `AI_HEARTBEAT_GRACE_MINUTES`,
+`AI_HEARTBEAT_ALERT_QUIET_MINUTES`).
 
 * **40 > the poller job's own `timeout-minutes: 30`.** A job past its timeout is
   orphaned, not slow, so a legitimately long generation can never be mistaken for
   a hung one. (A test asserts this invariant, reading the real YAML.)
+* **25 > the Telegram long poll's own `--max-minutes 20`**, with slack, and
+  `25 < 40` so the two hang signals are genuinely different rules — one about age,
+  one about silence. Both are asserted against the real YAML by
+  `test_frozen_threshold_sits_above_the_pollers_own_poll_window`.
 * **3 > the seconds** a relaunch dispatch takes to appear, by an order of
   magnitude — small precisely so one run can sleep it out.
 
-### 3.1 The grace re-check (why recovery no longer needs a cron)
+A `queued`/`pending` generation is deliberately **not** dispatched at, however
+frozen its `updated_at` is: no runner is available, so a new run would only queue
+behind the same shortage. It alerts (once) instead.
+
+### 3.1 The freeze signal, and why it is not the age signal
+
+`updated_at` freezing is *normal* — that is the long poll at work — so it is only
+evidence when it outlasts what any step can do. In exchange it is
+engine-independent: it names a stuck run whose `created_at` is minutes old, which
+the age rule cannot see until 40 minutes, and it does not rely on the job timeout
+being honoured (see §2.2, where it visibly was not).
+
+### 3.2 The grace re-check (why recovery no longer needs a cron)
 
 The guard is woken by the very event that breaks the chain — poller
 `workflow_run: completed` fires for cancellations too. But at that instant the
@@ -123,7 +166,7 @@ exact hole. A test (`test_killed_generation_is_repaired_without_another_cron`)
 caught that on the first run. Recovery is now bounded by `GRACE_MINUTES` from the
 completion event, not by whether a cron lands.
 
-### 3.2 Alert quieting
+### 3.3 Alert quieting
 
 A runner shortage can leave a generation `queued` for a long time. Alerting on
 every 10-minute check would be six messages an hour — the cry-wolf pattern that
@@ -182,10 +225,15 @@ The same rehearsal, entirely in the cloud (Actions tab, or `gh workflow run`):
 
 ```
 AI Bot Heartbeat Guard -> Run workflow
-  stale_minutes = 1      # classify the live generation as hung
-  dispatch      = true   # force a repair
-  dry_run       = true   # decide and report, change nothing
+  stale_minutes  = 1     # classify the live generation as hung BY AGE
+  frozen_minutes = 10    # ...or as STUCK, if it has been silent that long
+  dispatch       = true  # force a repair
+  dry_run        = true  # decide and report, change nothing
 ```
+
+`frozen_minutes` is the one to use on a live pulse: a generation that is 5 minutes
+into its poll has been silent for 5 minutes, so passing just under that makes the
+real generation the subject of the rehearsal.
 
 `--dry-run` (and `dry_run=true`) decides and reports without dispatching, and
 skips the grace sleep, for a safe first look. `--no-recheck` skips only the
