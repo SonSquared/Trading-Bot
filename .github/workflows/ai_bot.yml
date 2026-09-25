@@ -8,8 +8,11 @@ on:
       - "trading_system/bot/exchange.py"
       - "scripts/start_ai_bot.py"
       - "scripts/ai_bot_gate.py"
+      - "scripts/ai_heartbeat_guard.py"
       - "tests/test_ai_agent.py"
+      - "tests/test_heartbeat_guard.py"
       - ".github/workflows/ai_bot.yml"
+      - ".github/workflows/ai_heartbeat_guard.yml"
   # 6 wakeups/day (00/06/08/14/20/23 UTC). scripts/ai_bot_gate.py is
   # SLOT-BASED: a firing whose slot is already served exits immediately
   # without running a wakeup, so redundant triggers (and the ~20-min
@@ -76,7 +79,7 @@ jobs:
         # pytest is a dev tool, not in requirements.txt (same pattern as bot.yml)
         run: pip install -r requirements.txt pytest
       - name: AI bot tests
-        run: python -m pytest tests/test_ai_agent.py -q
+        run: python -m pytest tests/test_ai_agent.py tests/test_heartbeat_guard.py -q
 
   run-bot:
     if: github.event_name != 'push'

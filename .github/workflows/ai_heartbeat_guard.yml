@@ -1,0 +1,75 @@
+name: AI Bot Heartbeat Guard
+# Independent supervisor for the poller heartbeat.
+#
+# The pulse used to depend on each generation reaching its OWN last step: the
+# relaunch is step 10 of ai_poller.yml, so a generation that is cancelled,
+# killed or whose dispatch call fails ends the chain, and the four "backup"
+# crons in that file only deliver ~25% of their scheduled firings (13 of the
+# last 100 poller runs were `schedule`). Recovery therefore depended on the
+# thing that had just failed.
+#
+# This workflow breaks that dependency. It is triggered independently, touches
+# nothing in the trading path, and does exactly one thing: guarantee that a
+# live poller generation exists (scripts/ai_heartbeat_guard.py).
+#
+# It runs BEFORE any pip/checkout cost beyond a shallow clone — the guard is
+# stdlib-only on purpose, because a recovery path that needs a dependency
+# install can fail for the wrong reason.
+on:
+  push:
+    branches: [main]
+    # Self-check: a change to the guard (or to this file) proves it still runs
+    # against the real pulse. Deliberately narrow so ordinary pushes do not
+    # add guard runs.
+    paths:
+      - "scripts/ai_heartbeat_guard.py"
+      - "tests/test_heartbeat_guard.py"
+      - ".github/workflows/ai_heartbeat_guard.yml"
+  schedule:
+    # Every 10 minutes. Kept as six explicit lines because GitHub thins this
+    # repo's crons badly (see the numbers above) — six chances beat one, and
+    # each firing is a cheap API read when everything is healthy.
+    # Deliberately off the poller's :07/:22/:37/:52 and the bot's :02/:12/:22/…
+    - cron: '4 * * * *'
+    - cron: '14 * * * *'
+    - cron: '24 * * * *'
+    - cron: '34 * * * *'
+    - cron: '44 * * * *'
+    - cron: '54 * * * *'
+  workflow_dispatch:  # manual run; --dry-run is available on the script
+  workflow_run:
+    # Fast path: a generation COMPLETED but its relaunch step failed. That is
+    # the failure the old design could not survive, and it is now detected
+    # within seconds instead of at the next cron.
+    #
+    # One-directional on purpose: the poller does NOT list this workflow, so
+    # there is no mutual kick to spin. A dispatch here makes the next check
+    # see a young active generation, which is what stops any hot loop.
+    workflows:
+      - "AI Bot Telegram Poller"
+    types: [completed]
+
+permissions:
+  contents: read  # checkout, to read the guard script
+  actions: write  # dispatching the replacement poller generation
+
+concurrency:
+  group: ai-heartbeat-guard
+  cancel-in-progress: true  # the newest check is the only one that matters
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure a live poller generation exists
+        # ubuntu-latest ships python3; nothing to install.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
+          AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
+          # Thresholds default to 40/10 min; overridable for a rehearsed
+          # recovery test (see docs/AI_BOT.md).
+        run: python3 -u scripts/ai_heartbeat_guard.py

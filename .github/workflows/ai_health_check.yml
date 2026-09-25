@@ -14,6 +14,10 @@ on:
 
 permissions:
   contents: read
+  # Kicking the heartbeat guard when this patrol alarms (see below). The guard
+  # owns the pulse's thresholds and its repair; this workflow only reports the
+  # pulse's state and gives the guardian one more chance to act.
+  actions: write
 
 jobs:
   health-check:
@@ -116,7 +120,43 @@ jobs:
                 'trigger AI Trading Bot -> Run workflow once manually.';
             }
 
-            await alert('AI BOT HEALTH ALERT', msg);
+            // WHY THIS PATROL READS THE POLLER AT ALL: it used to look only at
+            // the journal, so a dead or live-but-hung poller generation was
+            // invisible here — this alert could not tell you whether the pulse
+            // was the cause. The FACTS go in the alert; the POLICY (when a
+            // generation counts as hung or dead, and what to do about it)
+            // lives in one place, scripts/ai_heartbeat_guard.py.
+            let pulse = 'unknown';
+            try {
+              const pr = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner, repo: context.repo.repo,
+                workflow_id: 'ai_poller.yml', per_page: 1,
+              });
+              const r = pr.data.workflow_runs[0];
+              if (r) {
+                const ageMin = ((Date.now() - new Date(r.created_at)) / 60000).toFixed(0);
+                pulse = '#' + r.run_number + ' ' + r.status +
+                  (r.conclusion ? '/' + r.conclusion : '') +
+                  ', started ' + ageMin + ' min ago';
+              } else {
+                pulse = 'no poller generation has ever run';
+              }
+              console.log('Pulse: ' + pulse);
+            } catch (e) {
+              pulse = 'unreadable (' + e.status + ')';
+            }
+            // Belt and braces: let the guardian decide and repair.
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner, repo: context.repo.repo,
+                workflow_id: 'ai_heartbeat_guard.yml', ref: 'main',
+              });
+              console.log('Kicked the heartbeat guard.');
+            } catch (e) {
+              console.log('Guard kick failed: ' + e.message);
+            }
+
+            await alert('AI BOT HEALTH ALERT', msg + '\n\nPulse: ' + pulse);
 
             // SELF-HEAL WINDOW: the AI Trading Bot chain (workflow_run) is
             // kicked by this patrol's own completion path and by the alert
