@@ -36,7 +36,28 @@ on:
     - cron: '34 * * * *'
     - cron: '44 * * * *'
     - cron: '54 * * * *'
-  workflow_dispatch:  # manual run; --dry-run is available on the script
+  workflow_dispatch:
+    # Manual run. The inputs exist so the RECOVERY PATH can be rehearsed for
+    # real instead of assumed (see docs/AI_BOT_HEARTBEAT.md §5):
+    #   stale_minutes=1  -> the live generation is classified as hung, so a
+    #                       replacement is dispatched and the handoff is
+    #                       observed for real
+    #   dispatch=true    -> force a repair
+    #   dry_run=true     -> decide and report, change nothing
+    # Leaving them blank is the normal production behaviour.
+    inputs:
+      stale_minutes:
+        description: "Rehearsal: override STALE_MINUTES (blank = 40)"
+        required: false
+        default: ""
+      dispatch:
+        description: "Rehearsal: force a repair"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Decide and report only"
+        type: boolean
+        default: false
   workflow_run:
     # Fast path: a generation COMPLETED but its relaunch step failed. That is
     # the failure the old design could not survive, and it is now detected
@@ -65,11 +86,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Ensure a live poller generation exists
-        # ubuntu-latest ships python3; nothing to install.
+        # ubuntu-latest ships python3; nothing to install. Values reach the
+        # script through env, never string-interpolated into the command.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_TELEGRAM_BOT_TOKEN: ${{ secrets.AI_TELEGRAM_BOT_TOKEN }}
           AI_TELEGRAM_CHAT_ID: ${{ secrets.AI_TELEGRAM_CHAT_ID }}
           # Thresholds default to 40/10 min; overridable for a rehearsed
-          # recovery test (see docs/AI_BOT.md).
-        run: python3 -u scripts/ai_heartbeat_guard.py
+          # recovery test (see docs/AI_BOT_HEARTBEAT.md).
+          AI_HEARTBEAT_STALE_MINUTES: ${{ inputs.stale_minutes }}
+          HEARTBEAT_FORCE_DISPATCH: ${{ inputs.dispatch }}
+          HEARTBEAT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ "$HEARTBEAT_FORCE_DISPATCH" = "true" ]; then ARGS="$ARGS --dispatch"; fi
+          if [ "$HEARTBEAT_DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python3 -u scripts/ai_heartbeat_guard.py $ARGS

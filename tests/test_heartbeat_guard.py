@@ -123,6 +123,47 @@ class TestDecideHeartbeat:
         assert json.loads(json.dumps(d, default=str))["action"] == "healthy"
 
 
+class TestThresholdOverrides:
+    """Threshold overrides exist so the recovery path can be rehearsed — so the
+    empty and malformed cases must not be able to cancel a healthy pulse."""
+
+    def test_blank_or_missing_env_uses_the_default(self, monkeypatch):
+        hg = _hg()
+        monkeypatch.setenv("X_THRESH", "")  # GitHub passes "" for unset inputs
+        assert hg._env_float("X_THRESH", 40.0) == 40.0
+        monkeypatch.delenv("X_THRESH")
+        assert hg._env_float("X_THRESH", 40.0) == 40.0
+
+    def test_override_is_honoured(self, monkeypatch):
+        hg = _hg()
+        monkeypatch.setenv("X_THRESH", "7.5")
+        assert hg._env_float("X_THRESH", 40.0) == 7.5
+
+    def test_garbage_warns_and_falls_back(self, monkeypatch, capsys):
+        hg = _hg()
+        monkeypatch.setenv("X_THRESH", "soon")
+        assert hg._env_float("X_THRESH", 40.0) == 40.0
+        assert "not a number" in capsys.readouterr().err
+
+    def test_forced_dispatch_exercises_the_repair_even_when_healthy(
+        self, monkeypatch, capsys
+    ):
+        hg = _hg()
+        monkeypatch.setattr(hg, "REPO", "o/r")
+        monkeypatch.setattr(hg, "TOKEN", "t")
+        monkeypatch.setattr(
+            hg, "list_poller_runs",
+            lambda *a, **k: [_run(1, minutes_ago=1, status="in_progress")],
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(hg, "dispatch_poller", lambda *_: calls.append("x") or True)
+        monkeypatch.setattr(hg, "alert", lambda *_: False)
+        monkeypatch.setattr("sys.argv", ["ai_heartbeat_guard.py", "--dispatch"])
+        assert hg.main() == 0
+        assert calls == ["x"]
+        assert "forcing a repair" in capsys.readouterr().out
+
+
 class TestGuardEntryPoint:
     def test_without_repo_or_token_it_exits_cleanly(self, monkeypatch, capsys):
         hg = _hg()
@@ -257,6 +298,13 @@ class TestHeartbeatWiring:
         hg = _hg()
         timeout = _load("ai_poller.yml")["jobs"]["poll"]["timeout-minutes"]
         assert hg.STALE_MINUTES > timeout
+
+    def test_recovery_path_can_be_rehearsed_from_the_workflow(self):
+        """The inputs are what make §5 of the heartbeat doc runnable, so the
+        recovery path is exercised for real rather than asserted."""
+        on = _load("ai_heartbeat_guard.yml")[True]
+        inputs = on["workflow_dispatch"]["inputs"]
+        assert {"stale_minutes", "dispatch", "dry_run"} <= set(inputs)
 
     def test_health_check_can_see_the_pulse(self):
         """It used to read only the journal, so a dead or hung pulse was

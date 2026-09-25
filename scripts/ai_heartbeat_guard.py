@@ -71,11 +71,31 @@ TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
 POLLER_WORKFLOW = os.environ.get("AI_HEARTBEAT_WORKFLOW", "ai_poller.yml")
 REF = os.environ.get("AI_HEARTBEAT_REF", "main")
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float threshold, defaulting LOUDLY rather than silently.
+
+    GitHub passes an empty string for an unset workflow input, so "" must mean
+    "use the default". Anything unparseable is reported: a wrong threshold is
+    what decides whether a healthy generation gets cancelled.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(
+            f"WARNING: {name}={raw!r} is not a number — using {default:g}",
+            file=sys.stderr,
+        )
+        return default
+
+
 # An active generation older than this is not "slow", it is stuck: the job's
 # own timeout-minutes is 30, so anything past 40 is anomalous.
-STALE_MINUTES = float(os.environ.get("AI_HEARTBEAT_STALE_MINUTES", "40"))
+STALE_MINUTES = _env_float("AI_HEARTBEAT_STALE_MINUTES", 40.0)
 # How long to allow between one generation ending and the next appearing.
-GRACE_MINUTES = float(os.environ.get("AI_HEARTBEAT_GRACE_MINUTES", "10"))
+GRACE_MINUTES = _env_float("AI_HEARTBEAT_GRACE_MINUTES", 10.0)
 LOOKBACK = int(os.environ.get("AI_HEARTBEAT_LOOKBACK", "20"))
 
 # GitHub run statuses that mean "a generation is or will be running".
@@ -267,6 +287,10 @@ def main() -> int:
         help="Decide and report, but dispatch nothing",
     )
     parser.add_argument(
+        "--dispatch", action="store_true",
+        help="Force a dispatch regardless of the decision (rehearsals only)",
+    )
+    parser.add_argument(
         "--json", dest="as_json", action="store_true",
         help="Emit the decision as JSON",
     )
@@ -295,6 +319,14 @@ def main() -> int:
         print(json.dumps(decision, indent=2, default=str))
     else:
         print(f"HEARTBEAT GUARD: {action} ({reason}) — {decision['detail']}")
+
+    if args.dispatch:
+        # Rehearsal: prove the repair path end to end against the live pulse
+        # without having to break anything first. It dispatches exactly what a
+        # real recovery would, so "a new generation actually starts" is
+        # verified rather than asserted.
+        print("(--dispatch: forcing a repair to exercise the real recovery path)")
+        action = "dispatch"
 
     if action in ("healthy", "wait"):
         return 0

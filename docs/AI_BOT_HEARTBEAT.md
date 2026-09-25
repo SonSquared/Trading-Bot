@@ -116,7 +116,18 @@ AI_HEARTBEAT_STALE_MINUTES=1 python3 scripts/ai_heartbeat_guard.py
 #    is cancelled. The pulse is never left down.
 ```
 
-`--dry-run` decides and reports without dispatching, for a safe first look.
+The same rehearsal, entirely in the cloud (Actions tab, or `gh workflow run`):
+
+```
+AI Bot Heartbeat Guard -> Run workflow
+  stale_minutes = 1      # classify the live generation as hung
+  dispatch      = true   # force a repair
+  dry_run       = true   # decide and report, change nothing
+```
+
+`--dry-run` (and `dry_run=true`) decides and reports without dispatching, for a
+safe first look. These inputs exist so the repair is **observed** — a new poller
+generation must actually start — rather than asserted from tests.
 
 ## 6. Residual risks (accepted, and stated)
 
