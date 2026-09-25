@@ -127,8 +127,14 @@ def make_action(**overrides) -> TradeAction:
 
 def make_agent(tmp_path, exchange, engine, mode="paper", config=None):
     cfg = {
-        "bot": {"pairs": ["BTC/USDT:USDT", "ETH/USDT:USDT"], "timeframe": "1h"},
-        "paper": {"starting_equity": 10000.0},
+        # bot.paper_starting_equity is the ONE owner of the account's origin.
+        # (There used to be a top-level "paper": {"starting_equity": ...} here
+        # that the agent never read — a dead key asserting a lie.)
+        "bot": {
+            "pairs": ["BTC/USDT:USDT", "ETH/USDT:USDT"],
+            "timeframe": "1h",
+            "paper_starting_equity": 10000.0,
+        },
         "risk": {
             "max_risk_per_trade_pct": 2.0,
             "max_position_size_pct": 10.0,
@@ -193,7 +199,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action(pair="SOL/USDT:USDT")],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []
         assert any("not in tradable list" in r for r in rejected)
@@ -203,7 +209,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action(confidence=40)],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []
         assert any("confidence" in r for r in rejected)
@@ -213,7 +219,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action(stop_loss_pct=4.0, take_profit_pct=5.0)],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []  # rr = 1.25 < 1.5
         assert any("risk/reward" in r for r in rejected)
@@ -223,7 +229,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action(size_pct=50.0)],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []
         assert any("size" in r for r in rejected)
@@ -234,7 +240,8 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action()],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=positions, snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=positions,
+            snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []
         assert any("max open positions" in r for r in rejected)
@@ -259,7 +266,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action()],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert len(approved) == 1
         assert rejected == []
@@ -269,7 +276,7 @@ class TestValidation:
         approved, rejected = agent._validate_decision(
             TradingDecision(actions=[make_action(side="yolo")],
                             market_outlook="x", risk_assessment="y", reasoning="z"),
-            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False},
+            DEFAULT_STRATEGY, positions=[], snapshot={"trading_halted": False, "equity": 10000.0},
         )
         assert approved == []
         assert any("invalid side" in r for r in rejected)

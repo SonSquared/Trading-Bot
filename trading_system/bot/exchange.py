@@ -13,6 +13,7 @@ import ccxt
 import pandas as pd
 import structlog
 
+from trading_system.bot.venue_limits import DEFAULT_TAKER_FEE_PCT, MarketLimits
 from trading_system.config import ExchangeConfig
 
 logger = structlog.get_logger(__name__)
@@ -373,3 +374,36 @@ class ExchangeInterface:
             return float(info.get("fundingRate", 0))
         except Exception:
             return 0.0
+
+    def get_market_limits(self, pair: str) -> MarketLimits | None:
+        """Venue order bounds (MIN_NOTIONAL / LOT_SIZE) straight from ccxt.
+
+        Returns None when the market isn't loaded — which is the normal case
+        on a geo-blocked runner — so callers must decide explicitly whether to
+        fall back to the builtin table rather than treating "unknown" as
+        "unlimited".
+        """
+        try:
+            market = (self.exchange.markets or {}).get(pair)
+            if not market:
+                return None
+            limits = market.get("limits") or {}
+            min_notional = (limits.get("cost") or {}).get("min")
+            min_amount = (limits.get("amount") or {}).get("min")
+            if min_notional is None or min_amount is None:
+                return None
+            step = (market.get("precision") or {}).get("amount") or min_amount
+            taker = market.get("taker")
+            return MarketLimits(
+                pair=pair,
+                min_notional=float(min_notional),
+                amount_step=float(step),
+                min_amount=float(min_amount),
+                taker_fee_pct=(
+                    float(taker) * 100 if taker else DEFAULT_TAKER_FEE_PCT
+                ),
+                source="exchange",
+            )
+        except Exception as e:
+            logger.warning("market_limits_failed", pair=pair, error=str(e)[:150])
+            return None

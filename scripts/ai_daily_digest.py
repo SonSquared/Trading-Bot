@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 
+from trading_system.bot.account import legacy_scale_notice
 from trading_system.bot.telegram_notifier import TelegramNotifier, clip
 
 # Records the last day whose digest was actually delivered. A SUCCESSFUL
@@ -212,8 +213,14 @@ def summarize_day(
     now: datetime | None = None,
     slots: list[tuple[int, int]] | None = None,
     last_slot_hour: int = LAST_SLOT_HOUR,
+    configured_equity: float | None = None,
 ) -> dict:
-    """Compute the reported day's summary dict from the shared continuity files."""
+    """Compute the reported day's summary dict from the shared continuity files.
+
+    ``configured_equity`` (``bot.paper_starting_equity``) lets the digest flag
+    history recorded at a different account size instead of reporting a $10,000
+    book as if it were the $97 account.
+    """
     now = now or _utc_now()
     slots = list(slots) if slots else list(DEFAULT_SLOTS)
     day = target_day(now, last_slot_hour)
@@ -271,6 +278,9 @@ def summarize_day(
         "outlook": (last or {}).get("market_outlook"),
         "reasoning": (last or {}).get("ai_reasoning"),
         "already_sent": already_sent,
+        "legacy_scale_notice": legacy_scale_notice(
+            ledger.get("start_equity"), configured_equity
+        ),
     }
 
 
@@ -339,6 +349,8 @@ def format_digest(s: dict) -> str:
         "=" * 30,
         head,
     ]
+    if s.get("legacy_scale_notice"):
+        lines.append(f"⚠️ {s['legacy_scale_notice']}")
     if s["errors"]:
         lines.append(f"  Last error: {s['errors'][-1][:140]}")
 
@@ -431,6 +443,7 @@ def main(config: str, dry_run: bool, check_due: bool) -> None:
     data_dir = Path(cfg.get("bot", {}).get("data_dir", "data/ai_bot"))
     slots = _slots_from_config(cfg)
     last_slot_hour = max(h for h, _ in slots)
+    configured_equity = (cfg.get("bot", {}) or {}).get("paper_starting_equity")
 
     if check_due:
         # Used by the workflow's cheap pre-check: no state dir yet simply
@@ -438,7 +451,10 @@ def main(config: str, dry_run: bool, check_due: bool) -> None:
         if not data_dir.exists():
             click.echo("Due: no data dir yet (the scheduled run will report it).")
             return
-        s = summarize_day(data_dir, slots=slots, last_slot_hour=last_slot_hour)
+        s = summarize_day(
+            data_dir, slots=slots, last_slot_hour=last_slot_hour,
+            configured_equity=configured_equity,
+        )
         if s["already_sent"]:
             click.echo(f"Not due: digest for {s['day']} already delivered.")
             sys.exit(CHECK_DUE_ALREADY_SENT)
@@ -448,7 +464,10 @@ def main(config: str, dry_run: bool, check_due: bool) -> None:
     if not data_dir.exists():
         raise click.ClickException(f"No data dir at {data_dir} — run a wakeup first.")
 
-    s = summarize_day(data_dir, slots=slots, last_slot_hour=last_slot_hour)
+    s = summarize_day(
+        data_dir, slots=slots, last_slot_hour=last_slot_hour,
+        configured_equity=configured_equity,
+    )
     msg = format_digest(s)
 
     click.echo(msg)

@@ -291,10 +291,15 @@ class TelegramNotifier:
         ai_notes: list[str],
         open_positions: list[dict],
         perf: dict | None = None,
+        scale_notice: str | None = None,
     ) -> bool:
         """Send the Sunday report: week P&L, rolling performance, AI notes."""
         total_ret = ((equity - start_equity) / start_equity * 100) if start_equity else 0.0
         msg = f"AI BOT WEEKLY REPORT\n{'='*30}\n"
+        # Near the top so the length guard below can never trim it: a scale
+        # warning that gets cut is worse than useless.
+        if scale_notice:
+            msg += f"⚠️ {scale_notice}\n"
         msg += f"Equity: ${equity:,.2f} ({total_ret:+.1f}% all-time)\n"
         msg += f"Week P&L: ${week_pnl:+,.2f} ({week_pnl_pct:+.2f}%)\n"
         if week_trades:

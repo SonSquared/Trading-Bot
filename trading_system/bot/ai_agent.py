@@ -39,20 +39,36 @@ from typing import Any
 
 import structlog
 
+from trading_system.bot.account import (
+    DEFAULT_STARTING_EQUITY,
+    legacy_scale_notice,
+    resolve_starting_equity,
+)
 from trading_system.bot.ai_engine import AIEngine, TradeAction, TradingDecision
 from trading_system.bot.exchange import ExchangeInterface
 from trading_system.bot.market_data import fetch_market_context
 from trading_system.bot.risk_manager import RiskManager
 from trading_system.bot.telegram_notifier import TelegramNotifier
+from trading_system.bot.venue_limits import (
+    MarketLimits,
+    floor_to_step,
+    max_notional_for_risk,
+    min_equity_required,
+    min_legal_notional,
+    order_problems,
+    resolve_limits,
+)
 
 logger = structlog.get_logger(__name__)
 
 VALID_SIDES = {"long", "short", "close"}
 # How a "long"/"short" AI decision maps to an exchange order side.
 ORDER_SIDE = {"long": "buy", "short": "sell"}
-# Paper-trading taker fee per fill, in percent of notional.
+# Paper-trading taker fee per fill, in percent of notional. Matches the venue's
+# public taker rate (Binance USDⓈ-M: 0.05%), so paper fees are not optimistic.
 PAPER_TAKER_FEE_PCT = 0.05
-# Minimum notional per paper/live trade (Binance futures minimum is ~5 USDT).
+# Floor for a paper fill. The VENUE minimum (see venue_limits.py) is usually
+# far larger and always wins; this only stops pathological dust orders.
 MIN_TRADE_USD = 5.0
 
 
@@ -108,7 +124,7 @@ class PaperLedger:
     stateless; the ledger is the shared file that carries the account).
     """
 
-    def __init__(self, path: Path, starting_cash: float = 10000.0,
+    def __init__(self, path: Path, starting_cash: float = DEFAULT_STARTING_EQUITY,
                  taker_fee_pct: float = PAPER_TAKER_FEE_PCT):
         self.path = path
         self.taker_fee_pct = taker_fee_pct
@@ -297,8 +313,11 @@ class AIAgent:
     """Stateless trading agent with shared-file continuity.
 
     Usage:
-        agent = AIAgent(exchange, data_dir="data/ai_bot")
+        agent = AIAgent(exchange, data_dir="data/ai_bot", config=cfg)
         result = agent.run_wakeup()   # one complete cycle
+
+    ``cfg`` must carry ``bot.paper_starting_equity`` — the account's origin has
+    exactly one owner and no fallback (see trading_system/bot/account.py).
     """
 
     def __init__(
@@ -341,11 +360,24 @@ class AIAgent:
         )
         self.risk = risk_manager or self._build_risk_manager()
 
-        starting_cash = float(self.config.get("paper", {}).get("starting_equity", 10000.0))
+        # The account's origin comes from the config and nowhere else. There is
+        # deliberately no fallback: a silent default is how a $10,000 book ran
+        # for a $97 balance without anything failing.
+        self.starting_equity, self.starting_equity_source = resolve_starting_equity(
+            self.config
+        )
         self.ledger = ledger or (
-            PaperLedger(self.data_dir / "paper_ledger.json", starting_cash=starting_cash)
+            PaperLedger(
+                self.data_dir / "paper_ledger.json",
+                starting_cash=self.starting_equity,
+            )
             if mode == "paper" else None
         )
+        # Venue order bounds (MIN_NOTIONAL / LOT_SIZE): from the exchange when
+        # reachable, else the dated builtin table. An order the venue would
+        # refuse must never be treated as fillable, in paper or live.
+        self._limits: dict[str, MarketLimits] = {}
+        self._venue_limits(self.pairs)
 
         if notifier is not None:
             self.notifier = notifier
@@ -381,17 +413,119 @@ class AIAgent:
             max_portfolio_heat_pct=rcfg.get("max_portfolio_heat_pct", 30.0),
         )
 
+    # ----- Venue limits -----
+
+    def _venue_limits(self, pairs: list[str]) -> dict[str, MarketLimits]:
+        """Venue order bounds per pair, looked up once per process.
+
+        Live values are preferred; the dated builtin table covers the pairs it
+        knows when the exchange is unreachable (the cloud runner is geo-blocked
+        from Binance). A pair we know nothing about is left out entirely, and
+        that gap is logged rather than treated as "unlimited".
+        """
+        for pair in pairs:
+            if pair in self._limits:
+                continue
+            fetched = None
+            getter = getattr(self.exchange, "get_market_limits", None)
+            if getter is not None:
+                try:
+                    fetched = getter(pair)
+                except Exception as e:
+                    logger.warning(
+                        "venue_limits_lookup_failed", pair=pair, error=str(e)[:150]
+                    )
+            resolved = resolve_limits(pair, fetched)
+            if resolved is None:
+                logger.warning("venue_limits_unknown", pair=pair)
+                continue
+            self._limits[pair] = resolved
+        return {p: self._limits[p] for p in pairs if p in self._limits}
+
+    def _venue_rejection(
+        self, action: TradeAction, strategy: dict, snapshot: dict
+    ) -> str | None:
+        """Why the venue would refuse this entry, or None if it can accept it.
+
+        The venue floor and the ceiling the account rules allow are compared
+        directly. When the smallest order the exchange accepts is larger than
+        the largest the rules permit, NO legal trade exists at this account
+        size — we say that plainly instead of quietly never trading.
+        """
+        limits = self._limits.get(action.pair)
+        if limits is None:
+            return None  # unknown bounds for this pair (logged at lookup time)
+        equity = float(snapshot.get("equity") or 0.0)
+        if equity <= 0:
+            return f"cannot size {action.pair}: equity unknown"
+        rules = strategy.get("rules", {})
+        risk_pct = float(rules.get("max_risk_per_trade_pct", 2.0))
+        size_pct = float(rules.get("max_position_size_pct", 10.0))
+        heat_pct = float(rules.get("max_portfolio_heat_pct", 30.0))
+        # A single position is bounded by BOTH the per-trade size cap and the
+        # total-exposure cap (it cannot be larger than everything allowed), so
+        # the ceiling is the smaller of them. Quoting only the risk-derived
+        # figure would overstate what can be placed and understate the equity
+        # at which the pair becomes tradable.
+        cap_pct = min(size_pct, heat_pct)
+        floor = min_legal_notional(limits, MIN_TRADE_USD)
+        ceiling = min(
+            max_notional_for_risk(equity, risk_pct, action.stop_loss_pct),
+            equity * cap_pct / 100.0,
+        )
+        if floor > ceiling:
+            min_equity = min_equity_required(
+                floor, risk_pct, action.stop_loss_pct, cap_pct
+            )
+            return (
+                f"venue minimum ${floor:,.2f} for {action.pair} exceeds the "
+                f"${ceiling:,.2f} a position may reach at ${equity:,.2f} equity "
+                f"(risk {risk_pct:g}% of equity per trade, exposure cap "
+                f"{cap_pct:g}% of equity; needs ~${min_equity:,.2f})"
+            )
+        requested = equity * (action.size_pct / 100.0)
+        if requested < floor:
+            return (
+                f"requested ${requested:,.2f} is below the ${floor:,.2f} venue "
+                f"minimum for {action.pair} "
+                f"(ask for at least {floor / equity * 100:.1f}% of equity)"
+            )
+        return None
+
     # ----- Shared file I/O -----
+
+    def _default_strategy(self) -> dict:
+        """DEFAULT_STRATEGY deep-copied, with the config's hard rules applied."""
+        doc = json.loads(json.dumps(DEFAULT_STRATEGY))
+        doc["rules"].update(self.config.get("risk") or {})
+        return doc
+
+    def _with_config_rules(self, strategy: dict) -> dict:
+        """Config ``risk:`` overrides the strategy document's rules.
+
+        Both places owned these rules, so strategy.json silently shadowed the
+        config: the cap in the operator's config was NOT the cap in force (a
+        stale ``max_position_size_pct: 10`` there kept overriding a config of
+        40). The config is the control panel for the HARD limits — the ones
+        the AI cannot override — so it wins. Strategy-level fields (pairs,
+        timeframe, preferences) still come from the strategy document, as does
+        any rule the config does not set.
+        """
+        merged = dict(strategy)
+        rules = dict(strategy.get("rules") or {})
+        rules.update(self.config.get("risk") or {})
+        merged["rules"] = rules
+        return merged
 
     def _read_strategy(self) -> dict:
         """Read the strategy document. Creates the default if missing."""
         data = _read_json(self.strategy_path)
         if isinstance(data, dict) and data.get("pairs"):
-            return data
+            return self._with_config_rules(data)
         if not self.strategy_file_override:
-            self._write_json(self.strategy_path, DEFAULT_STRATEGY)
+            self._write_json(self.strategy_path, self._default_strategy())
             logger.info("default_strategy_written", path=str(self.strategy_path))
-        return json.loads(json.dumps(DEFAULT_STRATEGY))  # deep copy
+        return self._default_strategy()
 
     def _read_progress(self) -> dict:
         data = _read_json(self.progress_path)
@@ -526,6 +660,7 @@ class AIAgent:
 
         return {
             "open_positions": len(positions),
+            "equity": round(equity, 2),
             "portfolio_heat_pct": round(heat_pct, 2),
             "max_heat_pct": max_heat,
             "current_drawdown_pct": round(drawdown_pct, 2),
@@ -562,6 +697,29 @@ class AIAgent:
             f"TRADING HALTED (drawdown limit): "
             f"{'YES — closes only' if snapshot['trading_halted'] else 'No'}",
         ]
+
+        # The venue's floor is a hard rule the AI cannot see from the risk
+        # numbers alone, so state it in the sizing terms the AI reasons in.
+        if self._limits:
+            equity = float(snapshot.get("equity") or 0.0)
+            lines.append("")
+            lines.append(
+                "--- Venue Minimums (the exchange REJECTS any order below "
+                "these — size above them) ---"
+            )
+            for pair in sorted(self._limits):
+                floor = min_legal_notional(self._limits[pair], MIN_TRADE_USD)
+                if equity > 0:
+                    lines.append(
+                        f"  {pair}: min order ${floor:,.2f} "
+                        f"(= {floor / equity * 100:.1f}% of current equity)"
+                    )
+                else:
+                    lines.append(f"  {pair}: min order ${floor:,.2f}")
+            lines.append(
+                "  Leverage changes margin only — risk is notional x stop "
+                "distance and is unaffected by it."
+            )
 
         if progress.get("last_wakeup"):
             lines.append("")
@@ -607,10 +765,18 @@ class AIAgent:
         min_rr = float(rules.get("min_risk_reward_ratio", 1.5))
         max_sl = float(rules.get("stop_loss_max_pct", 5.0))
         max_size = float(rules.get("max_position_size_pct", 10.0))
+        max_risk = float(rules.get("max_risk_per_trade_pct", 2.0))
+        max_heat = float(rules.get("max_portfolio_heat_pct", 30.0))
 
         approved: list[TradeAction] = []
         rejected: list[str] = []
         open_pairs = {p.get("pair") for p in positions}
+        # Heat already committed: the open book plus anything approved earlier
+        # in THIS wakeup. Evaluating the limit once per run let two same-wakeup
+        # entries each pass it and together breach the cap — the defect the main
+        # bot's replay caught (see tests/test_bot_robustness.py), and the AI
+        # path had the same shape.
+        heat_used_pct = float(snapshot.get("portfolio_heat_pct") or 0.0)
 
         for action in decision.actions:
             def reject(reason: str) -> None:
@@ -656,6 +822,31 @@ class AIAgent:
             if action.size_pct <= 0 or action.size_pct > max_size:
                 reject(f"size {action.size_pct}% outside (0, {max_size}%]")
                 continue
+            # The risk cap is enforced DIRECTLY rather than left implied by
+            # "size cap x stop cap": at 40% and a 5% stop they happen to agree
+            # (2%), and a later edit to either number must not be able to raise
+            # the loss one trade can take without this firing.
+            implied_risk_pct = action.size_pct * action.stop_loss_pct / 100.0
+            if implied_risk_pct > max_risk + 1e-9:
+                reject(
+                    f"implied risk {implied_risk_pct:.2f}% of equity "
+                    f"({action.size_pct:g}% position at a {action.stop_loss_pct:g}% "
+                    f"stop) exceeds the {max_risk:g}% cap"
+                )
+                continue
+            projected_heat_pct = heat_used_pct + action.size_pct
+            if projected_heat_pct > max_heat + 1e-9:
+                reject(
+                    f"portfolio heat {projected_heat_pct:.1f}% "
+                    f"(open {heat_used_pct:.1f}% + this {action.size_pct:g}%) would "
+                    f"exceed the {max_heat:g}% exposure cap"
+                )
+                continue
+            venue_reason = self._venue_rejection(action, strategy, snapshot)
+            if venue_reason:
+                reject(venue_reason)
+                continue
+            heat_used_pct = projected_heat_pct
             approved.append(action)
 
         return approved, rejected
@@ -666,13 +857,34 @@ class AIAgent:
                       prices: dict[str, float]) -> dict | None:
         pair, order_side = action.pair, ORDER_SIDE[action.side]
         size_usd = equity * (action.size_pct / 100)
-        if size_usd < MIN_TRADE_USD:
-            logger.info("trade_too_small", pair=pair, size_usd=round(size_usd, 2))
-            return None
 
         price = prices.get(pair, 0)
         if price <= 0:
             logger.error("trade_no_price", pair=pair)
+            return None
+
+        # Quantise to the venue's lot step and refuse anything it would
+        # reject. The check runs on the notional the exchange would actually
+        # see: step rounding shaves value off, so sizing at exactly the
+        # minimum is not enough to be legal.
+        limits = self._limits.get(pair)
+        qty = size_usd / price
+        if limits is not None:
+            qty = floor_to_step(qty, limits.amount_step)
+            size_usd = qty * price
+            problems = order_problems(limits, size_usd, qty)
+            if problems:
+                # Validation normally rejects this first with a reason the
+                # journal and the digest can show; this is the backstop that
+                # stops an unplaceable order being reported as a fill.
+                logger.error(
+                    "order_below_venue_minimum", pair=pair,
+                    size_usd=round(size_usd, 2), problems=problems,
+                )
+                return None
+
+        if size_usd < MIN_TRADE_USD:
+            logger.info("trade_too_small", pair=pair, size_usd=round(size_usd, 2))
             return None
 
         if self.mode == "dry_run":
@@ -712,17 +924,19 @@ class AIAgent:
             return trade
 
         if self.mode == "live":
-            order = self.exchange.place_market_order(pair, order_side, size_usd / price)
+            # One quantised quantity for the entry and both triggers: they must
+            # reduce exactly the position that was opened.
+            order = self.exchange.place_market_order(pair, order_side, qty)
             if not order:
                 logger.error("order_failed", pair=pair, side=order_side)
                 return None
             # Protective trigger orders — an AI position never sits naked.
             sl_placed = self.exchange.place_stop_market_order(
-                pair, order_side, size_usd / price,
+                pair, order_side, qty,
                 self._trigger_price(price, action.stop_loss_pct, action.side, is_stop=True),
             )
             tp_placed = self.exchange.place_take_profit_market_order(
-                pair, order_side, size_usd / price,
+                pair, order_side, qty,
                 self._trigger_price(price, action.take_profit_pct, action.side, is_stop=False),
             )
             if not sl_placed or not tp_placed:
@@ -734,6 +948,8 @@ class AIAgent:
                 "pair": pair, "side": action.side,
                 "price": order.get("average_price", price),
                 "size_usd": round(size_usd, 2),
+                "amount": qty,
+                "venue_min_notional": limits.min_notional if limits else None,
                 "order_id": order.get("order_id"),
                 "stop_loss_order": sl_placed.get("order_id") if sl_placed else None,
                 "take_profit_order": tp_placed.get("order_id") if tp_placed else None,
@@ -889,6 +1105,23 @@ class AIAgent:
         pairs = list(strategy.get("pairs", self.pairs))
         progress = self._read_progress()
 
+        # Pairs can come from strategy.json rather than the config, so refresh
+        # the venue table for whatever is actually tradable this wakeup.
+        self._venue_limits(pairs)
+        # History recorded at a different account size is labelled, never
+        # rewritten: its P&L and drawdown describe a different account.
+        ledger_origin = (
+            self.ledger.data.get("start_equity") if self.ledger is not None else None
+        )
+        scale_notice = legacy_scale_notice(ledger_origin, self.starting_equity)
+        if scale_notice:
+            logger.warning(
+                "account_scale_mismatch",
+                notice=scale_notice,
+                ledger_start_equity=ledger_origin,
+                configured_start_equity=self.starting_equity,
+            )
+
         try:
             # 1. Paper SL/TP triggers first — protect existing positions.
             closed_triggers = self.process_triggers(pairs)
@@ -1012,6 +1245,16 @@ class AIAgent:
                 "timestamp": _utc_now_iso(),
                 "mode": self.mode,
                 "status": "success",
+                "account_scale": {
+                    "start_equity": ledger_origin,
+                    "configured_start_equity": self.starting_equity,
+                    "config_key": self.starting_equity_source,
+                    "notice": scale_notice,
+                },
+                "venue_limits": {
+                    pair: lim.as_dict()
+                    for pair, lim in sorted(self._limits.items())
+                },
                 "market_outlook": decision.market_outlook,
                 "risk_assessment": decision.risk_assessment,
                 "ai_reasoning": decision.reasoning,

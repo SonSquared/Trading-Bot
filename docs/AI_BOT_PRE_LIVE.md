@@ -38,7 +38,7 @@ with a separate `data_dir` (see RED-4).
 | G4 | Hard validation before ANY order; the AI cannot override: pair whitelist, min confidence, SL bounds, risk/reward ≥ 1.5, size cap, max positions, no duplicate pair, drawdown halt | `_approve_actions` |
 | G5 | Drawdown halt works in live too: peak equity persists in `progress.json` and is re-read each wakeup; ≥10% DD → entries rejected, closes only | `_risk_snapshot` + `next_progress` |
 | G6 | Nothing fails silently: every error path journals `status: "error"` and fires the ⚠️ Telegram alert | `run_wakeup` except-block |
-| G7 | AI decisions are bounded: 2% risk/trade, 10% max position, whitelist-only pairs | `configs/ai_bot.yaml` → `risk:` |
+| G7 | AI decisions are bounded: 2% risk/trade (enforced directly), 30% max position, ≤30% total exposure, whitelist-only pairs | `configs/ai_bot.yaml` → `risk:`; enforced in `AIAgent._validate_decision` |
 | G8 | Alerting layers independent of the trader: watchdog (hourly), daily digest (23:50 UTC), always-on poller | `ai_health_check.yml`, `ai_daily_digest.yml`, `ai_poller.yml` |
 
 ---
@@ -118,7 +118,7 @@ drawdown 0.18%, 0 failed wakeups, ~50 decisions, equity $10,079.75.**
 | G10 | The watchdog actually catches silent death | It paged during the real 09-13 model outage, and the digest independently named the dropped 08:00 slot on 09-20 instead of showing a green tick |
 | G11 | Model-retirement resilience | Google retired every pinned flash name (404) and the engine now discovers the live model from the API — **0 model failures in the last 6 days** |
 | G12 | Money math is net of both fees | +6.27% / +3.84% / +4.47% wins and a −1.72% stop-out all reproduce from the ledger to the cent; a −1.72% alert and its $ figure describe the same thing |
-| G13 | The AI does trade, and respects its box | 4 entries / ~50 decisions (8%), every one inside the 2% risk / 10% size / R:R≥1.5 rules; 3 take-profits and 1 exchange-style stop trigger |
+| G13 | The AI does trade, and respects its box | 4 entries / ~50 decisions (8%), every one inside the 2% risk / R:R≥1.5 rules and the 10% size cap then in force (now 30% — see R8); 3 take-profits and 1 exchange-style stop trigger |
 
 G1–G8 stand unchanged (the decision layer held: no rule was ever bypassed in
 production).
@@ -170,3 +170,66 @@ the three that can lose money silently. The next real milestone is not more
 paper weeks — it is the **Testnet rehearsal**, which is the only thing that can
 close R2 and prove R1/R3 are dead. Paper continues meanwhile; it needs ~26 more
 closed trades and ~3 more weeks to satisfy the gate above.
+
+---
+
+# Re-review — 2026-09-25 (account scale and venue legality)
+
+**A different question, asked properly this time.** The 09-13 and 09-22 reviews
+audited the *execution* path. Neither asked whether the account could place an
+order **at all**, and that turned out to be the load-bearing question. Totals at
+review time: **6 closed trades, 3 wins (50%), +$49.02 net (+0.49%), equity
+$10,048.52 — on a $10,000 book.**
+
+## What was wrong
+
+| # | Blocker | Finding |
+|---|---|---|
+| R8 | **The paper account was 103x the user's real capital, and no order the bot could size was legal at the real size** | `configs/ai_bot.yaml` said `paper_starting_equity: 10000`, but `ai_agent.py` read `config["paper"]["starting_equity"]` — a key no config ever had — and silently defaulted to 10000. The configured value was dead code, so a $10,000 book ran for a $97 balance and *nothing failed*. Worse: at $97 the flat `max_position_size_pct: 10` allowed $9.70, under Binance's $20 (ETH) / $50 (BTC) `MIN_NOTIONAL`, so **every** order the bot could size would have been rejected by the venue. Paper fills have no venue, so the simulation reported all of this as a normal, profitable strategy. **Closed 2026-09-25** — and a hostile re-review of the fix found two further holes, both now shut: the size cap was still *unreachable* above 30% because total exposure caps a single position (so 40 was a number that could never be used, and heat was displayed but never enforced on entries), and the feasibility projection quietly computed its expectancy from the 2% risk cap on a position that can only risk 1.5% — overstating a typical month by a third. The caps now bind, the number shipped is the one that binds, and the projection uses the risk the described trade actually takes |
+
+Both halves were invisible to the earlier reviews: this document contained
+**zero** mentions of "notional", "minimum", "step size", "$97" or "10000".
+G1–G13 verified the bot would behave correctly *if* it could trade; nothing
+verified that it could.
+
+## What changed (2026-09-25)
+
+- **The config owns the account's scale.** `bot.paper_starting_equity: 97` is read
+  directly; a missing key raises instead of inventing an account
+  (`trading_system/bot/account.py`).
+- **Venue limits are enforced in paper and live**
+  (`trading_system/bot/venue_limits.py`, `ExchangeInterface.get_market_limits`).
+  An order below `MIN_NOTIONAL` *after* lot-step rounding is refused and journaled
+  with the arithmetic, instead of being reported as a fill.
+- **`max_position_size_pct` is derived, not hand-picked**: the risk rules allow
+  `2/5 × 100 = 40%`, the total-exposure cap allows 30%, and 30% is what ships —
+  because a single position cannot exceed total exposure either. **Both caps are now
+  enforced on every entry**, including positions already open and entries approved
+  earlier in the same wakeup, and the 2% risk cap is checked directly as
+  `size% × stop%` so it cannot drift when an adjacent number is edited. What binds
+  at $97 is the exposure cap (a $29.10 position at a 5% stop risks 1.5%, inside the
+  2% cap), and that is stated rather than implied.
+- **The config's `risk:` rules now win over `strategy.json`**, which carried its own
+  copy of every rule and silently shadowed the config.
+- **Live order amounts are quantised** to the venue's lot step and the same quantity
+  is used for the entry and both protective orders (this closes R2's "amounts are
+  unrounded" evidence gap; R2's "zero real runs" half stands).
+- **Legacy history is labelled, never rewritten**: a ledger seeded at $10,000
+  reported against a $97 config prints `LEGACY SCALE ...` in the journal, the daily
+  digest and the weekly report.
+- `scripts/ai_venue_check.py` answers the question from live filters on demand.
+
+## What this does NOT change
+
+R1–R7 are **unchanged and still open**. At $97 only **ETH** clears the floor; BTC
+needs ~$166.67 of equity, so BTC entries are refused with that reason. The achievable
+scale is single-digit dollars per month, and the sample is still 6 trades — nothing
+here is evidence of a profitable edge, only that the account can now place a legal
+order and that its numbers are finally about the right account.
+
+## Go-live gate (2026-09-25 additions)
+
+- [ ] R1–**R8** all closed
+- [ ] `scripts/ai_venue_check.py` reports at least one tradable pair at the live equity
+- [ ] Live equity is the real balance and `bot.paper_starting_equity` matches it
+- [ ] Everything in the 2026-09-22 gate still applies

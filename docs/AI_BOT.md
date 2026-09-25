@@ -29,12 +29,14 @@ The AI never has memory between wakeups. Continuity lives entirely in shared fil
 |---|---|---|
 | Tradable pairs | BTC, ETH perps | Anything outside the list is **rejected**, even if the AI asks |
 | Max open positions | 3 | 4th entry rejected |
-| Max position size | 10% of equity | Oversized entry rejected |
+| Max position size | 30% of equity — **derived** | Oversized entry rejected. The risk rules alone would allow `max_risk_per_trade_pct / stop_loss_max_pct * 100 = 40`, but a single position cannot exceed the total-exposure cap, so the smaller number is what ships and what binds |
+| Venue minimum order | Binance `MIN_NOTIONAL` after lot-step rounding | Orders the exchange would reject are **refused and journaled**, in paper as well as live (see *Account scale and venue minimums*) |
 | Stop-loss | ≤ 5% away, always | Entries without valid SL rejected |
 | Risk/reward | ≥ 1.5 | 3% SL needs ≥ 4.5% TP |
 | Min confidence | 60 | Low-confidence trades dropped |
 | Max drawdown | 10% from peak | **Trading halts** — closes only |
-| Portfolio heat | ≤ 30% of equity | Total exposure cap |
+| Portfolio heat | ≤ 30% of equity | Total exposure (notional) cap, **enforced on every entry** — re-checked per entry including positions already open and anything approved earlier in the same wakeup |
+| Risk per trade | ≤ 2% of equity | Enforced **directly** as `size% × stop%`, not left implied by the size and stop caps agreeing |
 
 ---
 
@@ -55,7 +57,7 @@ python scripts/start_ai_bot.py once
 python scripts/start_ai_bot.py journal
 ```
 
-The first wakeup creates `data/ai_bot/strategy.json` (the AI's rulebook), starts a **$10,000 paper account**, fetches real BTC/ETH data from Binance, and asks the model for a decision. Every action and rejection is journaled.
+The first wakeup creates `data/ai_bot/strategy.json` (the AI's rulebook), starts a paper account at `bot.paper_starting_equity` (**$97** — the account size comes from that one config key and nowhere else), fetches real BTC/ETH data from Binance, and asks the model for a decision. Every action and rejection is journaled.
 
 ---
 
@@ -67,6 +69,7 @@ python scripts/start_ai_bot.py run           Continuous schedule (Ctrl+C to stop
 python scripts/start_ai_bot.py next          Wait for & run the next scheduled wakeup
 python scripts/start_ai_bot.py status        Equity, positions, win rate, last handoff
 python scripts/start_ai_bot.py journal [N]   Show the last N wakeup decisions
+python scripts/ai_venue_check.py             What this account size can legally trade
 ```
 
 Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yaml`).
@@ -81,7 +84,7 @@ Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yam
 | `bot.pairs` | BTC, ETH | The ONLY pairs the AI may trade |
 | `bot.timeframe` | `1h` | Candle timeframe for analysis |
 | `bot.data_dir` | `data/ai_bot` | Continuity files directory |
-| `bot.paper_starting_equity` | `10000` | Paper account start |
+| `bot.paper_starting_equity` | `97` | Paper account start — the **only** owner of the account's scale (see below). Required: a missing key is an error, not a default |
 | `bot.sandbox` | `false` | `true` = Binance **testnet** rehearsal (keys: `BINANCE_TESTNET_*`) |
 | `bot.tz_offset_hours` | `0` | Local offset from UTC for schedule times |
 | `ai.model` | `gemini-flash-latest` | FREE tier. The alias tracks the newest Gemini flash, so pinning never goes stale. Any Gemini or OpenAI model works |
@@ -94,7 +97,7 @@ Named wakeups: `once us_open`, `once daily_close`, etc. (see `configs/ai_bot.yam
 
 | File | What it is |
 |---|---|
-| `strategy.json` | The AI's rulebook — edit rules here to change behavior |
+| `strategy.json` | The AI's rulebook — strategy-level fields (pairs, preferences). Rules in the config's `risk:` section override the copy here |
 | `progress.json` | Handoff notes the next wakeup reads first |
 | `journal.jsonl` | **The audit trail** — one entry per wakeup, success or failure |
 | `decisions.json` | The latest raw AI decision (what it wanted to do) |
@@ -119,9 +122,75 @@ Reading a journal entry:
 
 ---
 
+## Account scale and venue minimums
+
+The account starts at **$97** — the user's real capital. `bot.paper_starting_equity`
+in `configs/ai_bot.yaml` is the **only** place that number lives: the agent reads it
+directly and raises if it is missing, with no fallback. (There used to be one: the
+agent looked for a `paper.starting_equity` key no config ever had and silently
+defaulted to `10000`, so a $10,000 book ran for a $97 balance and nothing ever
+failed. That is the failure mode this section exists to prevent.)
+
+An existing ledger keeps the origin it was created with — **history is never
+rewritten**. When the ledger's origin and the configured account disagree, the
+journal, the daily digest and the weekly report label the history `LEGACY SCALE`
+so old and current figures are never quietly mixed into one number.
+
+**The exchange's minimum order size, not the strategy, decides what is tradeable at
+the bottom of the account.** `python scripts/ai_venue_check.py` prints this from the
+venue's own filters (falling back to a dated builtin table when the venue is
+unreachable, always saying which it used):
+
+| Pair | MIN_NOTIONAL | qty step | Tradeable at $97? |
+|---|---|---|---|
+| `BTC/USDT:USDT` | 50 USDT | 0.001 | **No** — a position may reach at most $29.10, and BTC needs ~$166.67 of equity |
+| `ETH/USDT:USDT` | 20 USDT | 0.001 | **Yes** — legal orders run $20.00–$29.10 |
+
+The size cap is **derived**, not picked by hand. Two rules bound a single position:
+
+| Rule | Allows |
+|---|---|
+| Risk per trade | `max_risk_per_trade_pct / stop_loss_max_pct * 100` = 2/5 × 100 = **40%** |
+| Total exposure | `max_portfolio_heat_pct` = **30%** |
+
+so the smaller, **30%**, is what ships — quoting 40 would name a size no position can
+hold. The old flat 10% was a third, arbitrary cap unrelated to either rule: at $97 it
+permitted $9.70, under ETH's $20 minimum, so *no order the bot could size was legal at
+all*.
+
+The 2% risk cap is the outer bound on loss and is enforced **directly**
+(`size% × stop%`), so no future edit to either adjacent number can raise it by
+default. Be precise about what binds at this size, though: at the 30% cap and a 5%
+stop a trade risks **1.5%** of equity ($1.46), because the exposure cap stops the
+position before the risk cap does. Both are enforced; the exposure cap is the one
+that bites here, and the per-trade loss stays under 2% either way.
+
+Orders below the venue floor are refused in **paper mode too**: a simulated fill of
+an order the exchange would reject is a lie, and it is exactly how the $9.70 problem
+stayed invisible for weeks. The refusal is journaled with the arithmetic, and the
+floor is stated to the AI in the risk context so it can size correctly:
+
+```
+BTC/USDT:USDT long: venue minimum $50.00 for BTC/USDT:USDT exceeds the $29.10 a
+  position may reach at $97.00 equity (risk 2% of equity per trade, exposure cap
+  30% of equity; needs ~$166.67)
+```
+
+**What a $97 month actually looks like.** Sizing every trade to the $29.10 cap, at
+~20 trades/month, a 50% win rate and R:R 1.5, a trade risks **$1.46**, a win nets
+**$2.15** and a loss costs **$1.48** (fees included) — expectancy about **+$0.33 per
+trade → roughly $6.70/month (+6.9% of equity)**: single-digit dollars. Fees are
+$0.0291 per round trip on a $29.10 order, which is 2% of the amount risked. A smaller
+position scales every figure down proportionally. That is arithmetic on the rules,
+**not a forecast** — the realized sample is a handful of trades, far too small to
+estimate a win rate, and the same rules can give it back. Run
+`scripts/ai_venue_check.py` for the current numbers at the current price.
+
+---
+
 ## Paper vs live
 
-**Paper mode** (default): simulated fills with 0.05% taker fees, SL/TP triggers checked against real prices on every wakeup, real equity tracking. The AI sees honest P&L.
+**Paper mode** (default): simulated fills with 0.05% taker fees, SL/TP triggers checked against real prices on every wakeup, real equity tracking — and the same venue-minimum refusal as live, so a paper fill always represents an order the exchange would have accepted. The AI sees honest P&L.
 
 **Live mode** requires three things, deliberately:
 1. `bot.mode: live` in the config

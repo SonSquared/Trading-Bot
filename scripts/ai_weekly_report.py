@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click
 
+from trading_system.bot.account import legacy_scale_notice
 from trading_system.bot.perf_stats import build_perf, summarize
 from trading_system.bot.telegram_notifier import TelegramNotifier, clip
 
@@ -82,8 +83,15 @@ def _parse_ts(value: str | None) -> datetime | None:
         return None
 
 
-def build_report(data_dir: Path, days: int = 7) -> dict:
-    """Compute the weekly summary dict from the shared files."""
+def build_report(
+    data_dir: Path, days: int = 7, configured_equity: float | None = None
+) -> dict:
+    """Compute the weekly summary dict from the shared files.
+
+    ``configured_equity`` (``bot.paper_starting_equity``) is compared with the
+    ledger's own origin: when they differ, the history pre-dates a change of
+    account size and is labelled rather than mixed in with the current scale.
+    """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
 
@@ -167,6 +175,10 @@ def build_report(data_dir: Path, days: int = 7) -> dict:
         "perf": perf,
         "equity": equity,
         "start_equity": start_equity,
+        "configured_equity": configured_equity,
+        "legacy_scale_notice": legacy_scale_notice(
+            ledger.get("start_equity"), configured_equity
+        ),
         "week_pnl": week_pnl,
         "week_pnl_pct": (week_pnl / start_equity * 100) if start_equity else 0.0,
         "week_trades": len(week_trades),
@@ -211,11 +223,14 @@ def main(config: str, dry_run: bool, days: int) -> None:
     if not data_dir.exists():
         raise click.ClickException(f"No data dir at {data_dir} — run a wakeup first.")
 
-    r = build_report(data_dir, days=days)
+    configured_equity = (cfg.get("bot", {}) or {}).get("paper_starting_equity")
+    r = build_report(data_dir, days=days, configured_equity=configured_equity)
 
     # Always show the report on stdout so --dry-run (and CI logs) are useful.
     wr = (r["week_wins"] / r["week_trades"] * 100) if r["week_trades"] else 0.0
     click.echo(f"AI BOT WEEKLY REPORT ({days}d lookback)")
+    if r["legacy_scale_notice"]:
+        click.echo(f"  ⚠ {r['legacy_scale_notice']}")
     click.echo(f"  Equity:        ${r['equity']:,.2f}")
     click.echo(f"  Week P&L:      ${r['week_pnl']:+,.2f} ({r['week_pnl_pct']:+.2f}%)")
     click.echo(f"  Closed trades: {r['week_trades']} | Wins: {r['week_wins']} ({wr:.0f}%)")
@@ -266,6 +281,7 @@ def main(config: str, dry_run: bool, days: int) -> None:
         ai_notes=r["ai_notes"],
         open_positions=r["open_positions"],
         perf=r["perf"],
+        scale_notice=r["legacy_scale_notice"],
     )
 
     if not sent:
