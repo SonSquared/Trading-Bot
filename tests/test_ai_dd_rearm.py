@@ -325,6 +325,82 @@ class TestTheHaltReleasesOnTheProductionPath:
         why = rejections(agent.data_dir / "journal.jsonl", last_wakeup_only=True)
         assert any("trading halted" in r and "flat until" in r for r in why), why
 
+    def test_the_rearm_does_not_wait_for_an_open_position(self, tmp_path):
+        """The re-arm is book-agnostic BY DESIGN, and heat is what bounds it.
+
+        This halt blocks entries and never force-closes (a force-close is a
+        separate risk decision), so requiring a flat book would hand the length
+        of the halt to however long an unrelated position happens to live. The
+        sibling bot can wait for flat because its drawdown stop CLOSES the book
+        first. Pinned so the rule cannot silently become "wait for flat": the
+        re-arm lands with the position still open, and the exposure cap — which
+        counts that position — is what refuses the next entry.
+        """
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock,
+                             ScriptedEngine(eth_entry(size_pct=25.0)))
+        # A position from before the halt. BTC's $50 floor means it was opened
+        # when the account was at least $166.67; here it is half of equity.
+        agent.ledger.open_position(OTHER, "buy", 60000.0, 50.0, 5.0, 7.5)
+        assert len(agent.ledger.open_positions_list()) == 1
+
+        agent.run_wakeup()                         # 1. the halt engages
+        assert all("trading halted" in r
+                   for r in rejections(agent.data_dir / "journal.jsonl"))
+        assert len(agent.ledger.open_positions_list()) == 1
+
+        clock.advance(24)                          # 2. the cool-off is served
+        agent.run_wakeup()
+        progress = json.loads((agent.data_dir / "progress.json").read_text())
+        assert progress["dd_cooldown_until"] is None
+        assert progress["dd_rearm_count"] == 1
+        assert progress["peak_equity"] < PEAK, "the baseline must have moved"
+        # The position was still open when the re-arm landed...
+        assert len(agent.ledger.open_positions_list()) == 1
+        why = rejections(agent.data_dir / "journal.jsonl", last_wakeup_only=True)
+        assert not any("trading halted" in r for r in why), why
+        # ...and the exposure cap, which counts it, refused the new entry.
+        assert any("portfolio heat" in r for r in why), why
+
+    def test_the_journal_reports_the_state_the_decisions_were_made_under(
+            self, tmp_path):
+        """A wakeup that BOUGHT must not be journaled as halted.
+
+        The halt is evaluated twice per wakeup — before the decision, and again
+        after execution, because a fill moves equity. Journaling the
+        post-execution snapshot meant an entry's own fee could push the account
+        a fraction over the line and the record then read "halted": true for a
+        wakeup that had just bought. The journal carries the decision-time state
+        now, and the engagement still governs the next wakeup.
+        """
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock,
+                             ScriptedEngine(eth_entry(size_pct=25.0)))
+        # $100 of cash against an $111.11 baseline is 9.999% — inside the limit
+        # by a cent. The entry's fee (~$0.012) lands equity at 10.01%, outside.
+        agent.ledger.data["peak_equity"] = 111.11
+        agent.ledger._save()
+
+        agent.run_wakeup()
+
+        # Premises: the wakeup really traded, and the halt really engaged.
+        assert len(agent.ledger.open_positions_list()) == 1
+        progress = json.loads((agent.data_dir / "progress.json").read_text())
+        assert progress["dd_cooldown_until"] is not None
+
+        last = json.loads(
+            (agent.data_dir / "journal.jsonl").read_text().strip().splitlines()[-1])
+        assert last["drawdown_halt"]["halted"] is False
+        assert last["drawdown_halt"]["cooldown_until"] is None
+        assert not [r for r in (last.get("rejections") or [])
+                    if "trading halted" in r]
+
+        # ...and the engagement governs the NEXT wakeup, as promised.
+        clock.advance(4)
+        agent.run_wakeup()
+        why = rejections(agent.data_dir / "journal.jsonl", last_wakeup_only=True)
+        assert any("trading halted" in r for r in why), why
+
     def test_the_live_peak_tracks_new_highs_and_still_trips(self, tmp_path):
         """The halt's baseline must be a high-water mark in BOTH modes.
 

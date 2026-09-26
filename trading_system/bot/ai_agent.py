@@ -814,6 +814,19 @@ class AIAgent:
             never ends it: the window rolls over, and a recovery inside the
             limit still releases, so this can never deadlock.
 
+        The re-arm is deliberately BOOK-AGNOSTIC: it does not wait for the
+        position that was open when the halt engaged to close. This halt blocks
+        entries and never force-closes (a force-close is a separate risk
+        decision, and this bot does not make it), so requiring a flat book would
+        hand the length of the halt to however long that position happens to
+        live. What bounds a re-arm with exposure still open is the heat cap,
+        which counts the open position's notional against the same 30%: a
+        full-size position (30% of equity) leaves no room for another entry at
+        all, and a smaller one leaves only the remainder. (The sibling bot in
+        ``scripts/paper_trader.py`` can require a flat book because its drawdown
+        stop CLOSES the book first; this halt has no closing branch, so it has
+        nothing to wait for.)
+
         The risk and exposure caps are not touched by any branch. What limits
         a halt that can release is the cooldown (a flat period SERVED before
         any release), the budget (at most ``limit`` fresh 10% drawdowns per
@@ -944,7 +957,8 @@ class AIAgent:
             f"  Max drawdown: {rules.get('max_drawdown_pct', 10)}% (entries stop at this "
             f"level and stay flat for {rules.get('dd_cooldown_hours', 24)}h; after that "
             "they resume from a re-armed baseline, or on their own if the account "
-            "is back inside the limit)",
+            "is back inside the limit — an open position does not delay the re-arm, "
+            "but it keeps counting against the exposure cap)",
             f"  Drawdown re-arm budget: {rules.get('dd_rearm_limit', 2)} per "
             f"{rules.get('dd_rearm_window_days', 30)} days",
             f"  Max stop-loss distance: {rules.get('stop_loss_max_pct', 5)}%",
@@ -1699,6 +1713,22 @@ class AIAgent:
             strategy_context = self._build_strategy_context(strategy)
 
             snapshot = self._risk_snapshot(strategy, progress, equity, positions)
+            # The halt state that GOVERNS this wakeup's decisions, captured
+            # before anything executes. The halt is evaluated a second time after
+            # execution (a fill moves equity, so that state can differ), and the
+            # journal must describe the state the entries were decided under, not
+            # the one after them: measured, a fill's fee can move equity across
+            # the line and the journal then said "halted": true for a wakeup that
+            # bought. An engagement after execution shows up in the next
+            # wakeup's block, which is when it actually starts blocking.
+            decision_halt = {
+                "halted": snapshot["trading_halted"],
+                "drawdown_pct": snapshot["current_drawdown_pct"],
+                "peak_equity": round(snapshot["peak_equity"], 2),
+                "cooldown_until": snapshot.get("dd_cooldown_until"),
+                "rearms_used": snapshot.get("dd_rearm_count"),
+                "rearmed_this_wakeup": snapshot.get("dd_rearmed"),
+            }
             risk_context = self._build_risk_context(strategy, snapshot, progress)
 
             # 4. AI decision
@@ -1838,14 +1868,9 @@ class AIAgent:
                 "closed_triggers": result["closed_triggers"],
                 # The halt's lifecycle, so a paused account is visible in the
                 # audit trail rather than inferred from a wall of rejections.
-                "drawdown_halt": {
-                    "halted": snapshot["trading_halted"],
-                    "drawdown_pct": snapshot["current_drawdown_pct"],
-                    "peak_equity": round(snapshot["peak_equity"], 2),
-                    "cooldown_until": snapshot.get("dd_cooldown_until"),
-                    "rearms_used": snapshot.get("dd_rearm_count"),
-                    "rearmed_this_wakeup": snapshot.get("dd_rearmed"),
-                },
+                # The DECISION-time state (step 3), i.e. what the entries in
+                # this same record were approved or refused under.
+                "drawdown_halt": decision_halt,
                 "equity": round(equity, 2),
                 "errors": result["errors"],
             })

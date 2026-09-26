@@ -44,7 +44,7 @@ verdict) are computed from the config and the venue helpers at run time.
 | Are the caps, fees, stops and halt enforced on every entry? | **Yes** — checked on each executed entry, not assumed |
 | Is there look-ahead in the replay? | **No violations over the whole span** — counted, not promised |
 | Does it reproduce? | **Byte-identical** — same command, same SHA-256 |
-| Does the halt still end the experiment? | **No** — 153 halts, 153 ended, entries resume after each |
+| Does the halt still end the experiment? | **No** — 153 halts across the six runs, 153 ended; 38 of the 40 continuous-window episodes are followed by an entry, and the 2 that are not are venue-floor cases, not halts |
 | What ends an account at $97, then? | **The venue floor** — below $66.67 no legal size exists |
 | Were the caps weakened to allow re-entry? | **No** — risk, exposure, stop and venue all still bind |
 | Does the bot make money? | **Not supported.** Not measured either |
@@ -321,9 +321,17 @@ That cost is accepted, and it is bounded by four things, all of them measured ab
   drawdowns per window before the halt holds instead.
 * **The caps underneath, untouched** — risk per trade, exposure, stop distance and the
   venue floor all still bind (see [the mechanics section](#the-mechanics-are-enforced-not-assumed)).
-* **A floor under the experiment** — the venue floor stops trading before the account
-  reaches it, so the worst case here is an account parked under $66.67, not a halted
-  account draining to zero.
+* **No flat-book requirement, by design** — the re-arm does not wait for the position
+  that was open when the halt engaged to close. This halt never force-closes (that is
+  a separate risk decision), so waiting would hand the length of the halt to however
+  long that position lives; the sibling bot can wait because its drawdown stop
+  *closes* the book first. What bounds a re-arm that lands with exposure open is the
+  heat cap, which counts the open position. One honest limit on the artifacts here:
+  stop and take-profit exits are the harness's own fills, not agent actions, so the
+  action log cannot reconstruct per-slot open positions and **whether any of these
+  six runs re-armed with a position still open is not measurable from them** — the
+  rule is stated in [`AI_BOT.md`](AI_BOT.md#the-drawdown-halt-is-a-cooldown-not-a-shutdown)
+  and pinned by tests, not inferred from the runs.
 
 ### Was it a simulation artefact? No — it is in the committed production code
 
@@ -345,7 +353,10 @@ out except editing `progress.json` by hand or starting again on a fresh `data_di
 the production path — a real `AIAgent.run_wakeup()`, 40 wakeups, **no harness at
 all** — and pins it: every entry refused, cash frozen at $100.00, peak unmoved at
 $125.00, and no trade file written. A halt with no release condition is exactly what
-it looks like.
+it looks like. It reproduces that shape by **configuration** (a cooldown longer than
+the run), which is the honest way to keep the regression: the shipped pre-fix build
+itself is pinned by the code read above and by the pre-fix run artifacts, not by a
+test that would have to check out the old tree.
 
 ### Walk-forward folds — four fresh $97 accounts
 
@@ -454,13 +465,18 @@ SUPPORTED:  at $97.00 the account can place legal orders on ETH/USDT:USDT (venue
             code produces the same numbers on every rerun.
 ```
 
+That block is the report's *current* wording: the six runs cited on this page printed
+the previous sentence (they predate the change, which was prose only), so a reader
+diffing those logs against this page will find the older text in them.
+
 ### How long a rerun takes
 
 One `--source` process = three passes over the span (continuous + folds + regimes) =
 30,363 slot replays. Measured on this machine, **six processes in parallel: 51–55
 minutes per source** (~87 ms per slot — the six ran 17:36:04 → 18:27–18:30 on
 2026-09-25), **~21 minutes** for a continuous-window-only run, and about **five hours**
-for the canonical six-run suite in a single process (the sources share one indicator
+for the six runs in a single process — the four canonical sources plus the two
+intrabar variants (the sources share one indicator
 memo there, so it is a little less than six solo runs). Splitting by source across
 processes produces the same numbers about six times faster — the runs are independent
 and share nothing but the read-only parquet files.
@@ -543,7 +559,7 @@ nothing; the venue verdict is computed from the config rather than typed; the re
 labels its sources, its synthetic runs and its own limits. Plus the agent-side tests
 that the journal now records what the model proposed (`tests/test_ai_agent.py`).
 
-`tests/test_ai_dd_rearm.py` (15 tests) pins the halt lifecycle itself, on the
+`tests/test_ai_dd_rearm.py` (17 tests) pins the halt lifecycle itself, on the
 production path and **without the harness** — a real `AIAgent.run_wakeup()`, a
 simulated clock and a price series, nothing else. It pins that a cool-off must be
 *served* (`test_a_recovery_above_the_line_does_not_shorten_the_cool_off`) and that a
@@ -557,7 +573,13 @@ still trips (`test_the_live_peak_tracks_new_highs_and_still_trips`); and — the
 of the whole pass — that the caps are **not** weakened to allow re-entry:
 `test_the_size_cap_still_binds`, `test_the_stop_and_risk_caps_still_bind`,
 `test_the_venue_floor_still_binds`, `test_the_heat_cap_still_binds_across_entries`.
-The pre-fix permanence stays pinned as the regression it is:
+Two more pin the rules this pass made explicit:
+`test_the_rearm_does_not_wait_for_an_open_position` (the baseline moves while a
+position is still open, and the *heat* cap — which counts that position — is what
+refuses the next entry, with its arithmetic) and
+`test_the_journal_reports_the_state_the_decisions_were_made_under` (a wakeup that
+bought is never journaled as halted, even when its own fee moves equity across the
+line). The pre-fix permanence stays pinned as the regression it is:
 `test_a_halt_with_no_release_is_permanent`.
 
 `scripts/ai_backtest.py` and this whole module are linted in CI

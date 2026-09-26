@@ -57,7 +57,18 @@ So the halt now has two defined ways out, both after a served cool-off:
 | **Cool-off** | entries stay flat for `dd_cooldown_hours` (default 24). The period is **served**: a slot back inside the limit no longer cancels it — before this rule it did, and one real-data window produced ten engage/clear cycles with no flat time served after any of them |
 | **Release** | served *and* back inside the limit: the halt ends by itself and no re-arm is spent — so a recovering account always has a way out, budget or no budget |
 | **Re-arm** | served and still below the line: the peak moves to the equity the account resumes at, so the next 10% is measured from the **new** baseline — the same peak re-arm `scripts/paper_trader.py` has always done |
-| **Budget** | at most `dd_rearm_limit` re-arms (default 2) per `dd_rearm_window_days` (default 30). Spending it **holds** the halt for another cool-off — it never ends it, and the hold is bounded because the window rolls over |
+| **Budget** | at most `dd_rearm_limit` re-arms (default 2) per `dd_rearm_window_days` (default 30). Spending it **holds** the halt for another cool-off — it never ends it, and the hold is bounded because the window rolls over: with the budget spent and the drawdown persisting, the account can stay flat for up to roughly `dd_rearm_window_days` (30 days) of repeated 24h holds, and a recovery back inside the limit releases immediately at any point during it |
+
+**The re-arm does not wait for a flat book** — deliberately. This halt blocks
+*entries* and never force-closes (a force-close is a separate risk decision, and this
+bot does not make it), so requiring the open position to close first would hand the
+length of the halt to however long that position happens to live. What bounds a re-arm
+that lands with exposure still open is the heat cap, which counts the open position's
+notional against the same 30%: a full-size position (30% of equity) leaves no room for
+another entry at all, and a smaller one leaves only the remainder.
+`scripts/paper_trader.py` re-arms from a flat book only because its drawdown stop
+*closes* the book first — the difference between the two bots is in the stop (close
+the book vs block entries), not in the decision to re-arm.
 
 The baseline the halt measures from is a real high-water mark in both modes: every
 wakeup raises it (`peak = max(peak, equity)`). Live used to keep whatever
@@ -70,7 +81,9 @@ The whole lifecycle lives in `progress.json` (`dd_cooldown_until`, `dd_rearm_cou
 `dd_rearm_window_start`), so it survives a restart, and every branch is journaled
 under `drawdown_halt` and logged (`drawdown_halt_engaged` / `_released` /
 `_rearmed` / `_held`) — a paused account is visible instead of being inferred from
-a wall of rejections. The state the bot acts on and the state it merely *reads*
+a wall of rejections. The journaled block is the state that governed **that wakeup's
+decisions**, captured before execution: a wakeup that traded is never recorded as
+halted just because a fill moved equity across the line afterwards. The state the bot acts on and the state it merely *reads*
 are separate calls: `_risk_snapshot(apply=False)` answers "what is the halt right
 now" without engaging, re-arming or logging anything, which is what the backtest
 uses to describe an account to a decision source without moving it.
