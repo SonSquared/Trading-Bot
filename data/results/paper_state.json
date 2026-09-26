@@ -8,7 +8,8 @@
       "entry_time": "2026-09-26T16:32:39.526244+00:00",
       "strategy": "RSI_Reversion",
       "fees_paid": 0.0240298709587522,
-      "funding_paid": 0.0
+      "funding_paid": 0.0,
+      "high_pnl": 0.12534057386145914
     }
   },
   "total_trades": 7,
@@ -24,10 +25,10 @@
     "BTC_USDT_USDT": "2026-09-26 12:00:00+00:00",
     "ETH_USDT_USDT": "2026-09-26 12:00:00+00:00"
   },
-  "last_equity_marked": 98.07473971059544,
+  "last_equity_marked": 98.10696915791704,
   "last_prices": {
-    "ETH_USDT_USDT": 2692.63,
-    "BTC_USDT_USDT": 84118.4
+    "BTC_USDT_USDT": 84039.4,
+    "ETH_USDT_USDT": 2684.86
   },
-  "last_run_at": "2026-09-26T16:32:44.207774+00:00"
+  "last_run_at": "2026-09-26T19:27:39.876177+00:00"
 }
