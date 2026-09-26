@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260926_080038",
+  "wakeup_id": "20260926_144251",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volatility and volume across both BTC and ETH. ADX readings well below 20 indicate absence of directional trend, presenting elevated chop risk.",
-    "reasoning": "Both BTC and ETH are in tight consolidation around their EMAs with neutral momentum (RSI near 50, MACD flat) and ADX showing no established trend (14.2 for BTC, 9.7 for ETH). Volume is virtually zero. Given the trend-following strategy and recent consecutive losses, staying in cash until clear breakout volume and momentum emerge is the prudent risk management decision."
+    "risk_assessment": "Extremely low volatility and compressed Bollinger Bands with ADX under 15 on both BTC and ETH indicate consolidation and choppy sideways movement. Capital preservation is priority.",
+    "reasoning": "Both BTC and ETH display negligible momentum with ADX readings of 11.7 and 9.0 respectively, showing no actionable trend. RSI levels hover around 50 with highly compressed Bollinger Band widths (~0.5%), while volume is depleted. No high-probability setup exists, so standing aside until clear directional expansion occurs."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-26T08:00:52.407796+00:00"
+  "decided_at": "2026-09-26T14:43:01.113231+00:00"
 }
