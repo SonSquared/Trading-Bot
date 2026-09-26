@@ -63,3 +63,4 @@
 {"timestamp": "2026-09-25T00:37:29.276218+00:00", "action": "FUND", "pair": "*", "funding": 0.0034518284967933067, "cash_after": 64.07086808405063, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-25T13:57:21.379819+00:00", "action": "FUND", "pair": "*", "funding": 0.0034518284967933067, "cash_after": 64.06741625555384, "note": "schedule-gate-ack"}
 {"timestamp": "2026-09-25T18:44:52.953560+00:00", "action": "FUND", "pair": "*", "funding": 0.0034518284967933067, "cash_after": 64.06396442705704, "note": "schedule-gate-ack"}
+{"timestamp": "2026-09-26T05:10:53.210215+00:00", "action": "FUND", "pair": "*", "funding": 0.0034518284967933067, "cash_after": 64.06051259856025, "note": "schedule-gate-ack"}
