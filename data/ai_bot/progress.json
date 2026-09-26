@@ -1,5 +1,5 @@
 {
-  "last_wakeup": "20260926_144251",
+  "last_wakeup": "20260926_200045",
   "last_actions": [],
   "last_outlook": "neutral",
   "peak_equity": 10083.05017415602,
@@ -8,5 +8,5 @@
   "dd_rearm_window_start": "2026-09-26T14:42:57.443102+00:00",
   "day": "2026-09-26",
   "day_start_equity": 10048.516435529587,
-  "notes": "Wakeup 20260926_144251: AI proposed 0, 0 approved, 0 executed, 0 SL/TP triggers fired. Outlook: neutral. Equity: $10,048.52."
+  "notes": "Wakeup 20260926_200045: AI proposed 0, 0 approved, 0 executed, 0 SL/TP triggers fired. Outlook: neutral. Equity: $10,048.52."
 }
