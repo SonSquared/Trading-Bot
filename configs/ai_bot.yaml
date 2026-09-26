@@ -82,7 +82,23 @@ risk:
   # single position cannot exceed it, so it also bounds the per-trade ceiling.
   max_portfolio_heat_pct: 30.0
   max_open_positions: 3
-  max_drawdown_pct: 10.0          # trading halts (closes only) at this level
+  # Entries stop once equity is this far below the peak (closes still work).
+  #
+  # The halt is a COOLDOWN, not a one-way door. Blocking entries on price alone
+  # is unrecoverable: a flat account cannot trade, so its equity cannot climb
+  # back above the line, so it stays halted for good. The backtest measured
+  # exactly that — the trend rule made its last trade on 2022-02-04 and then
+  # refused 12,588 entries over the following four and a half years.
+  max_drawdown_pct: 10.0
+  # How long entries stay flat after the halt engages, before it releases.
+  # (The same ``dd_cooldown_hours`` the portfolio bot's risk manager uses.)
+  dd_cooldown_hours: 24.0
+  # What bounds re-entering the regime that caused the halt: at most this many
+  # re-arms per window, so at most this many fresh 10% drawdowns per window.
+  # Spending the budget HOLDS the halt until the window rolls over — it never
+  # ends it, so the bot cannot deadlock waiting for a human.
+  dd_rearm_limit: 2
+  dd_rearm_window_days: 30
   stop_loss_max_pct: 5.0
   min_risk_reward_ratio: 1.5
   min_confidence_to_trade: 60

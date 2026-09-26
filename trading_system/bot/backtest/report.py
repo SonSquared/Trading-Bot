@@ -259,8 +259,9 @@ def _venue_arithmetic(results: list[BacktestResult]) -> list[str]:
     body += (
         "Every entry respects the risk and exposure caps, fees are charged on "
         "both sides, stops and targets fire at the declared geometry, the "
-        "drawdown halt engages, and the same code produces the same numbers on "
-        "every rerun."
+        "drawdown halt engages and then releases or re-arms on its two defined "
+        "routes after a served cool-off, and the same code produces the same "
+        "numbers on every rerun."
     )
     return _labelled("SUPPORTED:", body)
 
@@ -312,8 +313,10 @@ def _verdict(results: list[BacktestResult]) -> list[str]:
     ]
     if halted:
         lines.append(
-            f"     The drawdown halt refused {halted} entries (it blocks new "
-            "entries; it does not force-close existing ones)."
+            f"     The drawdown halt refused {halted} entries while it was "
+            "engaged. It blocks new entries and never force-closes one, and "
+            "every engagement ends in a release or a re-arm once its cool-off "
+            "has been served — it is a pause, not a dead end."
         )
 
     null = by_name.get("null")

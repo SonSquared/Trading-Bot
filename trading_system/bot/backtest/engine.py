@@ -762,8 +762,14 @@ def _run_window(
             for p in pairs
         }
         positions = ledger.open_positions_list()
+        # apply=False: this is a READ of the risk state for the source's own
+        # context. Without it the replay's pre-read would also engage cooldowns,
+        # re-arm baselines and log transitions, so every halt event would appear
+        # twice in the log and the state could move outside the wakeup that owns
+        # it.
         snapshot = agent._risk_snapshot(
-            strategy, agent._read_progress(), _equity(ledger, prices), positions
+            strategy, agent._read_progress(), _equity(ledger, prices),
+            positions, apply=False,
         )
         source.set_context(SlotContext(
             now=slot_dt, timeframe=timeframe, strategy=strategy,

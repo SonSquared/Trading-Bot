@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -111,6 +111,38 @@ def _utc_now_iso(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).isoformat()
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    """A stored ISO timestamp as tz-aware UTC, or None when unusable."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _halt_summary(snapshot: dict) -> str:
+    """One line for the AI's risk block: whether the halt binds, and why.
+
+    A halt that is merely serving its cool-off is still a halt (closes only), so
+    the AI must not be told "No" — but it is not a drawdown over the limit
+    either, and saying so would misstate the account.
+    """
+    if not snapshot.get("trading_halted"):
+        return "No"
+    reason = snapshot.get("dd_halt_reason")
+    if reason == "cooldown":
+        return (f"YES — closes only, flat until {snapshot.get('dd_cooldown_until')} "
+                "(cool-off after a drawdown breach)")
+    if reason == "budget":
+        return ("YES — closes only, drawdown still over the limit and the re-arm "
+                "budget is spent")
+    return "YES — closes only"
+
+
 def _read_json(path: Path) -> Any | None:
     try:
         with open(path) as f:
@@ -186,6 +218,19 @@ class PaperLedger:
             self.data["peak_equity"] = eq
             self._save()
         return float(self.data["peak_equity"])
+
+    def rearm_peak(self, equity: float) -> float:
+        """Set the high-water mark to ``equity`` — the drawdown RE-ARM.
+
+        ``update_peak`` only ever raises the mark. That is right for measuring
+        drawdown and wrong for releasing a halt: a flat cash account below its
+        peak can never climb back above the line on its own, so a halt whose
+        only release condition is price is permanent. The caller decides when
+        releasing is safe; this method moves the baseline exactly.
+        """
+        self.data["peak_equity"] = float(equity)
+        self._save()
+        return float(equity)
 
     # -- trading ------------------------------------------------------------
 
@@ -444,6 +489,9 @@ class AIAgent:
             portfolio_max_dd_pct=rcfg.get("max_drawdown_pct", 10.0),
             max_open_positions=rcfg.get("max_open_positions", 3),
             max_portfolio_heat_pct=rcfg.get("max_portfolio_heat_pct", 30.0),
+            # How long the drawdown halt keeps entries flat before it re-arms.
+            # The same field the other bot's risk manager uses.
+            dd_cooldown_hours=rcfg.get("dd_cooldown_hours", 24.0),
         )
 
     # ----- Venue limits -----
@@ -660,8 +708,16 @@ class AIAgent:
     def _risk_snapshot(
         self, strategy: dict, progress: dict,
         equity: float, positions: list[dict],
+        apply: bool = True,
     ) -> dict:
-        """Real risk state — replaces the phantom risk.get_status() call."""
+        """Real risk state — replaces the phantom risk.get_status() call.
+
+        ``apply=False`` answers "what IS the state" with no side effects: no
+        cooldown started, no baseline re-armed, nothing written to
+        ``progress``, nothing logged. The backtest uses it to build a decision
+        source's context, so the only wakeup that moves the halt is the
+        production one.
+        """
         rules = strategy.get("rules", {})
         max_dd = float(rules.get("max_drawdown_pct", 10.0))
         max_heat = float(rules.get("max_portfolio_heat_pct", 30.0))
@@ -670,7 +726,24 @@ class AIAgent:
         if self.mode == "paper" and self.ledger is not None:
             peak = self.ledger.data.get("peak_equity", peak)
         peak = float(peak) if peak else equity
+        # The peak is a HIGH-WATER MARK in both modes, not a stored constant.
+        # In paper the ledger raises it (update_peak) and this is a no-op; in
+        # live there is no ledger, and the value in progress.json used to be
+        # frozen at the first wakeup's equity — measured $97 -> $120 -> $150
+        # with peak_equity pinned at 97.0. A halt measured from a stale baseline
+        # is not protection, and a re-armed baseline that cannot rise is not a
+        # new baseline, so raise it here where both modes pass through.
+        peak = max(peak, equity)
         drawdown_pct = max(0.0, (peak - equity) / peak * 100) if peak > 0 else 0.0
+
+        halt = self._drawdown_halt(
+            rules, progress, equity, peak, drawdown_pct, apply=apply,
+        )
+        if halt["rearmed"]:
+            # The halt just released by moving the baseline here, so the rest of
+            # this wakeup measures drawdown from the new peak: zero.
+            peak = equity
+            drawdown_pct = 0.0
 
         heat_usd = sum(abs(float(p.get("notional", 0))) for p in positions)
         heat_pct = heat_usd / equity * 100 if equity > 0 else 0.0
@@ -702,8 +775,163 @@ class AIAgent:
             "daily_pnl": round(daily_pnl, 2),
             "day_start_equity": day_start_equity,
             "consecutive_losses": consecutive_losses,
-            "trading_halted": drawdown_pct >= max_dd,
+            "trading_halted": halt["halted"],
+            "dd_halt_reason": halt["reason"],
+            "dd_cooldown_until": halt["cooldown_until"],
+            "dd_rearm_count": halt["rearm_count"],
+            "dd_rearm_window_start": halt["window_start"],
+            "dd_rearm_budget_left": halt["budget_left"],
+            "dd_rearmed": halt["rearmed"],
         }
+
+    def _drawdown_halt(
+        self, rules: dict, progress: dict, equity: float, peak: float,
+        drawdown_pct: float, apply: bool = True,
+    ) -> dict:
+        """The drawdown halt's state: engage, hold, release, or RE-ARM.
+
+        The guard stops new entries once equity is ``max_drawdown_pct`` below
+        the peak. Blocking on price alone is a one-way door — a flat account
+        cannot trade, so its equity cannot climb back above the line, so it
+        stays halted for good. The harness measured exactly that: the trend
+        source made its last trade on 2022-02-04, then refused 12,588 entries
+        for the remaining four and a half years.
+
+        So the halt is a COOLDOWN with a defined release, and only two ways out:
+
+          * it engages when the drawdown reaches the limit and starts a
+            ``dd_cooldown_hours`` flat period;
+          * that period must be SERVED. A wiggle back inside the limit does not
+            shorten it — measured before this rule, the account traded again
+            within hours of a breach, ten times in one window;
+          * served AND back inside the limit: the halt releases by itself, and
+            no re-arm is spent;
+          * served and still below the line: the peak is RE-ARMED to the
+            current equity, so protection resumes from a new baseline;
+          * a losing regime must not be re-entered without limit, so at most
+            ``dd_rearm_limit`` re-arms are allowed per ``dd_rearm_window_days``.
+            Spending that budget HOLDS the halt for another flat period, it
+            never ends it: the window rolls over, and a recovery inside the
+            limit still releases, so this can never deadlock.
+
+        The risk and exposure caps are not touched by any branch. What limits
+        a halt that can release is the cooldown (a flat period SERVED before
+        any release), the budget (at most ``limit`` fresh 10% drawdowns per
+        window), and the unchanged per-trade caps underneath both.
+
+        ``apply=False`` computes the same state without moving anything.
+        """
+        max_dd = float(rules.get("max_drawdown_pct", 10.0))
+        cooldown_hours = float(
+            rules.get("dd_cooldown_hours", self.risk.dd_cooldown_hours)
+        )
+        rearm_limit = max(0, int(rules.get("dd_rearm_limit", 2)))
+        window_days = float(rules.get("dd_rearm_window_days", 30.0))
+        now = self._now()
+
+        cooldown_until = _parse_iso(progress.get("dd_cooldown_until"))
+        window_start = _parse_iso(progress.get("dd_rearm_window_start"))
+        count = int(progress.get("dd_rearm_count") or 0)
+
+        # Roll the re-arm budget window before anything reads it.
+        if (window_start is None
+                or (now - window_start).total_seconds() >= window_days * 86400):
+            window_start, count = now, 0
+
+        breach = drawdown_pct >= max_dd
+        cooling = cooldown_until is not None and now < cooldown_until
+
+        # The order matters. ``cooling`` is tested first so a breach and a
+        # recovery are both overridden by a cool-off still being served; the
+        # breach test comes next so a calm account can never reach the re-arm
+        # branch (measured: it burned a re-arm and reset the peak on every
+        # ordinary wakeup).
+        state = {
+            "halted": False,
+            "reason": None,
+            "cooldown_until": None,
+            "rearmed": False,
+            "rearm_count": count,
+            "budget_left": max(0, rearm_limit - count),
+        }
+
+        if cooling:
+            # The cool-off is still being served, breach or not: the halt is a
+            # flat PERIOD, not a flag that a price wiggle can clear. Letting a
+            # recovery cancel it here is what made 10 engage/clear cycles in a
+            # single window, with no flat time served after any of them.
+            state.update(halted=True, reason="cooldown")
+        elif not breach:
+            # Inside the limit with nothing owed: released if an episode was
+            # running, a no-op otherwise. No re-arm is ever spent here, so this
+            # path is always available to a recovering account.
+            if cooldown_until is not None and apply:
+                logger.warning(
+                    "drawdown_halt_released",
+                    drawdown_pct=round(drawdown_pct, 2), limit_pct=max_dd,
+                )
+            cooldown_until = None
+        elif cooldown_until is None:
+            # Fresh halt: stop entries and start the cool-off clock.
+            cooldown_until = now + timedelta(hours=cooldown_hours)
+            state.update(halted=True, reason="limit")
+            if apply:
+                logger.warning(
+                    "drawdown_halt_engaged", drawdown_pct=round(drawdown_pct, 2),
+                    limit_pct=max_dd, cooldown_hours=cooldown_hours,
+                    resumes_at=cooldown_until.isoformat(),
+                )
+        elif count >= rearm_limit:
+            # Served but the window's re-arm budget is spent. Hold for another
+            # flat period rather than re-deciding every slot, and log that once.
+            # Bounded twice over: the window rolls over, and a recovery inside
+            # the limit takes the branch above instead.
+            cooldown_until = now + timedelta(hours=cooldown_hours)
+            state.update(halted=True, reason="budget")
+            if apply:
+                logger.warning(
+                    "drawdown_halt_held", drawdown_pct=round(drawdown_pct, 2),
+                    rearms_used=count, rearm_limit=rearm_limit,
+                    window_days=window_days,
+                    reconsider_at=cooldown_until.isoformat(),
+                )
+        else:
+            # RE-ARM: new baseline, trade again.
+            if apply:
+                self._rearm_peak(equity)
+            count += 1
+            cooldown_until = None
+            state.update(
+                rearmed=True, rearm_count=count,
+                budget_left=max(0, rearm_limit - count),
+            )
+            if apply:
+                logger.warning(
+                    "drawdown_halt_rearmed", drawdown_pct=round(drawdown_pct, 2),
+                    new_peak=round(equity, 2), rearms_used=count,
+                    rearm_limit=rearm_limit, window_days=window_days,
+                )
+
+        state["cooldown_until"] = (
+            cooldown_until.isoformat() if cooldown_until else None
+        )
+        # Hand the state back through the progress document, which is what the
+        # next wakeup reads: a halt that is not persisted is not a halt.
+        if apply:
+            progress["dd_cooldown_until"] = state["cooldown_until"]
+            progress["dd_rearm_count"] = count
+            progress["dd_rearm_window_start"] = window_start.isoformat()
+            if state["rearmed"]:
+                # The re-armed baseline, so the handoff document agrees with the
+                # ledger and the next wakeup measures from here.
+                progress["peak_equity"] = equity
+        state["window_start"] = window_start.isoformat()
+        return state
+
+    def _rearm_peak(self, equity: float) -> None:
+        """Move the high-water mark to ``equity`` (paper ledger and progress)."""
+        if self.mode == "paper" and self.ledger is not None:
+            self.ledger.rearm_peak(equity)
 
     def _build_risk_context(self, strategy: dict, snapshot: dict, progress: dict) -> str:
         rules = strategy.get("rules", {})
@@ -713,7 +941,12 @@ class AIAgent:
             f"  Max single position size: {rules.get('max_position_size_pct', 10)}% of equity",
             f"  Max portfolio heat: {rules.get('max_portfolio_heat_pct', 30)}%",
             f"  Max open positions: {rules.get('max_open_positions', 3)}",
-            f"  Max drawdown: {rules.get('max_drawdown_pct', 10)}% (trading halts at this level)",
+            f"  Max drawdown: {rules.get('max_drawdown_pct', 10)}% (entries stop at this "
+            f"level and stay flat for {rules.get('dd_cooldown_hours', 24)}h; after that "
+            "they resume from a re-armed baseline, or on their own if the account "
+            "is back inside the limit)",
+            f"  Drawdown re-arm budget: {rules.get('dd_rearm_limit', 2)} per "
+            f"{rules.get('dd_rearm_window_days', 30)} days",
             f"  Max stop-loss distance: {rules.get('stop_loss_max_pct', 5)}%",
             f"  Min risk/reward ratio: {rules.get('min_risk_reward_ratio', 1.5)}",
             f"  Min confidence to trade: {rules.get('min_confidence_to_trade', 60)}",
@@ -727,8 +960,7 @@ class AIAgent:
             f"Peak equity: ${snapshot['peak_equity']:,.2f}",
             f"Daily P&L: ${snapshot['daily_pnl']:+,.2f}",
             f"Consecutive losses: {snapshot['consecutive_losses']}",
-            f"TRADING HALTED (drawdown limit): "
-            f"{'YES — closes only' if snapshot['trading_halted'] else 'No'}",
+            "TRADING HALTED (drawdown limit): " + _halt_summary(snapshot),
         ]
 
         # The venue's floor is a hard rule the AI cannot see from the risk
@@ -833,8 +1065,21 @@ class AIAgent:
 
             # --- New entries ---
             if snapshot["trading_halted"]:
-                reject(f"trading halted: drawdown {snapshot['current_drawdown_pct']}% "
-                       f">= limit {snapshot['max_drawdown_pct']}%")
+                # Same prefix as before, so the halt keeps its own rejection
+                # bucket; the suffix says WHEN entries come back and WHY, which
+                # during a cool-off is not a drawdown over the limit — quoting
+                # "dd >= limit" there would be a false statement in the journal.
+                until = snapshot.get("dd_cooldown_until")
+                tail = f" (flat until {until})" if until else ""
+                dd = snapshot["current_drawdown_pct"]
+                cap = snapshot["max_drawdown_pct"]
+                why = {
+                    "cooldown": f"cool-off being served (drawdown {dd}% vs "
+                                f"{cap}% limit)",
+                    "budget": f"drawdown {dd}% >= limit {cap}% and the re-arm "
+                              "budget is spent",
+                }.get(snapshot.get("dd_halt_reason"), f"drawdown {dd}% >= limit {cap}%")
+                reject(f"trading halted: {why}{tail}")
                 continue
             if len(positions) >= max_positions:
                 reject(f"max open positions ({max_positions}) reached")
@@ -1535,6 +1780,12 @@ class AIAgent:
                 ],
                 "last_outlook": decision.market_outlook,
                 "peak_equity": snapshot["peak_equity"],
+                # The halt's own state travels with the handoff: a cooldown that
+                # is not persisted is not a cooldown, and a re-armed baseline
+                # must survive the next process.
+                "dd_cooldown_until": snapshot.get("dd_cooldown_until"),
+                "dd_rearm_count": snapshot.get("dd_rearm_count"),
+                "dd_rearm_window_start": snapshot.get("dd_rearm_window_start"),
                 "day": self._now().strftime("%Y-%m-%d"),
                 "day_start_equity": snapshot["day_start_equity"],
                 "notes": (
@@ -1585,6 +1836,16 @@ class AIAgent:
                 ],
                 "rejections": rejected,
                 "closed_triggers": result["closed_triggers"],
+                # The halt's lifecycle, so a paused account is visible in the
+                # audit trail rather than inferred from a wall of rejections.
+                "drawdown_halt": {
+                    "halted": snapshot["trading_halted"],
+                    "drawdown_pct": snapshot["current_drawdown_pct"],
+                    "peak_equity": round(snapshot["peak_equity"], 2),
+                    "cooldown_until": snapshot.get("dd_cooldown_until"),
+                    "rearms_used": snapshot.get("dd_rearm_count"),
+                    "rearmed_this_wakeup": snapshot.get("dd_rearmed"),
+                },
                 "equity": round(equity, 2),
                 "errors": result["errors"],
             })

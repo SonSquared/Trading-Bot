@@ -34,9 +34,54 @@ The AI never has memory between wakeups. Continuity lives entirely in shared fil
 | Stop-loss | ≤ 5% away, always | Entries without valid SL rejected |
 | Risk/reward | ≥ 1.5 | 3% SL needs ≥ 4.5% TP |
 | Min confidence | 60 | Low-confidence trades dropped |
-| Max drawdown | 10% from peak | **Trading halts** — closes only |
+| Max drawdown | 10% from peak | Entries stop for a cool-off, then resume — on their own if the account is back inside the limit, or from a **re-armed** baseline if it is not. The halt can never become permanent (see below) |
 | Portfolio heat | ≤ 30% of equity | Total exposure (notional) cap, **enforced on every entry** — re-checked per entry including positions already open and anything approved earlier in the same wakeup |
 | Risk per trade | ≤ 2% of equity | Enforced **directly** as `size% × stop%`, not left implied by the size and stop caps agreeing |
+
+### The drawdown halt is a cooldown, not a shutdown
+
+At 10% drawdown from the peak, entries stop and closes still work. That halt used
+to be measured against an all-time peak that only ever rises, which made it a
+one-way door: a **flat** account cannot trade, so its equity cannot climb back
+above the line, so it stayed halted for good. The backtest measured exactly that
+— the declared trend rule made its last trade on **2022-02-04** and then refused
+**12,588 entries** over the following four and a half years. A guard that turns a
+10% loss into a permanently dead account is not risk management; it is the
+stalemate this bot exists to avoid.
+
+So the halt now has two defined ways out, both after a served cool-off:
+
+| Step | What happens |
+|---|---|
+| **Engage** | entries stop once equity is `max_drawdown_pct` (10%) below the peak, and a cool-off starts |
+| **Cool-off** | entries stay flat for `dd_cooldown_hours` (default 24). The period is **served**: a slot back inside the limit no longer cancels it — before this rule it did, and one real-data window produced ten engage/clear cycles with no flat time served after any of them |
+| **Release** | served *and* back inside the limit: the halt ends by itself and no re-arm is spent — so a recovering account always has a way out, budget or no budget |
+| **Re-arm** | served and still below the line: the peak moves to the equity the account resumes at, so the next 10% is measured from the **new** baseline — the same peak re-arm `scripts/paper_trader.py` has always done |
+| **Budget** | at most `dd_rearm_limit` re-arms (default 2) per `dd_rearm_window_days` (default 30). Spending it **holds** the halt for another cool-off — it never ends it, and the hold is bounded because the window rolls over |
+
+The baseline the halt measures from is a real high-water mark in both modes: every
+wakeup raises it (`peak = max(peak, equity)`). Live used to keep whatever
+`progress.json` first recorded — measured $97 → $120 → $150 with the peak pinned at
+97.0 — so a live halt was measured from a stale baseline, and a "re-armed" baseline
+that cannot rise is not a new baseline at all. Paper mode was already correct
+(`PaperLedger.update_peak` runs before the snapshot).
+
+The whole lifecycle lives in `progress.json` (`dd_cooldown_until`, `dd_rearm_count`,
+`dd_rearm_window_start`), so it survives a restart, and every branch is journaled
+under `drawdown_halt` and logged (`drawdown_halt_engaged` / `_released` /
+`_rearmed` / `_held`) — a paused account is visible instead of being inferred from
+a wall of rejections. The state the bot acts on and the state it merely *reads*
+are separate calls: `_risk_snapshot(apply=False)` answers "what is the halt right
+now" without engaging, re-arming or logging anything, which is what the backtest
+uses to describe an account to a decision source without moving it.
+
+**The trade-off, stated plainly: a halt that can release may re-enter the regime
+that caused it.** What bounds the damage is the served cool-off before every
+release, the budget (at most two fresh 10% drawdowns per 30 days), and the
+untouched caps underneath — 2% risk per trade, 30% exposure, 5% stop, and the
+venue floor. The worst case is therefore a bounded series of drawdowns rather than
+an unbounded one, and the account always resumes: every path out of the halt is
+reachable without a human, and the tests pin each one.
 
 ---
 
