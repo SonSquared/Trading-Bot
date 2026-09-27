@@ -124,6 +124,87 @@ def _parse_iso(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+# The halt's own parameters, read so a typo cannot turn the halt off. Each of
+# these did real damage before the guard, all measured on the production wakeup
+# path: ``dd_rearm_limit: 0`` re-created the unrecoverable deadlock this halt was
+# fixed to remove (100 days, 200 wakeups, zero entries); ``dd_rearm_window_days:
+# -1`` rolled the budget away before it could be spent, so re-arms were free and
+# the baseline ratcheted DOWN (100 -> 85 -> 72.25 across three breaches);
+# ``dd_cooldown_hours: 0`` engaged and re-armed inside a single wakeup, serving
+# no flat period at all. They are read through ``_halt_params`` below, which
+# replaces an unusable value with the safe one and reports the correction, so
+# the guarantee is a property of this module rather than of the config being
+# typed correctly.
+HALT_DEFAULTS = {
+    "dd_cooldown_hours": 24.0,
+    "dd_rearm_window_days": 30.0,
+    "dd_rearm_limit": 2,
+}
+HALT_MIN_COOLDOWN_HOURS = 1.0   # shorter: a "period" ending inside its own wakeup
+HALT_MIN_WINDOW_DAYS = 1.0      # shorter: a window that cannot hold two cool-offs
+_INF = float("inf")
+
+
+def _halt_params(rules: dict, default_cooldown_hours: float) -> dict:
+    """The halt's three parameters, with an unusable value made safe.
+
+    ``dd_cooldown_hours``: 0 or negative means NO flat period, so it reads as
+    the documented default; a positive value under an hour reads as an hour.
+    ``dd_rearm_limit``: 0 or lower IS the one-way door this halt exists to
+    remove, so it reads as the strictest legal value, 1.
+    ``dd_rearm_window_days``: 0, negative or non-finite reads as the default;
+    a positive window too short to ever spend the budget — one that rolls
+    before a second attempt can land, which is what made re-arms free — reads
+    as the shortest window that can, ``limit + 1`` cool-offs.
+
+    Returns the effective values plus ``coerced``, the raw/effective pairs, so
+    the caller can log a correction instead of applying it in silence.
+    """
+    defaults = {"dd_cooldown_hours": float(default_cooldown_hours),
+                **HALT_DEFAULTS}
+    raw = {key: rules.get(key, defaults[key]) for key in defaults}
+    coerced: dict = {}
+
+    def number(key: str) -> float | None:
+        """The value as a finite number, or None when it is unusable."""
+        try:
+            value = float(raw[key])
+        except (TypeError, ValueError):
+            return None
+        return None if value != value or value in (_INF, -_INF) else value
+
+    def safe(key: str, value: float | None, fallback: float,
+             floor: float) -> float:
+        """Unusable or non-positive -> ``fallback``; below ``floor`` -> the floor."""
+        if value is None or value <= 0:
+            coerced[key] = (raw[key], fallback)
+            return fallback
+        if value < floor:
+            coerced[key] = (raw[key], floor)
+            return floor
+        return value
+
+    cooldown_hours = safe(
+        "dd_cooldown_hours", number("dd_cooldown_hours"),
+        defaults["dd_cooldown_hours"], HALT_MIN_COOLDOWN_HOURS,
+    )
+    # 1 is not a taste judgement: zero re-arms is the permanent halt this guard
+    # exists to prevent, and an unusable value cannot be read as anything else
+    # without guessing how strict the operator meant to be.
+    limit = int(safe("dd_rearm_limit", number("dd_rearm_limit"), 1.0, 1.0))
+    window_days = safe(
+        "dd_rearm_window_days", number("dd_rearm_window_days"),
+        defaults["dd_rearm_window_days"],
+        max(HALT_MIN_WINDOW_DAYS, (limit + 1) * cooldown_hours / 24.0),
+    )
+    return {
+        "cooldown_hours": cooldown_hours,
+        "window_days": window_days,
+        "limit": limit,
+        "coerced": coerced,
+    }
+
+
 def _halt_summary(snapshot: dict) -> str:
     """One line for the AI's risk block: whether the halt binds, and why.
 
@@ -832,15 +913,29 @@ class AIAgent:
         any release), the budget (at most ``limit`` fresh 10% drawdowns per
         window), and the unchanged per-trade caps underneath both.
 
+        The three parameters are read through ``_halt_params``, which clamps
+        them to values that keep this whole guarantee: a re-arm limit below 1
+        IS the deadlock again, a window too short to spend the budget rolls it
+        away for free, and a zero cool-off is a pause that ends inside the
+        same wakeup. A corrected value is logged, never applied in silence.
+
         ``apply=False`` computes the same state without moving anything.
         """
         max_dd = float(rules.get("max_drawdown_pct", 10.0))
-        cooldown_hours = float(
-            rules.get("dd_cooldown_hours", self.risk.dd_cooldown_hours)
-        )
-        rearm_limit = max(0, int(rules.get("dd_rearm_limit", 2)))
-        window_days = float(rules.get("dd_rearm_window_days", 30.0))
+        params = _halt_params(rules, self.risk.dd_cooldown_hours)
+        cooldown_hours = params["cooldown_hours"]
+        rearm_limit = params["limit"]
+        window_days = params["window_days"]
         now = self._now()
+        if apply and params["coerced"]:
+            logger.warning(
+                "drawdown_halt_config_coerced",
+                coerced={key: [given, used]
+                         for key, (given, used) in params["coerced"].items()},
+                used_cooldown_hours=cooldown_hours,
+                used_rearm_limit=rearm_limit,
+                used_window_days=window_days,
+            )
 
         cooldown_until = _parse_iso(progress.get("dd_cooldown_until"))
         window_start = _parse_iso(progress.get("dd_rearm_window_start"))
@@ -948,6 +1043,9 @@ class AIAgent:
 
     def _build_risk_context(self, strategy: dict, snapshot: dict, progress: dict) -> str:
         rules = strategy.get("rules", {})
+        # The effective (clamped) halt parameters, so what the AI is told is
+        # what the code will actually do.
+        halt = _halt_params(rules, self.risk.dd_cooldown_hours)
         lines = [
             "Hard limits enforced by the system (the AI cannot override these):",
             f"  Max risk per trade: {rules.get('max_risk_per_trade_pct', 2)}% of equity",
@@ -955,12 +1053,12 @@ class AIAgent:
             f"  Max portfolio heat: {rules.get('max_portfolio_heat_pct', 30)}%",
             f"  Max open positions: {rules.get('max_open_positions', 3)}",
             f"  Max drawdown: {rules.get('max_drawdown_pct', 10)}% (entries stop at this "
-            f"level and stay flat for {rules.get('dd_cooldown_hours', 24)}h; after that "
+            f"level and stay flat for {halt['cooldown_hours']:g}h; after that "
             "they resume from a re-armed baseline, or on their own if the account "
             "is back inside the limit — an open position does not delay the re-arm, "
             "but it keeps counting against the exposure cap)",
-            f"  Drawdown re-arm budget: {rules.get('dd_rearm_limit', 2)} per "
-            f"{rules.get('dd_rearm_window_days', 30)} days",
+            f"  Drawdown re-arm budget: {halt['limit']} per "
+            f"{halt['window_days']:g} days",
             f"  Max stop-loss distance: {rules.get('stop_loss_max_pct', 5)}%",
             f"  Min risk/reward ratio: {rules.get('min_risk_reward_ratio', 1.5)}",
             f"  Min confidence to trade: {rules.get('min_confidence_to_trade', 60)}",

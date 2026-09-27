@@ -16,7 +16,10 @@ things:
   * the cool-off cannot be cancelled by a price wiggle — a halt is a flat
     period, not a flag;
   * the risk, exposure and venue caps are untouched and still bind afterwards;
-  * repeated re-arms are bounded without ever becoming permanent.
+  * repeated re-arms are bounded without ever becoming permanent;
+  * the halt's OWN three parameters are clamped where they are read, so a
+    mistyped 0 or a negative window cannot disable the cool-off, spend the
+    budget for free, or restore the deadlock.
 """
 
 from __future__ import annotations
@@ -486,6 +489,122 @@ class TestTheHaltReleasesOnTheProductionPath:
         # The window rolls over, and the bot resumes on its own — never a
         # permanent shutdown waiting for a human.
         clock.advance(24 * 30)
+        agent.run_wakeup()
+        assert len(agent.ledger.open_positions_list()) == 1
+
+
+# ---------------------------------------------------------------------------
+# The halt's own config cannot silently turn it off
+# ---------------------------------------------------------------------------
+
+class TestTheHaltParametersCannotBeTypoedIntoOff:
+    """Every value below was measured doing real damage before the guard.
+
+    ``dd_rearm_limit: 0`` re-created the unrecoverable deadlock the halt exists
+    to remove (100 days, 200 wakeups, zero entries, the cooldown re-armed
+    forever); ``dd_rearm_window_days: -1`` let the baseline ratchet DOWN
+    (100 -> 85 -> 72.25 across three breaches) because the window rolled on
+    every call, so the budget never bound; ``dd_cooldown_hours: 0`` engaged and
+    re-armed inside one wakeup, serving no flat period at all. A non-numeric
+    value used to raise out of the wakeup (``status=error`` on every wakeup).
+    """
+
+    def _state(self, agent) -> dict:
+        return json.loads((agent.data_dir / "progress.json").read_text())
+
+    def _fresh_drawdown(self, agent) -> float:
+        """Flatten and drop the account 15% below its current baseline."""
+        baseline = self._state(agent)["peak_equity"]
+        agent.ledger.data["positions"] = {}
+        agent.ledger.data["cash"] = baseline * 0.85
+        agent.ledger._save()
+        return baseline
+
+    def test_a_zero_rearm_limit_cannot_restore_the_deadlock(self, tmp_path):
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_rearm_limit=0)          # the deadlock value
+
+        agent.run_wakeup()                              # 1. engages
+        clock.advance(24)
+        agent.run_wakeup()                              # 2. cool-off served
+        assert len(agent.ledger.open_positions_list()) == 1
+        assert self._state(agent)["dd_rearm_count"] == 1
+
+        # Clamped to exactly 1, not silently unlimited: the second fresh
+        # breach in the same window must HOLD.
+        baseline = self._fresh_drawdown(agent)
+        clock.advance(24)
+        agent.run_wakeup()                              # 3. engages again
+        clock.advance(24)
+        agent.run_wakeup()                              # 4. budget spent: held
+        assert agent.ledger.open_positions_list() == []
+        assert self._state(agent)["peak_equity"] == pytest.approx(baseline)
+
+        # And never the old one-way door: the window rolls, and it trades.
+        clock.advance(24 * 31)
+        agent.run_wakeup()
+        assert len(agent.ledger.open_positions_list()) == 1
+
+    def test_a_negative_window_cannot_disable_the_budget(self, tmp_path):
+        """The window is clamped UP until the budget can actually be spent:
+        a window of one cool-off or less rolls before the hold can fire."""
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(
+            tmp_path, clock, ScriptedEngine(eth_entry()),
+            dd_rearm_limit=1, dd_rearm_window_days=-1,
+        )
+        agent.run_wakeup()                              # engages at T
+        clock.advance(24)
+        agent.run_wakeup()                              # cools off, re-arms
+        assert len(agent.ledger.open_positions_list()) == 1
+        assert self._state(agent)["dd_rearm_count"] == 1
+
+        # A window that always rolled used to re-arm this breach for free AND
+        # move the baseline down. Both must now be impossible.
+        baseline = self._fresh_drawdown(agent)
+        clock.advance(24)
+        agent.run_wakeup()                              # engages again
+        clock.advance(24)
+        agent.run_wakeup()                              # budget spent: HELD
+        assert agent.ledger.open_positions_list() == []
+        assert self._state(agent)["peak_equity"] == pytest.approx(baseline)
+        assert self._state(agent)["dd_rearm_count"] == 1
+
+    def test_a_zero_cooldown_cannot_end_the_halt_inside_one_wakeup(self, tmp_path):
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_cooldown_hours=0.0)
+        agent.run_wakeup()
+        state = self._state(agent)
+        # It used to re-arm inside this very wakeup, discarding the peak.
+        assert state["dd_rearm_count"] == 0
+        assert state["dd_cooldown_until"] is not None
+        assert agent.ledger.open_positions_list() == []
+        assert any("trading halted" in r for r in
+                   rejections(agent.data_dir / "journal.jsonl", True))
+
+        # A REAL cool-off is served: half of it in, the account is still flat.
+        clock.advance(12)
+        agent.run_wakeup()
+        assert agent.ledger.open_positions_list() == []
+        assert any("trading halted" in r for r in
+                   rejections(agent.data_dir / "journal.jsonl", True))
+
+        # Then it resumes like any other served cool-off: not a permanent lock.
+        clock.advance(12)
+        agent.run_wakeup()
+        assert len(agent.ledger.open_positions_list()) == 1
+
+    def test_a_non_numeric_value_falls_back_instead_of_killing_the_wakeup(
+            self, tmp_path):
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_rearm_limit="two")
+        result = agent.run_wakeup()
+        assert result["status"] == "success"            # used to be status=error
+        assert agent.ledger.open_positions_list() == []  # the halt still engages
+        clock.advance(24)                                # the documented default
         agent.run_wakeup()
         assert len(agent.ledger.open_positions_list()) == 1
 

@@ -559,7 +559,7 @@ nothing; the venue verdict is computed from the config rather than typed; the re
 labels its sources, its synthetic runs and its own limits. Plus the agent-side tests
 that the journal now records what the model proposed (`tests/test_ai_agent.py`).
 
-`tests/test_ai_dd_rearm.py` (17 tests) pins the halt lifecycle itself, on the
+`tests/test_ai_dd_rearm.py` (21 tests) pins the halt lifecycle itself, on the
 production path and **without the harness** — a real `AIAgent.run_wakeup()`, a
 simulated clock and a price series, nothing else. It pins that a cool-off must be
 *served* (`test_a_recovery_above_the_line_does_not_shorten_the_cool_off`) and that a
@@ -579,8 +579,16 @@ position is still open, and the *heat* cap — which counts that position — is
 refuses the next entry, with its arithmetic) and
 `test_the_journal_reports_the_state_the_decisions_were_made_under` (a wakeup that
 bought is never journaled as halted, even when its own fee moves equity across the
-line). The pre-fix permanence stays pinned as the regression it is:
-`test_a_halt_with_no_release_is_permanent`.
+line). Four more pin the halt's own parameters against the values an audit measured
+doing real damage: `test_a_zero_rearm_limit_cannot_restore_the_deadlock` (the
+clamped value trades, then holds the second breach like any budget — not the
+100-day deadlock it used to be), `test_a_negative_window_cannot_disable_the_budget`
+(the budget still binds and the baseline cannot ratchet down),
+`test_a_zero_cooldown_cannot_end_the_halt_inside_one_wakeup` (a real cool-off is
+served instead of the halt being consumed in the wakeup that started it) and
+`test_a_non_numeric_value_falls_back_instead_of_killing_the_wakeup` (a typo no
+longer makes every wakeup fail). The pre-fix permanence stays pinned as the
+regression it is: `test_a_halt_with_no_release_is_permanent`.
 
 `scripts/ai_backtest.py` and this whole module are linted in CI
 (`.github/workflows/bot.yml`) and run in the AI bot workflow
