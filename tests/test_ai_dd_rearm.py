@@ -39,6 +39,7 @@ import yaml
 from tests.test_ai_live_safety import LiveFakeExchange, live_agent
 from trading_system.bot.ai_agent import (
     HALT_MAX_COOLDOWN_HOURS,
+    HALT_MIN_WINDOW_DAYS,
     AIAgent,
     _halt_params,
 )
@@ -675,6 +676,10 @@ class TestTheHaltParametersCannotBeTypoedIntoOff:
         assert result["status"] == "success"             # used to be status=error
         resume = datetime.fromisoformat(self._state(agent)["dd_cooldown_until"])
         assert resume == clock.now + timedelta(hours=HALT_MAX_COOLDOWN_HOURS)
+        # The cap is the century the docs state — 100 Julian years, 36,525 days —
+        # not 100 * 365-day years (876,000h, 24 days short, which is why the old
+        # constant resumed on 2125-12-08 from a 2026-01-01 start).
+        assert HALT_MAX_COOLDOWN_HOURS == 36_525 * 24
 
     def test_the_configured_cool_off_default_is_validated_and_used(self):
         """The caller's default is the agent's own config value, and it was
@@ -726,6 +731,34 @@ class TestTheHaltParametersCannotBeTypoedIntoOff:
         agent.run_wakeup()                               # serve -> budget spent
         assert agent.ledger.open_positions_list() == []
         assert self._state(agent)["dd_rearm_count"] == 2
+
+    def test_the_window_floor_never_drops_below_a_day(self, tmp_path):
+        """``limit + 2`` cool-offs is the floor for cool-offs measured in days;
+        below a day it is not enough on its own. A window shorter than the slot
+        interval can roll on every wakeup, so the re-arm count never accumulates
+        and the budget never binds — measured at a 4h cadence with a 1h cool-off
+        and limit 1: the one-day floor HOLDS the third slot (count 1, entries
+        refused); the bare ``limit + 2`` floor (0.125d, patched out in the audit)
+        re-armed and traded instead."""
+        assert _halt_params({"dd_cooldown_hours": 1.0, "dd_rearm_limit": 1,
+                             "dd_rearm_window_days": 0.1},
+                            24.0)["window_days"] == HALT_MIN_WINDOW_DAYS
+
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_cooldown_hours=1.0, dd_rearm_limit=1,
+                             dd_rearm_window_days=0.1)
+        agent.run_wakeup()                        # engage (cool-off to T0+1h)
+        clock.advance(4)
+        agent.run_wakeup()                        # slot 1: serve -> re-arm(1)
+        self._fresh_drawdown(agent)
+        clock.advance(4)
+        agent.run_wakeup()                        # slot 2: engage again
+        clock.advance(4)
+        agent.run_wakeup()                        # slot 3: the budget binds
+        assert agent.ledger.open_positions_list() == []
+        assert self._state(agent)["dd_rearm_count"] == 1
+        assert self._state(agent)["dd_cooldown_until"] is not None
 
     def test_the_window_floor_admits_the_budget_hold(self, tmp_path):
         """The floor is ``limit + 2`` cool-offs: at ``limit + 1`` the window

@@ -142,13 +142,25 @@ HALT_DEFAULTS = {
     "dd_rearm_limit": 2,
 }
 HALT_MIN_COOLDOWN_HOURS = 1.0   # shorter: a "period" ending inside its own wakeup
-HALT_MIN_WINDOW_DAYS = 1.0      # the floor computed below is what binds; this is its floor
-# The longest flat period one cool-off may ask for. Measured before this cap: a
-# finite ``dd_cooldown_hours: 1e9`` reached ``now + timedelta(hours=1e9)`` and
-# every wakeup died with ``OverflowError: date value out of range``. A century is
-# far past any account's life, so a larger value is not a cool-off the halt can
-# serve — it is corrected and logged like every other unusable value.
-HALT_MAX_COOLDOWN_HOURS = 24.0 * 365.0 * 100.0
+# The window floor computed below is normally ``limit + 2`` cool-offs; this is the
+# floor's own floor, and it is not decoration. A window shorter than a day can roll
+# on every wakeup once the slot interval is longer than it, and then the re-arm
+# count never accumulates and the budget never binds. Measured on the production
+# path at a 4h cadence, 1h cool-off, limit 1 and a 0.1-day window: with this
+# minimum the third slot HOLDS the account (re-arm count 1, entries refused); with
+# the minimum patched out the window rolled every wakeup and the account re-armed
+# and traded instead.
+HALT_MIN_WINDOW_DAYS = 1.0
+# The longest flat period one cool-off may ask for: a century, defined the way the
+# docs state it — 100 Julian years, 36,525 days = 876,600h. (No fixed hour count
+# equals a CALENDAR century from every start date: a 100-year span holds 24 or 25
+# leap days, so the span is 36,524 or 36,525 days. That is why the docs carry the
+# figure, and why the first version of this constant — 100 * 365-day years =
+# 876,000h, 24 days short — made a capped cool-off resume on 2125-12-08 from a
+# 2026-01-01 start.) Measured before any cap: a finite ``dd_cooldown_hours: 1e9``
+# reached ``now + timedelta(hours=1e9)`` and every wakeup died with
+# ``OverflowError: date value out of range``.
+HALT_MAX_COOLDOWN_HOURS = 24.0 * 365.25 * 100.0
 _INF = float("inf")
 
 
@@ -174,11 +186,12 @@ def _halt_params(rules: dict, default_cooldown_hours: Any) -> dict:
     ``dd_cooldown_hours``: 0 or negative means NO flat period, so it reads as
     the configured default (the caller's value when that is usable, 24h out of
     the box); a positive value under an hour reads as an hour, and one longer
-    than ``HALT_MAX_COOLDOWN_HOURS`` reads as that cap — a cool-off past a
-    century is the one-way door this halt exists to remove, and its resume date
-    has to be a date the bot can hold. A value the reader cannot parse at all
-    (a string like ``24h``, a list, an integer too large to convert) is one of
-    these corrections too, never an exception out of the wakeup.
+    than ``HALT_MAX_COOLDOWN_HOURS`` reads as that cap — a century, 36,525 days,
+    which past any account's life is the one-way door this halt exists to
+    remove, and whose resume date still has to be a date the bot can hold. A
+    value the reader cannot parse at all (a string like ``24h``, a list, an
+    integer too large to convert) is one of these corrections too, never an
+    exception out of the wakeup.
     ``dd_rearm_limit``: 0 or lower IS the one-way door this halt exists to
     remove, so it reads as the strictest legal value, 1; a fractional value is
     truncated to the stricter whole number it enforces, and that truncation is
@@ -186,8 +199,10 @@ def _halt_params(rules: dict, default_cooldown_hours: Any) -> dict:
     ``dd_rearm_window_days``: 0, negative or non-finite reads as the default;
     a positive window too short to spend the budget AND serve the hold it starts
     — one that rolls before the hold's own cool-off can be served, which is what
-    made re-arms free — reads as the shortest window that can, ``limit + 2``
-    cool-offs (the floor comment below says why not ``limit + 1``).
+    made re-arms free — reads as the shortest window that can: ``limit + 2``
+    cool-offs, and never less than ``HALT_MIN_WINDOW_DAYS``, because a window
+    that can roll on every wakeup never accumulates the budget at all (the
+    constants above carry both measurements).
 
     Returns the effective values plus ``coerced``, the raw/effective pairs, so
     the caller can log a correction instead of applying it in silence.

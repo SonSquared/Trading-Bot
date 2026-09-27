@@ -559,7 +559,7 @@ nothing; the venue verdict is computed from the config rather than typed; the re
 labels its sources, its synthetic runs and its own limits. Plus the agent-side tests
 that the journal now records what the model proposed (`tests/test_ai_agent.py`).
 
-`tests/test_ai_dd_rearm.py` (29 tests) pins the halt lifecycle itself, on the
+`tests/test_ai_dd_rearm.py` (30 tests) pins the halt lifecycle itself, on the
 production path and **without the harness** — a real `AIAgent.run_wakeup()`, a
 simulated clock and a price series, nothing else. It pins that a cool-off must be
 *served* (`test_a_recovery_above_the_line_does_not_shorten_the_cool_off`) and that a
@@ -593,8 +593,10 @@ measured in a follow-up audit:
 list or a `10**400` integer in the config's `risk:` block is a correction like
 any other — it used to raise out of `_halt_params` and every wakeup ended
 `status=error`), `test_an_unrepresentably_long_cool_off_is_capped_not_raised` (a
-finite `1e9` hours used to die in `now + timedelta(hours=1e9)`; it is capped at a
-century and logged), `test_the_configured_cool_off_default_is_validated_and_used`
+finite `1e9` hours used to die in `now + timedelta(hours=1e9)`; it is capped at the
+century the docs state — 100 Julian years, 36,525 days — and logged; the first
+version of the constant, 876,000h, was 24 days short of that century),
+`test_the_configured_cool_off_default_is_validated_and_used`
 (the caller's default was dead — the dict literal's own key overrode it — and is
 now validated and used, so an absent or invalid default behaves as documented),
 `test_a_fractional_limit_is_reported_as_a_correction` (2.5 re-arms reads as 2 and
@@ -602,7 +604,11 @@ is now reported instead of applied in silence, with the third fresh breach in th
 window HELD), `test_the_window_floor_admits_the_budget_hold` (the floor is
 `limit + 2` cool-offs — at `limit + 1` the window expired on the instant the hold
 would start, so the hold never fired: measured re-armed at 2.0 days and held at
-2.5 for limit 1) and `test_a_long_value_is_the_flat_period_it_says` (a value that
+2.5 for limit 1), `test_the_window_floor_never_drops_below_a_day` (below a day,
+`limit + 2` cool-offs is not enough on its own: at a 4h cadence with a 1h cool-off,
+limit 1 and a 0.1-day window, the one-day minimum holds the third slot at count 1
+where the bare floor — patched out for the audit — re-armed and traded) and
+`test_a_long_value_is_the_flat_period_it_says` (a value that
 is merely long is accepted unchanged, per the precondition AI_BOT.md now states).
 The pre-fix permanence stays pinned as the regression it is:
 `test_a_halt_with_no_release_is_permanent`.
