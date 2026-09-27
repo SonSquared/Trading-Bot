@@ -34,7 +34,7 @@ The AI never has memory between wakeups. Continuity lives entirely in shared fil
 | Stop-loss | ≤ 5% away, always | Entries without valid SL rejected |
 | Risk/reward | ≥ 1.5 | 3% SL needs ≥ 4.5% TP |
 | Min confidence | 60 | Low-confidence trades dropped |
-| Max drawdown | 10% from peak | Entries stop for a cool-off, then resume — on their own if the account is back inside the limit, or from a **re-armed** baseline if it is not. The halt can never become permanent (see below) |
+| Max drawdown | 10% from peak | Entries stop for a cool-off, then resume — on their own if the account is back inside the limit, or from a **re-armed** baseline if it is not. The halt cannot become permanent by typo or by a value the code cannot read (see below); a deliberately long cool-off or window postpones the resume by exactly what it says |
 | Portfolio heat | ≤ 30% of equity | Total exposure (notional) cap, **enforced on every entry** — re-checked per entry including positions already open and anything approved earlier in the same wakeup |
 | Risk per trade | ≤ 2% of equity | Enforced **directly** as `size% × stop%`, not left implied by the size and stop caps agreeing |
 
@@ -57,7 +57,7 @@ So the halt now has two defined ways out, both after a served cool-off:
 | **Cool-off** | entries stay flat for `dd_cooldown_hours` (default 24). The period is **served**: a slot back inside the limit no longer cancels it — before this rule it did, and one real-data window produced ten engage/clear cycles with no flat time served after any of them |
 | **Release** | served *and* back inside the limit: the halt ends by itself and no re-arm is spent — so a recovering account always has a way out, budget or no budget |
 | **Re-arm** | served and still below the line: the peak moves to the equity the account resumes at, so the next 10% is measured from the **new** baseline — the same peak re-arm `scripts/paper_trader.py` has always done |
-| **Budget** | at most `dd_rearm_limit` re-arms (default 2) per `dd_rearm_window_days` (default 30). Spending it **holds** the halt for another cool-off — it never ends it, and the hold is bounded because the window rolls over — the window is never shorter than `limit + 1` cool-offs (the guard below), so with the budget spent and the drawdown persisting the account can stay flat for up to roughly one window of repeated cool-offs, and a recovery back inside the limit releases immediately at any point during it |
+| **Budget** | at most `dd_rearm_limit` re-arms (default 2) per `dd_rearm_window_days` (default 30). Spending it **holds** the halt for another cool-off — it never ends it, and the hold is bounded because the window rolls over — the window is never shorter than `limit + 2` cool-offs (the guard below — the extra cool-off is the budget's hold itself, which a window expiring on its first instant would cut off), so with the budget spent and the drawdown persisting the account can stay flat for up to roughly one window of repeated cool-offs, and a recovery back inside the limit releases immediately at any point during it |
 
 **The three values that govern this halt are read through a guard**, because each
 one can turn the halt off if it is mistyped — and each was measured doing exactly
@@ -66,14 +66,21 @@ deadlock (100 days, 200 wakeups, zero entries, the cool-off re-served forever),
 `dd_rearm_window_days: -1` rolled the budget away before it could be spent (re-arms
 for free, the baseline ratcheting 100 → 85 → 72.25 across three breaches), and
 `dd_cooldown_hours: 0` engaged and re-armed inside a single wakeup, serving no flat
-period at all. So a cool-off of 0 or less reads as the default 24h (a positive value
-under an hour reads as an hour), a re-arm limit of 0 or less reads as the strictest
-legal value 1, and a window of 0, negative or non-finite reads as the default 30 days
-(a positive window too short to spend the budget reads as the shortest one that can,
-`limit + 1` cool-offs). Every correction is logged as `drawdown_halt_config_coerced`
-with the raw and the effective value, so it is visible rather than silent — which is
-what makes "a halted account always resumes" a property of the code rather than of
-the YAML being typed correctly.
+period at all. So a cool-off of 0 or less — or any value the code cannot read as a
+number: a string like `24h`, a list, an integer too large to convert — reads as the
+agent's configured default (24h out of the box); a positive value under an hour reads
+as an hour, and one longer than a century reads as a century, because a "resume" past
+that is not a date the bot can hold. A re-arm limit of 0 or less reads as the strictest
+legal value 1, and a fractional limit is truncated to the stricter whole number it
+enforces. A window of 0, negative or non-finite reads as the default 30 days, and a
+positive window too short to fire the budget's hold *and serve it* (`limit + 2`
+cool-offs) reads as the shortest one that can. Every one of those corrections —
+truncation included — is logged as `drawdown_halt_config_coerced` with the raw and the
+effective value, so it is visible rather than silent. What the guard does **not** do is
+shorten a value that is merely long: a large cool-off or window is the flat period you
+asked for, and it is the window — not the code — that bounds how long a spent budget
+holds. That is what makes the resume a property of the code rather than of the YAML
+being typed correctly, for every value this guard reads.
 
 **The re-arm does not wait for a flat book** — deliberately. This halt blocks
 *entries* and never force-closes (a force-close is a separate risk decision, and this
@@ -109,9 +116,10 @@ that caused it.** What bounds the damage is the served cool-off before every
 release, the budget (at most two fresh 10% drawdowns per 30 days), and the
 untouched caps underneath — 2% risk per trade, 30% exposure, 5% stop, and the
 venue floor. The worst case is therefore a bounded series of drawdowns rather than
-an unbounded one, and the account always resumes: every path out of the halt is
-reachable without a human — a config value cannot take that away (see the guard
-above) — and the tests pin each one.
+an unbounded one, and the account resumes without a human on every value the guard
+accepts: every path out of the halt is reachable — no unusable or unreadable value can
+take that away (see the guard above), though a long cool-off or window you set on
+purpose is the flat period you get — and the tests pin each one.
 
 ---
 

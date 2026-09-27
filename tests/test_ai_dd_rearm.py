@@ -19,7 +19,10 @@ things:
   * repeated re-arms are bounded without ever becoming permanent;
   * the halt's OWN three parameters are clamped where they are read, so a
     mistyped 0 or a negative window cannot disable the cool-off, spend the
-    budget for free, or restore the deadlock.
+    budget for free, or restore the deadlock;
+  * every one of those corrections is reported — including the truncation of a
+    fractional limit and a cool-off too large to become a date — and a value
+    the reader cannot parse is a correction, not a wakeup-killing error.
 """
 
 from __future__ import annotations
@@ -34,7 +37,11 @@ import pytest
 import yaml
 
 from tests.test_ai_live_safety import LiveFakeExchange, live_agent
-from trading_system.bot.ai_agent import AIAgent
+from trading_system.bot.ai_agent import (
+    HALT_MAX_COOLDOWN_HOURS,
+    AIAgent,
+    _halt_params,
+)
 from trading_system.bot.ai_engine import TradeAction, TradingDecision
 from trading_system.bot.backtest import BacktestConfig, ScriptedSource, run_backtest
 
@@ -497,8 +504,32 @@ class TestTheHaltReleasesOnTheProductionPath:
 # The halt's own config cannot silently turn it off
 # ---------------------------------------------------------------------------
 
+class RecordingLogger:
+    """Records the halt module's own log calls.
+
+    structlog writes to stdout here, so ``caplog`` cannot see them; the module
+    logger itself is patched instead and every call is kept as
+    ``(event, kwargs)``. A method this double does not know would be a bug in
+    the double, so it raises rather than silently swallowing the call.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def _record(self, name):
+        def record(event=None, **kw):
+            self.events.append((event, kw))
+        return record
+
+    def __getattr__(self, name):
+        if name in ("debug", "info", "warning", "error", "exception", "critical"):
+            return self._record(name)
+        raise AttributeError(name)
+
+
 class TestTheHaltParametersCannotBeTypoedIntoOff:
-    """Every value below was measured doing real damage before the guard.
+    """Every value below was measured doing real damage before the guard, or is
+    a boundary the guard must report instead of swallowing.
 
     ``dd_rearm_limit: 0`` re-created the unrecoverable deadlock the halt exists
     to remove (100 days, 200 wakeups, zero entries, the cooldown re-armed
@@ -506,7 +537,11 @@ class TestTheHaltParametersCannotBeTypoedIntoOff:
     (100 -> 85 -> 72.25 across three breaches) because the window rolled on
     every call, so the budget never bound; ``dd_cooldown_hours: 0`` engaged and
     re-armed inside one wakeup, serving no flat period at all. A non-numeric
-    value used to raise out of the wakeup (``status=error`` on every wakeup).
+    value used to raise out of the wakeup (``status=error`` on every wakeup),
+    a cool-off too large to become a date died in the ``timedelta`` arithmetic,
+    a fractional re-arm limit was truncated in silence, and the window floor
+    admitted a value that rolled the budget away before the hold it spends
+    could fire.
     """
 
     def _state(self, agent) -> dict:
@@ -607,6 +642,132 @@ class TestTheHaltParametersCannotBeTypoedIntoOff:
         clock.advance(24)                                # the documented default
         agent.run_wakeup()
         assert len(agent.ledger.open_positions_list()) == 1
+
+    # --- the guard's own read, and what it reports -------------------------
+
+    @pytest.mark.parametrize("bad", [
+        {"dd_cooldown_hours": "24h"},        # a string float() cannot read
+        {"dd_cooldown_hours": []},           # a type float() refuses
+        {"dd_rearm_limit": 10 ** 400},       # a number float() overflows on
+    ])
+    def test_a_value_the_guard_cannot_read_cannot_kill_the_wakeup(
+            self, tmp_path, bad):
+        """The read itself used to be the fragile part: ``float(default)`` ran
+        outside any guard, so a bad value in the config's ``risk:`` block raised
+        out of ``_halt_params`` and every wakeup ended ``status=error``."""
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()), **bad)
+        result = agent.run_wakeup()
+        assert result["status"] == "success"             # used to be status=error
+        assert agent.ledger.open_positions_list() == []  # the halt still engages
+        clock.advance(24)                                # the documented default
+        agent.run_wakeup()
+        assert len(agent.ledger.open_positions_list()) == 1
+
+    def test_an_unrepresentably_long_cool_off_is_capped_not_raised(
+            self, tmp_path):
+        """A finite ``1e9`` hours is not a date: the engage branch used to die
+        on ``now + timedelta(hours=1e9)`` with ``date value out of range``."""
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_cooldown_hours=1e9)
+        result = agent.run_wakeup()
+        assert result["status"] == "success"             # used to be status=error
+        resume = datetime.fromisoformat(self._state(agent)["dd_cooldown_until"])
+        assert resume == clock.now + timedelta(hours=HALT_MAX_COOLDOWN_HOURS)
+
+    def test_the_configured_cool_off_default_is_validated_and_used(self):
+        """The caller's default is the agent's own config value, and it was
+        dead: the dict literal's own key overrode it, so the fallback was always
+        the literal 24h and a bad default raised instead of defaulting.
+
+        Direct only: on the production path the config's ``risk:`` block is
+        merged into the strategy's rules, so the key is always present.
+        """
+        assert _halt_params({}, 12.0)["cooldown_hours"] == 12.0
+        assert _halt_params({}, 0)["cooldown_hours"] == 24.0
+        assert _halt_params({}, "24h")["cooldown_hours"] == 24.0
+        assert _halt_params({}, 10 ** 400)["cooldown_hours"] == 24.0
+        corrected = _halt_params({"dd_cooldown_hours": -5}, 12.0)
+        assert corrected["cooldown_hours"] == 12.0
+        assert corrected["coerced"]["dd_cooldown_hours"] == (-5, 12.0)
+
+    def test_a_fractional_limit_is_reported_as_a_correction(
+            self, tmp_path, monkeypatch):
+        """2.5 re-arms reads as 2, and used to do so with ``coerced == {}`` —
+        the one correction this guard applied in silence. The log is the halt
+        module's own, so the module logger is recorded."""
+        import trading_system.bot.ai_agent as ai_agent_module
+        recorder = RecordingLogger()
+        monkeypatch.setattr(ai_agent_module, "logger", recorder)
+
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_rearm_limit=2.5)
+        agent.run_wakeup()                               # engage (20% under peak)
+        corrections = [kw for event, kw in recorder.events
+                       if event == "drawdown_halt_config_coerced"]
+        assert corrections, "2.5 -> 2 must be reported, not applied in silence"
+        assert corrections[0]["coerced"]["dd_rearm_limit"] == [2.5, 2]
+
+        # And it is enforced as the stricter whole number it reports: the third
+        # fresh breach in the window is HELD, not re-armed.
+        clock.advance(24)
+        agent.run_wakeup()                               # serve -> re-arm(1)
+        self._fresh_drawdown(agent)
+        clock.advance(24)
+        agent.run_wakeup()                               # engage again
+        clock.advance(24)
+        agent.run_wakeup()                               # serve -> re-arm(2)
+        self._fresh_drawdown(agent)
+        clock.advance(24)
+        agent.run_wakeup()                               # engage again (count 2)
+        clock.advance(24)
+        agent.run_wakeup()                               # serve -> budget spent
+        assert agent.ledger.open_positions_list() == []
+        assert self._state(agent)["dd_rearm_count"] == 2
+
+    def test_the_window_floor_admits_the_budget_hold(self, tmp_path):
+        """The floor is ``limit + 2`` cool-offs: at ``limit + 1`` the window
+        expires on the same instant the hold would start — the roll runs before
+        the state branches — so the hold never fires. Measured before this fix
+        at limit=1/24h: window 2.0 days re-armed, 2.5 days held."""
+        assert _halt_params({"dd_rearm_limit": 1, "dd_rearm_window_days": 3.0},
+                            24.0)["coerced"] == {}
+        raised = _halt_params({"dd_rearm_limit": 1,
+                               "dd_rearm_window_days": 2.0}, 24.0)
+        assert raised["window_days"] == 3.0
+        assert raised["coerced"]["dd_rearm_window_days"] == (2.0, 3.0)
+        shipped = _halt_params({"dd_rearm_limit": 2,
+                                "dd_rearm_window_days": 3.0}, 24.0)
+        assert shipped["window_days"] == 4.0            # the shipped limit's floor
+
+        clock = Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        agent = halted_agent(tmp_path, clock, ScriptedEngine(eth_entry()),
+                             dd_rearm_limit=1, dd_rearm_window_days=3.0)
+        agent.run_wakeup()                               # engage
+        clock.advance(24)
+        agent.run_wakeup()                               # serve -> re-arm(1)
+        self._fresh_drawdown(agent)
+        agent.run_wakeup()                               # the fresh breach, at once
+        clock.advance(24)
+        agent.run_wakeup()                               # (limit+1)-th cool-off
+        assert agent.ledger.open_positions_list() == []  # HELD, not re-armed
+        assert self._state(agent)["dd_rearm_count"] == 1
+        assert self._state(agent)["dd_cooldown_until"] is not None
+
+    def test_a_long_value_is_the_flat_period_it_says(self):
+        """The guard corrects what is unusable; it does not shorten what is
+        merely long. A large cool-off or window is the operator's own flat
+        period — the precondition docs/AI_BOT.md states — so it is accepted
+        unchanged, and only the window floor it implies is applied (logged)."""
+        params = _halt_params({"dd_cooldown_hours": 8760.0}, 24.0)
+        assert "dd_cooldown_hours" not in params["coerced"]
+        assert params["cooldown_hours"] == 8760.0
+        assert params["coerced"]["dd_rearm_window_days"] == (30.0, 1460.0)
+        large = _halt_params({"dd_rearm_window_days": 10000.0}, 24.0)
+        assert large["window_days"] == 10000.0
+        assert large["coerced"] == {}
 
 
 # ---------------------------------------------------------------------------

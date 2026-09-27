@@ -134,44 +134,74 @@ def _parse_iso(value: Any) -> datetime | None:
 # no flat period at all. They are read through ``_halt_params`` below, which
 # replaces an unusable value with the safe one and reports the correction, so
 # the guarantee is a property of this module rather than of the config being
-# typed correctly.
+# typed correctly. Nothing the guard reads can raise: a value it cannot even
+# parse is a correction like any other, not a failed wakeup.
 HALT_DEFAULTS = {
     "dd_cooldown_hours": 24.0,
     "dd_rearm_window_days": 30.0,
     "dd_rearm_limit": 2,
 }
 HALT_MIN_COOLDOWN_HOURS = 1.0   # shorter: a "period" ending inside its own wakeup
-HALT_MIN_WINDOW_DAYS = 1.0      # shorter: a window that cannot hold two cool-offs
+HALT_MIN_WINDOW_DAYS = 1.0      # the floor computed below is what binds; this is its floor
+# The longest flat period one cool-off may ask for. Measured before this cap: a
+# finite ``dd_cooldown_hours: 1e9`` reached ``now + timedelta(hours=1e9)`` and
+# every wakeup died with ``OverflowError: date value out of range``. A century is
+# far past any account's life, so a larger value is not a cool-off the halt can
+# serve — it is corrected and logged like every other unusable value.
+HALT_MAX_COOLDOWN_HOURS = 24.0 * 365.0 * 100.0
 _INF = float("inf")
 
 
-def _halt_params(rules: dict, default_cooldown_hours: float) -> dict:
+def _finite_number(value: Any) -> float | None:
+    """The value as a finite float, or None when it is unusable in any way.
+
+    ``float()`` raises three different things on a value out of a config file —
+    ``ValueError`` for ``"24h"``, ``TypeError`` for ``[]``, ``OverflowError``
+    for ``10**400`` — and all three mean the same thing to this guard: unusable,
+    so the caller's safe value applies. The read itself must never be the thing
+    that ends a wakeup.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return None if number != number or number in (_INF, -_INF) else number
+
+
+def _halt_params(rules: dict, default_cooldown_hours: Any) -> dict:
     """The halt's three parameters, with an unusable value made safe.
 
     ``dd_cooldown_hours``: 0 or negative means NO flat period, so it reads as
-    the documented default; a positive value under an hour reads as an hour.
+    the configured default (the caller's value when that is usable, 24h out of
+    the box); a positive value under an hour reads as an hour, and one longer
+    than ``HALT_MAX_COOLDOWN_HOURS`` reads as that cap — a cool-off past a
+    century is the one-way door this halt exists to remove, and its resume date
+    has to be a date the bot can hold. A value the reader cannot parse at all
+    (a string like ``24h``, a list, an integer too large to convert) is one of
+    these corrections too, never an exception out of the wakeup.
     ``dd_rearm_limit``: 0 or lower IS the one-way door this halt exists to
-    remove, so it reads as the strictest legal value, 1.
+    remove, so it reads as the strictest legal value, 1; a fractional value is
+    truncated to the stricter whole number it enforces, and that truncation is
+    recorded like any other correction.
     ``dd_rearm_window_days``: 0, negative or non-finite reads as the default;
-    a positive window too short to ever spend the budget — one that rolls
-    before a second attempt can land, which is what made re-arms free — reads
-    as the shortest window that can, ``limit + 1`` cool-offs.
+    a positive window too short to spend the budget AND serve the hold it starts
+    — one that rolls before the hold's own cool-off can be served, which is what
+    made re-arms free — reads as the shortest window that can, ``limit + 2``
+    cool-offs (the floor comment below says why not ``limit + 1``).
 
     Returns the effective values plus ``coerced``, the raw/effective pairs, so
     the caller can log a correction instead of applying it in silence.
     """
-    defaults = {"dd_cooldown_hours": float(default_cooldown_hours),
-                **HALT_DEFAULTS}
+    configured = _finite_number(default_cooldown_hours)
+    defaults = dict(HALT_DEFAULTS)
+    if configured is not None and configured > 0:
+        defaults["dd_cooldown_hours"] = configured
     raw = {key: rules.get(key, defaults[key]) for key in defaults}
     coerced: dict = {}
 
     def number(key: str) -> float | None:
         """The value as a finite number, or None when it is unusable."""
-        try:
-            value = float(raw[key])
-        except (TypeError, ValueError):
-            return None
-        return None if value != value or value in (_INF, -_INF) else value
+        return _finite_number(raw[key])
 
     def safe(key: str, value: float | None, fallback: float,
              floor: float) -> float:
@@ -188,14 +218,27 @@ def _halt_params(rules: dict, default_cooldown_hours: float) -> dict:
         "dd_cooldown_hours", number("dd_cooldown_hours"),
         defaults["dd_cooldown_hours"], HALT_MIN_COOLDOWN_HOURS,
     )
+    if cooldown_hours > HALT_MAX_COOLDOWN_HOURS:
+        coerced["dd_cooldown_hours"] = (raw["dd_cooldown_hours"],
+                                        HALT_MAX_COOLDOWN_HOURS)
+        cooldown_hours = HALT_MAX_COOLDOWN_HOURS
     # 1 is not a taste judgement: zero re-arms is the permanent halt this guard
     # exists to prevent, and an unusable value cannot be read as anything else
     # without guessing how strict the operator meant to be.
-    limit = int(safe("dd_rearm_limit", number("dd_rearm_limit"), 1.0, 1.0))
+    limit_value = safe("dd_rearm_limit", number("dd_rearm_limit"), 1.0, 1.0)
+    limit = int(limit_value)
+    if limit != limit_value:
+        # Truncation is a correction too: 2.5 re-arms must not become 3, and a
+        # silent 2.5 -> 2 is the "applied in silence" this guard forbids.
+        coerced["dd_rearm_limit"] = (raw["dd_rearm_limit"], limit)
     window_days = safe(
         "dd_rearm_window_days", number("dd_rearm_window_days"),
         defaults["dd_rearm_window_days"],
-        max(HALT_MIN_WINDOW_DAYS, (limit + 1) * cooldown_hours / 24.0),
+        # ``limit + 2``, not ``limit + 1``: the window is rolled BEFORE the
+        # state branches run, so a window expiring on the same instant the
+        # (limit+1)-th cool-off ends rolls the budget away and the hold never
+        # fires (measured: limit=1, 24h, window 2.0d re-armed; 2.5d held).
+        max(HALT_MIN_WINDOW_DAYS, (limit + 2) * cooldown_hours / 24.0),
     )
     return {
         "cooldown_hours": cooldown_hours,
@@ -915,9 +958,11 @@ class AIAgent:
 
         The three parameters are read through ``_halt_params``, which clamps
         them to values that keep this whole guarantee: a re-arm limit below 1
-        IS the deadlock again, a window too short to spend the budget rolls it
-        away for free, and a zero cool-off is a pause that ends inside the
-        same wakeup. A corrected value is logged, never applied in silence.
+        IS the deadlock again, a window too short to spend the budget and serve
+        its hold rolls it away for free, and a zero cool-off is a pause that
+        ends inside the same wakeup. A corrected value is logged, never applied
+        in silence, and a value the reader cannot parse is one of those
+        corrections rather than a wakeup that dies on a config typo.
 
         ``apply=False`` computes the same state without moving anything.
         """
