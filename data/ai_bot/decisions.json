@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260928_201247",
+  "wakeup_id": "20260928_234526",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low trading volume across major pairs with compressed volatility and conflicting trend indicators; elevated chop risk.",
-    "reasoning": "Both BTC and ETH are consolidating in tight ranges with ADX indicating weak trend strength (22.1 on BTC, 17.7 on ETH) and near-zero relative volume (0.01x on BTC, 0.09x on ETH). EMA structures are flat or mixed, and momentum indicators are neutral without clear direction. Preserving capital and waiting for clearer trend momentum and volume confirmation."
+    "risk_assessment": "Low volatility and severely depleted volume across BTC and ETH with no directional momentum.",
+    "reasoning": "Both BTC and ETH are consolidating in tight ranges with ADX indicating weak/absent trends (BTC ADX 20.7, ETH ADX 14.7) and neutral RSIs near 50. Volume ratios are extremely low (0.04x and 0.12x), presenting high chop risk and false breakout potential. Awaiting clear volume confirmation and trend breakout before committing capital."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-28T20:13:24.220439+00:00"
+  "decided_at": "2026-09-28T23:45:37.507598+00:00"
 }
