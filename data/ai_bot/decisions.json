@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260928_080038",
+  "wakeup_id": "20260928_201247",
   "decision": {
     "actions": [],
-    "market_outlook": "bearish",
-    "risk_assessment": "Both BTC and ETH are in bearish EMA trends with RSI approaching or in oversold territory, but volume is extremely low (0.02x ratio) and momentum remains downward. Waiting for confirmation or a trend reversal.",
-    "reasoning": "Despite oversold RSI on BTC and ETH, volume is insufficient to support a reliable bounce, and trend signals are strictly bearish across EMAs. Confidence remains below threshold for initiating new positions."
+    "market_outlook": "neutral",
+    "risk_assessment": "Extremely low trading volume across major pairs with compressed volatility and conflicting trend indicators; elevated chop risk.",
+    "reasoning": "Both BTC and ETH are consolidating in tight ranges with ADX indicating weak trend strength (22.1 on BTC, 17.7 on ETH) and near-zero relative volume (0.01x on BTC, 0.09x on ETH). EMA structures are flat or mixed, and momentum indicators are neutral without clear direction. Preserving capital and waiting for clearer trend momentum and volume confirmation."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-28T08:01:37.729006+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-28T20:13:24.220439+00:00"
 }
