@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260928_060042",
+  "wakeup_id": "20260928_080038",
   "decision": {
     "actions": [],
     "market_outlook": "bearish",
-    "risk_assessment": "Bearish trend with oversold RSI and extremely low trading volume. Entering short positions at the lower Bollinger Band carries poor risk-to-reward due to potential mean-reversion, while counter-trend longs lack bullish momentum confirmation.",
-    "reasoning": "BTC and ETH are both showing bearish EMA alignment (EMA 9 < EMA 21 < EMA 50) on the 1h chart. However, BTC's RSI is oversold at 30.0 near the lower Bollinger Band ($83,014.77), and volume is virtually non-existent (0.01x ratio). The strategy prefers trend following, but shorting into oversold conditions at support without volume confirmation is low probability. Confidence is below the 60 threshold required to trade."
+    "risk_assessment": "Both BTC and ETH are in bearish EMA trends with RSI approaching or in oversold territory, but volume is extremely low (0.02x ratio) and momentum remains downward. Waiting for confirmation or a trend reversal.",
+    "reasoning": "Despite oversold RSI on BTC and ETH, volume is insufficient to support a reliable bounce, and trend signals are strictly bearish across EMAs. Confidence remains below threshold for initiating new positions."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-28T06:01:15.616694+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-09-28T08:01:37.729006+00:00"
 }
