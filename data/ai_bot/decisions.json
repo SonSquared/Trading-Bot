@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260929_140045",
+  "wakeup_id": "20260929_200038",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Volume is extremely low across both BTC and ETH with weak ADX values, indicating a lack of strong trend conviction despite bullish EMA alignments. Maintaining a flat position until volatility and volume return.",
-    "reasoning": "Both BTC and ETH show bullish EMA stacks, but ADX is weak (<20) and volume ratios are near zero, suggesting a low-conviction range-bound environment. Confidence remains below the threshold of 60 for new breakout or trend-following entries."
+    "risk_assessment": "Extremely low volume and low volatility across BTC and ETH; ADX under 20 indicates an absence of trend.",
+    "reasoning": "Both BTC and ETH are consolidating near their 21 EMAs with neutral RSI levels around 49 and ADX readings below 17, reflecting lack of directional momentum. Volume is minimal and trend-following signals are absent. Staying flat until clear directional momentum and volume emerge."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-09-29T14:02:09.746639+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-29T20:00:49.004164+00:00"
 }
