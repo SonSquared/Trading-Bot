@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260929_060049",
+  "wakeup_id": "20260929_082521",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volume and weak trend signals across both BTC and ETH. RSI is neutral near 50, and ADX indicates low trend strength. No strong setup present.",
-    "reasoning": "Both BTC and ETH are in neutral/consolidation zones with bearish EMA alignments but lacking downward momentum or volume expansion. Confidence to enter long or short is below the 60 threshold. Preserving capital and staying flat."
+    "risk_assessment": "Low portfolio drawdown at 0.3%, but both assets are trading near upper Bollinger Bands and 24h resistance levels with overbought stochastic readings. Risk of short-term pullback is elevated.",
+    "reasoning": "BTC is pressing against its 24h high and upper Bollinger Band on very low volume (0.14x average) with a mixed EMA structure. ETH is trading above its upper Bollinger Band with a weak trend strength (ADX 15.9) and overbought Stochastics (85.3). Risk/reward for trend continuation at current resistance levels is unfavorable. Waiting for a healthy pullback toward key EMA supports before entering new positions."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-09-29T06:01:13.599581+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-09-29T08:26:11.652192+00:00"
 }
