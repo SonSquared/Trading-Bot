@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20260930_000046",
+  "wakeup_id": "20260930_060149",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volume and ADX below 15 on both pairs indicate a lack of trend and high chop risk. Portfolio is flat with minimal drawdown.",
-    "reasoning": "Both BTC and ETH are consolidating in tight ranges with ADX at 13.9 and 12.2 respectively, showing no directional trend. Moving averages are compressed and volume is negligible. In line with a trend-following approach, no high-confidence setups exist; capital preservation is favored until volatility and volume return."
+    "risk_assessment": "Extremely low trend strength with ADX near 12 across major pairs and negligible volume. Market is consolidating within tight ranges.",
+    "reasoning": "Both BTC and ETH exhibit bearish EMA alignments, but ADX readings below 15 confirm an absence of trend momentum. With neutral RSI and low volume, entering directional trades carries low edge and elevated risk of whipsaw. Sitting in cash until clear directional momentum and volume return."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-09-30T00:01:00.360381+00:00"
+  "decided_at": "2026-09-30T06:02:20.312399+00:00"
 }
