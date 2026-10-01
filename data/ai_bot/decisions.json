@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20261001_080049",
+  "wakeup_id": "20261001_143751",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volatility, low volume, and weak trend strength (ADX < 20) across both BTC and ETH. No clear breakout or trend-following confirmation.",
-    "reasoning": "Both BTC and ETH are trading in tight, low-volume consolidation below their short-term EMAs with ADX readings below 17, reflecting lack of directional momentum. Entering trades in these conditions does not meet confidence threshold."
+    "risk_assessment": "Low volatility consolidation with ADX below 15 across both BTC and ETH, indicating no discernible trend momentum despite bullish EMA alignment.",
+    "reasoning": "BTC is trading right at its upper Bollinger Band ($84,320) with ADX at 10.9, signaling range consolidation rather than a trend breakout. ETH similarly displays low volume (0.48x avg) and an ADX of 12.4. Entering long at resistance in an absent-trend regime poses an unfavorable risk/reward profile. Preserving capital following consecutive losses."
   },
   "model": "gemini-flash-latest",
-  "decided_at": "2026-10-01T08:02:27.163568+00:00"
+  "decided_at": "2026-10-01T14:38:03.499913+00:00"
 }
