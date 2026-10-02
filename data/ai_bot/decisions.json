@@ -1,11 +1,21 @@
 {
-  "wakeup_id": "20261002_080044",
+  "wakeup_id": "20261002_140047",
   "decision": {
-    "actions": [],
+    "actions": [
+      {
+        "pair": "BTC/USDT:USDT",
+        "side": "long",
+        "size_pct": 10.0,
+        "stop_loss_pct": 2.0,
+        "take_profit_pct": 4.5,
+        "confidence": 70.0,
+        "reasoning": "Strong bullish EMA alignment, ADX at 43.7 showing robust trend continuation, MACD positive histogram."
+      }
+    ],
     "market_outlook": "bullish",
-    "risk_assessment": "Moderate risk; prices are pressing near 24h and 7d resistance levels with RSI approaching overbought territory and zero volume confirmation.",
-    "reasoning": "Both BTC and ETH exhibit strong bullish trend structure across EMA ribbons (EMA9 > EMA21 > EMA50) and elevated ADX. However, both pairs are trading near the upper Bollinger Bands and key 7-day resistance levels ($86,897 on BTC and $2,748 on ETH) without volume participation. Entering long at resistance without a volume-backed breakout or pullback towards support offers poor risk-to-reward."
+    "risk_assessment": "Low portfolio heat, no active positions, trend is strongly bullish with manageable volatility.",
+    "reasoning": "Both BTC and ETH exhibit strong bullish trend structures with EMAs stacked correctly. BTC shows robust ADX momentum and favorable risk-reward parameters for a continuation entry."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-10-02T08:01:09.002101+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-10-02T14:03:36.673553+00:00"
 }
