@@ -8,7 +8,8 @@
       "entry_time": "2026-10-02T19:25:24.999710+00:00",
       "strategy": "RSI_Reversion",
       "fees_paid": 0.024071215113924536,
-      "funding_paid": 0.0
+      "funding_paid": 0.0,
+      "high_pnl": 0.9018755350065348
     }
   },
   "total_trades": 9,
@@ -21,13 +22,13 @@
   "signal_history": {},
   "last_daily_alert_date": "2026-10-02",
   "last_candle_seen": {
-    "BTC_USDT_USDT": "2026-10-02 12:00:00+00:00",
-    "ETH_USDT_USDT": "2026-10-02 12:00:00+00:00"
+    "BTC_USDT_USDT": "2026-10-02 16:00:00+00:00",
+    "ETH_USDT_USDT": "2026-10-02 16:00:00+00:00"
   },
-  "last_equity_marked": 98.69072354133208,
+  "last_equity_marked": 98.54279588290429,
   "last_prices": {
-    "BTC_USDT_USDT": 84199.8,
-    "ETH_USDT_USDT": 2668.12
+    "BTC_USDT_USDT": 84566.9,
+    "ETH_USDT_USDT": 2669.22
   },
-  "last_run_at": "2026-10-02T19:25:29.647906+00:00"
+  "last_run_at": "2026-10-02T23:52:48.088630+00:00"
 }
