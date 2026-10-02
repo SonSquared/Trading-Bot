@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20261002_060646",
+  "wakeup_id": "20261002_080044",
   "decision": {
     "actions": [],
-    "market_outlook": "neutral",
-    "risk_assessment": "Low risk, zero active exposure. Market trends are bullish on lower timeframes but volume is extremely low (0.01x on BTC), indicating lack of participation/liquidity.",
-    "reasoning": "BTC and ETH are both showing bullish EMA alignment and positive MACD momentum. However, volume ratios are critically low (0.01x for BTC, 0.12x for ETH) and BTC is approaching strong resistance at the 7d high ($86,897.50). Taking trend-following entries without volume confirmation poses high false breakout risk, especially following two consecutive losses. Recommending to stay flat until volume confirms direction."
+    "market_outlook": "bullish",
+    "risk_assessment": "Moderate risk; prices are pressing near 24h and 7d resistance levels with RSI approaching overbought territory and zero volume confirmation.",
+    "reasoning": "Both BTC and ETH exhibit strong bullish trend structure across EMA ribbons (EMA9 > EMA21 > EMA50) and elevated ADX. However, both pairs are trading near the upper Bollinger Bands and key 7-day resistance levels ($86,897 on BTC and $2,748 on ETH) without volume participation. Entering long at resistance without a volume-backed breakout or pullback towards support offers poor risk-to-reward."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-10-02T06:07:18.529768+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-10-02T08:01:09.002101+00:00"
 }
