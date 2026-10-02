@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20261001_232232",
+  "wakeup_id": "20261002_000044",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Low volume and weak trend strength (ADX < 20) across both BTC and ETH indicate low probability of trend continuation. Risk of chop is high.",
-    "reasoning": "BTC and ETH present bullish EMA alignments, but ADX levels (17.1 for BTC, 10.2 for ETH) demonstrate a lack of strong trend momentum. Volume ratios are severely depressed (0.04x for BTC, 0.24x for ETH). Confidence remains below 60, triggering a no-trade decision."
+    "risk_assessment": "Weak trend strength with BTC ADX at 18.2 and ETH ADX at 10.5, combined with negligible volume and tight Bollinger Bands.",
+    "reasoning": "While EMA alignments across BTC and ETH show mild bullish structure, trend strength indicators (ADX < 20) indicate weak momentum. BTC is pressing against the upper Bollinger Band ($85,203) near 24h highs ($85,262) without supportive volume. Staying flat to avoid chop following two consecutive losses."
   },
-  "model": "gemini-3.6-flash",
-  "decided_at": "2026-10-01T23:23:12.480100+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-10-02T00:00:54.091992+00:00"
 }
