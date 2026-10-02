@@ -1,21 +1,11 @@
 {
-  "wakeup_id": "20261002_140047",
+  "wakeup_id": "20261002_200049",
   "decision": {
-    "actions": [
-      {
-        "pair": "BTC/USDT:USDT",
-        "side": "long",
-        "size_pct": 10.0,
-        "stop_loss_pct": 2.0,
-        "take_profit_pct": 4.5,
-        "confidence": 70.0,
-        "reasoning": "Strong bullish EMA alignment, ADX at 43.7 showing robust trend continuation, MACD positive histogram."
-      }
-    ],
-    "market_outlook": "bullish",
-    "risk_assessment": "Low portfolio heat, no active positions, trend is strongly bullish with manageable volatility.",
-    "reasoning": "Both BTC and ETH exhibit strong bullish trend structures with EMAs stacked correctly. BTC shows robust ADX momentum and favorable risk-reward parameters for a continuation entry."
+    "actions": [],
+    "market_outlook": "bearish",
+    "risk_assessment": "Moderate risk. Short-term bearish momentum is dominant with price below all major EMAs and negative MACD, but prices are near the lower Bollinger Bands with oversold Stochastics. Extreme low volume creates high execution risk.",
+    "reasoning": "Both BTC and ETH are trading below their 9, 21, and 50 EMAs with strong trend strength (ADX > 25), indicating downward pressure. However, taking short positions directly at the lower Bollinger Band with oversold Stochastics (K/D < 15) offers poor risk-to-reward, while counter-trend longs conflict with the prevailing trend-following strategy and consecutive loss streak. Confidence is below 60, recommending staying flat."
   },
-  "model": "gemini-flash-lite-latest",
-  "decided_at": "2026-10-02T14:03:36.673553+00:00"
+  "model": "gemini-flash-latest",
+  "decided_at": "2026-10-02T20:01:09.293300+00:00"
 }
