@@ -10,7 +10,7 @@
       "fees_paid": 0.02412238648500286,
       "funding_paid": 0.006892110424286531,
       "last_funding_time": "2026-10-03T16:32:11.512892+00:00",
-      "high_pnl": 0.10299943001160193
+      "high_pnl": 0.14101619953513506
     }
   },
   "total_trades": 10,
@@ -26,10 +26,10 @@
     "BTC_USDT_USDT": "2026-10-03 16:00:00+00:00",
     "ETH_USDT_USDT": "2026-10-03 16:00:00+00:00"
   },
-  "last_equity_marked": 98.46778022884529,
+  "last_equity_marked": 98.48319292140593,
   "last_prices": {
-    "ETH_USDT_USDT": 2685.61,
-    "BTC_USDT_USDT": 84714.3
+    "ETH_USDT_USDT": 2686.81,
+    "BTC_USDT_USDT": 84753.4
   },
-  "last_run_at": "2026-10-03T21:29:35.320949+00:00"
+  "last_run_at": "2026-10-03T23:20:57.265347+00:00"
 }
