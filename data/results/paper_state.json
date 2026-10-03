@@ -26,10 +26,10 @@
     "BTC_USDT_USDT": "2026-10-03 12:00:00+00:00",
     "ETH_USDT_USDT": "2026-10-03 12:00:00+00:00"
   },
-  "last_equity_marked": 98.38763422752996,
+  "last_equity_marked": 98.43387230521188,
   "last_prices": {
-    "BTC_USDT_USDT": 84817.6,
-    "ETH_USDT_USDT": 2679.37
+    "BTC_USDT_USDT": 84851.4,
+    "ETH_USDT_USDT": 2682.97
   },
-  "last_run_at": "2026-10-03T16:32:22.976447+00:00"
+  "last_run_at": "2026-10-03T19:30:13.937041+00:00"
 }
