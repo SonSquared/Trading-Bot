@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20261003_200037",
+  "wakeup_id": "20261003_230039",
   "decision": {
     "actions": [],
     "market_outlook": "neutral",
-    "risk_assessment": "Extremely low volatility and compression with ADX under 15 across both pairs; range chop creates high false breakout risk.",
-    "reasoning": "Both BTC and ETH exhibit stagnant price action with RSI hovering near 50, negligible trading volume, and ADX levels well below trend thresholds (13.6 for BTC, 10.1 for ETH). In line with trend-following guidelines and capital preservation rules, no high-confidence setups are present."
+    "risk_assessment": "Low market volatility with ADX under 12 for both BTC and ETH, indicating no active trend. Volume ratio is 0.00x.",
+    "reasoning": "Both BTC and ETH are displaying weak, directionless price action with neutral RSI levels around 48-51 and mixed EMAs. In accordance with the trend-following strategy and minimum confidence requirements (>60), no trade setups are currently present."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-10-03T20:01:39.436480+00:00"
+  "model": "gemini-3.6-flash",
+  "decided_at": "2026-10-03T23:01:45.780159+00:00"
 }
