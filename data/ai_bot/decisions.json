@@ -1,11 +1,11 @@
 {
-  "wakeup_id": "20261003_000043",
+  "wakeup_id": "20261003_060043",
   "decision": {
     "actions": [],
-    "market_outlook": "bearish",
-    "risk_assessment": "Low trading volume with oversold momentum indicators across BTC and ETH. Account has 3 consecutive losses; high risk of whipsaw.",
-    "reasoning": "Both BTC and ETH remain below their 9, 21, and 50 EMAs with negative MACD indicators, indicating a short-term bearish structure. However, with Stochastic indicators deeply oversold (sub-20) and virtually zero volume recorded, shorting into support carries elevated risk of a squeeze, while counter-trend longs conflict with the primary trend. Confidence remains below the 60 threshold, warranting no trade execution."
+    "market_outlook": "neutral",
+    "risk_assessment": "Low volatility, weak trends, and extremely low volume across both BTC and ETH. ADX values below 20 indicate no clear directional momentum. Staying flat until clearer setups emerge.",
+    "reasoning": "Both BTC and ETH are exhibiting mixed/bearish trends with weak ADX (<20) and low volume ratios. RSI and MACD show no strong directional bias, resulting in confidence below the 60 threshold required for trading."
   },
-  "model": "gemini-flash-latest",
-  "decided_at": "2026-10-03T00:00:54.084221+00:00"
+  "model": "gemini-flash-lite-latest",
+  "decided_at": "2026-10-03T06:03:02.857817+00:00"
 }
